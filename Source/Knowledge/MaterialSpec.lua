@@ -1,0 +1,1025 @@
+----------------------------------------------------------------
+-- StockPiler3 Knowledge/MaterialSpec — role fingerprints for bag/vendor/brew
+-- Match by craft stats (not exact uid/name). Containers share skill+slot
+-- (Fabricated vs normal vials). Incomplete mains stay boundUid-only.
+--
+-- Potions-tab columns (Lvl/Effect/Pwr/Stab/Mult/SCrit) mirror the stats we
+-- sum for recipe identity. SCrit = SPECIAL_CHANCE (Super-Critical): may later
+-- be omitted from Matches/Key — it yields a higher-tier potion uid (e.g. Potent
+-- …) that is a separate watch target, so it does not advance the stocked line.
+----------------------------------------------------------------
+
+StockPiler3 = StockPiler3 or {}
+StockPiler3.MaterialSpec = StockPiler3.MaterialSpec or {}
+local MS = StockPiler3.MaterialSpec
+
+local function Inv()
+    return StockPiler3.Inventory
+end
+
+local function CraftBonusRefs()
+    return {
+        STABILITY = 1,
+        POWER = 2,
+        DURATION = 3,
+        MULTIPLIER = 4,
+        CRAFTING_FAMILY = 5,
+        EFFECT = 6,
+        TYPE = 8,
+        CRAFTING_LEVEL = 9,
+        GROW_TIME = 10,
+        YIELD = 11,
+        CRITICAL_CHANCE = 12,
+        FAIL_CHANCE = 13,
+        SPECIAL_CHANCE = 14,
+        DESTROY_ON_FAIL = 15,
+    }
+end
+
+local function ApothecarySkill()
+    return (GameData and GameData.TradeSkills and GameData.TradeSkills.APOTHECARY) or 4
+end
+
+local function CultivationSkill()
+    return (GameData and GameData.TradeSkills and GameData.TradeSkills.CULTIVATION) or 3
+end
+
+-- Built-in apothecary effect id → StockPiler key (and CVT-compatible aliases).
+local EFFECT_ID_TO_KEY = {
+    [1] = "heal",
+    [2] = "hot",
+    [3] = "ap",
+    [4] = "str",
+    [5] = "int",
+    [6] = "wp",
+    [7] = "tou",
+    [8] = "bs",
+    [9] = "absorb",
+    [10] = "rcorp",
+    [11] = "rele",
+    [12] = "rspi",
+    [13] = "armor",
+    [14] = "shdmg",
+    [15] = "dmg",
+    [16] = "dmgaoe",
+    [17] = "dmgcone",
+    [18] = "snare",
+    [21] = "hytoucrit",
+    [22] = "hystrmelee",
+    [23] = "hywillheal",
+    [24] = "hystrheal",
+    [25] = "hyintmcrit",
+    [26] = "hyaccrcrit",
+    [27] = "hywoumelee",
+    [28] = "hywoucrit",
+    [29] = "hywoumcrit",
+    [30] = "hywourcrit",
+    [31] = "hywouheal",
+    [32] = "hywoustr",
+    [33] = "hyresist",
+    [34] = "hywouarmpen",
+    [35] = "hywouinit",
+    [36] = "hytounocrit",
+    [37] = "hyhpregencritdmg",
+    [38] = "hywsarmpen",
+    [39] = "hywsnocrit",
+    [41] = "trapoth",
+    [42] = "trcult",
+    [43] = "trsalv",
+    [44] = "trtal",
+    [45] = "rez",
+    [46] = "morale",
+    [1101] = "autoheal",
+    [1102] = "freecast",
+    [1103] = "autoheal",
+    [1104] = "freecast",
+    [1105] = "autoheal",
+    [1106] = "freecast",
+    [1107] = "autoheal",
+    [1108] = "freecast",
+    [1109] = "pet",
+    [1110] = "movespeed",
+}
+
+-- Reverse lookup: StockPiler keys + legacy CVT names → effect id.
+local EFFECT_KEY_TO_ID = {
+    heal = 1,
+    regen = 2,
+    hot = 2,
+    ap = 3,
+    str = 4,
+    int = 5,
+    wil = 6,
+    wp = 6,
+    tou = 7,
+    rskill = 8,
+    bs = 8,
+    shabs = 9,
+    absorb = 9,
+    rcorp = 10,
+    rele = 11,
+    rspi = 12,
+    arm = 13,
+    armor = 13,
+    shdmg = 14,
+    dmg = 15,
+    dmgaoe = 16,
+    dmgcone = 17,
+    snare = 18,
+    hytoucrit = 21,
+    hystrmelee = 22,
+    hywillheal = 23,
+    hystrheal = 24,
+    hyintmcrit = 25,
+    hyaccrcrit = 26,
+    hywoumelee = 27,
+    hywoucrit = 28,
+    hywoumcrit = 29,
+    hywourcrit = 30,
+    hywouheal = 31,
+    hywoustr = 32,
+    hyresist = 33,
+    hywouarmpen = 34,
+    hywouinit = 35,
+    hytounocrit = 36,
+    hyhpregencritdmg = 37,
+    hywsarmpen = 38,
+    hywsnocrit = 39,
+    trapoth = 41,
+    trcult = 42,
+    trsalv = 43,
+    trtal = 44,
+    rez = 45,
+    morale = 46,
+    autoheal = 1101,
+    freecast = 1102,
+    pet = 1109,
+    movespeed = 1110,
+}
+
+function MS.EffectKeyFromEffectId(effectId)
+    effectId = tonumber(effectId) or 0
+    if effectId <= 0 then
+        return nil
+    end
+    return EFFECT_ID_TO_KEY[effectId]
+end
+
+function MS.EffectIdFromKey(key)
+    if type(key) ~= "string" or key == "" then
+        return nil
+    end
+    return EFFECT_KEY_TO_ID[key]
+end
+
+local function SlotTypeConstants()
+    if GameData and GameData.CraftingItemType then
+        return GameData.CraftingItemType
+    end
+    return {
+        STABILIZER = 1,
+        MAIN_INGREDIENT = 2,
+        EXTENDER = 3,
+        MULTIPLIER = 4,
+        CONTAINER = 5,
+        CONTAINER_DYE = 6,
+        GOLDWEED = 10,
+        STIMULANT = 18,
+    }
+end
+
+local function SignedBonus(val)
+    val = tonumber(val) or 0
+    if val > 32767 then
+        return val - 65536
+    end
+    return val
+end
+
+local function AddBonusValue(bonuses, ref, val)
+    ref = tonumber(ref) or 0
+    if ref <= 0 or val == nil then
+        return
+    end
+    if bonuses[ref] == nil then
+        bonuses[ref] = {}
+    end
+    bonuses[ref][#bonuses[ref] + 1] = SignedBonus(val)
+end
+
+local function ParseBonuses(itemData)
+    local bonuses = {}
+    if type(itemData) ~= "table" then
+        return bonuses
+    end
+    if type(itemData.craftingBonus) == "table" then
+        for _, bonus in ipairs(itemData.craftingBonus) do
+            if type(bonus) == "table" then
+                AddBonusValue(bonuses, bonus.bonusReference, bonus.bonusValue)
+            end
+        end
+        -- Also accept map-style craftingBonus[ref]=value
+        if next(bonuses) == nil then
+            for ref, val in pairs(itemData.craftingBonus) do
+                local nref = tonumber(ref) or 0
+                if nref > 0 and type(val) ~= "table" then
+                    AddBonusValue(bonuses, nref, val)
+                elseif nref > 0 and type(val) == "table" and val.bonusValue ~= nil then
+                    AddBonusValue(bonuses, nref, val.bonusValue)
+                end
+            end
+        end
+    end
+    if type(itemData.CraftItemInfo) == "table" then
+        for ref, vals in pairs(itemData.CraftItemInfo) do
+            local nref = tonumber(ref) or 0
+            if nref > 0 and bonuses[nref] == nil then
+                if type(vals) == "table" then
+                    AddBonusValue(bonuses, nref, vals[1])
+                else
+                    AddBonusValue(bonuses, nref, vals)
+                end
+            end
+        end
+    end
+    if next(bonuses) == nil
+        and type(CraftItemInfo) == "table"
+        and type(CraftItemInfo.GetItemBonuses) == "function"
+    then
+        local ok, vData = pcall(CraftItemInfo.GetItemBonuses, itemData)
+        if ok and type(vData) == "table" then
+            for ref, vals in pairs(vData) do
+                local nref = tonumber(ref) or 0
+                if nref > 0 and type(vals) == "table" then
+                    AddBonusValue(bonuses, nref, vals[1])
+                end
+            end
+        end
+    end
+    -- Flat learned Items.ToSpec / stored bonuses map.
+    if next(bonuses) == nil and type(itemData.bonuses) == "table" then
+        for ref, val in pairs(itemData.bonuses) do
+            local nref = tonumber(ref) or 0
+            if nref > 0 then
+                if type(val) == "table" then
+                    AddBonusValue(bonuses, nref, val[1])
+                else
+                    AddBonusValue(bonuses, nref, val)
+                end
+            end
+        end
+    end
+    return bonuses
+end
+
+local function NormalizeBonusKeys(bonuses)
+    if type(bonuses) ~= "table" then
+        return {}
+    end
+    local out = {}
+    for k, v in pairs(bonuses) do
+        local nref = tonumber(k)
+        if nref and nref > 0 and v ~= nil then
+            if type(v) == "table" then
+                out[nref] = tonumber(v[1]) or v[1]
+            else
+                out[nref] = v
+            end
+        end
+    end
+    return out
+end
+
+local function FirstBonus(bonuses, ref)
+    if type(bonuses) ~= "table" or type(bonuses[ref]) ~= "table" then
+        return nil
+    end
+    return bonuses[ref][1]
+end
+
+local function RoleFromSlotType(slotType)
+    slotType = tonumber(slotType) or 0
+    local cit = SlotTypeConstants()
+    if slotType == cit.CONTAINER or slotType == cit.CONTAINER_DYE then
+        return "container"
+    end
+    if slotType == cit.MAIN_INGREDIENT then
+        return "main"
+    end
+    if slotType == cit.STABILIZER or slotType == cit.GOLDWEED then
+        return "stabilizer"
+    end
+    if slotType == cit.EXTENDER then
+        return "extender"
+    end
+    if slotType == cit.MULTIPLIER then
+        return "multiplier"
+    end
+    if slotType == cit.STIMULANT then
+        return "stimulant"
+    end
+    return "ingredient"
+end
+
+local function RoleFromItemData(itemData, roleHint)
+    if roleHint and roleHint ~= "" then
+        return roleHint
+    end
+    if type(itemData) == "table" then
+        local hinted = tostring(itemData.craftingRole or itemData.role or "")
+        if hinted ~= "" and hinted ~= "ingredient" then
+            return hinted
+        end
+    end
+    local bonuses = ParseBonuses(itemData)
+    local B = CraftBonusRefs()
+    local slotType = FirstBonus(bonuses, B.TYPE) or 0
+    return RoleFromSlotType(slotType)
+end
+
+local function BonusMatch(a, b, ref)
+    local va = type(a) == "table" and a[ref] or nil
+    local vb = type(b) == "table" and b[ref] or nil
+    if va == nil and vb == nil then
+        return true
+    end
+    if va == nil or vb == nil then
+        return false
+    end
+    return tonumber(va) == tonumber(vb)
+end
+
+local function IsMaterialSpec(t)
+    return type(t) == "table"
+        and type(t.role) == "string"
+        and type(t.bonuses) == "table"
+        and t.craftingBonus == nil
+        and t.uniqueID == nil
+end
+
+local function ToNarrow(text)
+    if StockPiler3.Persistence and StockPiler3.Persistence.ToNarrow then
+        return StockPiler3.Persistence.ToNarrow(text)
+    end
+    if type(text) == "wstring" and type(WStringToString) == "function" then
+        return WStringToString(text) or ""
+    end
+    return tostring(text or "")
+end
+
+-- Infer EFFECT when craftingBonus omits ref 6 (common on heal/stat mains).
+local DESC_EFFECT_PATTERNS = {
+    { "intelligence", "int" },
+    { "strength", "str" },
+    { "willpower", "wil" },
+    { "toughness", "tou" },
+    { "ballistic skill", "rskill" },
+    { "ballistic", "rskill" },
+    { "healing", "heal" },
+    { "restoration", "regen" },
+    { "regenerat", "regen" },
+    { "action point", "ap" },
+    { "invigor", "ap" },
+    { "energy", "ap" },
+    { "armor", "arm" },
+    { "armour", "arm" },
+    { "absorb", "shabs" },
+    { "barrier", "shabs" },
+    { "flame breath", "dmgcone" },
+}
+
+local function EffectIdFromDescription(description)
+    local desc = string.lower(ToNarrow(description))
+    if desc == "" then
+        return nil
+    end
+    for i = 1, #DESC_EFFECT_PATTERNS do
+        local needle, effectKey = DESC_EFFECT_PATTERNS[i][1], DESC_EFFECT_PATTERNS[i][2]
+        if string.find(desc, needle, 1, true) then
+            return EFFECT_KEY_TO_ID[effectKey]
+        end
+    end
+    return nil
+end
+
+local function LookupItemDescription(itemData)
+    if type(itemData) ~= "table" then
+        return nil
+    end
+    local desc = itemData.description or itemData.desc
+    if desc ~= nil and ToNarrow(desc) ~= "" then
+        return desc
+    end
+    local uid = tonumber(itemData.uniqueID or itemData.uniqueId or itemData.uid) or 0
+    if uid > 0 and type(GetDatabaseItemData) == "function" then
+        local ok, data = pcall(GetDatabaseItemData, uid)
+        if ok and type(data) == "table" and data.description ~= nil then
+            return data.description
+        end
+    end
+    return nil
+end
+
+--- Main-ingredient EFFECT: craftingBonus → CraftItemInfo → item description.
+local function ResolveMainEffectId(itemData, bonuses)
+    local B = CraftBonusRefs()
+    local effectId = FirstBonus(bonuses, B.EFFECT)
+    if effectId and effectId > 0 then
+        return effectId
+    end
+    effectId = tonumber(itemData and itemData.effectId)
+    if effectId and effectId > 0 then
+        return effectId
+    end
+    if type(CraftItemInfo) == "table" and type(CraftItemInfo.GetItemBonuses) == "function"
+        and type(itemData) == "table"
+    then
+        local ok, vData = pcall(CraftItemInfo.GetItemBonuses, itemData)
+        if ok and type(vData) == "table" and type(vData[B.EFFECT]) == "table" then
+            effectId = tonumber(vData[B.EFFECT][1]) or 0
+            if effectId > 0 then
+                return effectId
+            end
+        end
+    end
+    local desc = LookupItemDescription(itemData)
+    if desc ~= nil then
+        return EffectIdFromDescription(desc)
+    end
+    return nil
+end
+
+function MS.ClearParseCache()
+    local I = Inv()
+    if I then
+        I._specParseCache = {}
+    end
+end
+
+function MS.CraftBonusRefs()
+    return CraftBonusRefs()
+end
+
+--- Build a comparable material fingerprint from itemData or a learned ToSpec table.
+function MS.FromItemData(itemData, roleHint)
+    if type(itemData) ~= "table" then
+        return nil
+    end
+    -- Already a MaterialSpec-shaped table (hydrated slot.spec / ToSpec).
+    if IsMaterialSpec(itemData) and (itemData.slotType ~= nil or itemData.tradeSkill ~= nil) then
+        local copy = MS.Copy(itemData)
+        if roleHint and roleHint ~= "" and copy then
+            copy.role = roleHint
+        end
+        return copy
+    end
+
+    local uid = tonumber(itemData.uniqueID or itemData.uniqueId or itemData.uid) or 0
+    local bonuses = ParseBonuses(itemData)
+    local B = CraftBonusRefs()
+    local tradeSkill = FirstBonus(bonuses, B.CRAFTING_FAMILY)
+        or tonumber(itemData.tradeSkill) or 0
+    local slotType = FirstBonus(bonuses, B.TYPE)
+        or tonumber(itemData.slotType) or 0
+    local skillLevel = FirstBonus(bonuses, B.CRAFTING_LEVEL)
+    if skillLevel == nil or skillLevel <= 0 then
+        skillLevel = tonumber(itemData.craftingSkillRequirement)
+            or tonumber(itemData.skillLevel)
+            or tonumber(itemData.skillReq)
+            or 0
+    end
+    local cultType = tonumber(itemData.cultivationType) or 0
+    if cultType ~= 0 then
+        tradeSkill = CultivationSkill()
+    elseif tradeSkill == 0 then
+        tradeSkill = ApothecarySkill()
+    end
+    local role = RoleFromItemData(itemData, roleHint)
+    local effectId = nil
+    if role == "main" then
+        effectId = ResolveMainEffectId(itemData, bonuses)
+    else
+        effectId = FirstBonus(bonuses, B.EFFECT) or tonumber(itemData.effectId)
+    end
+    local specBonuses = {}
+    for ref = 1, 15 do
+        if bonuses[ref] and ref ~= B.CRAFTING_FAMILY and ref ~= B.TYPE and ref ~= B.EFFECT then
+            specBonuses[ref] = bonuses[ref][1]
+        end
+    end
+    -- Flat power/stability fallbacks from thin ToSpec rows.
+    if specBonuses[B.STABILITY] == nil and itemData.stability ~= nil then
+        specBonuses[B.STABILITY] = SignedBonus(itemData.stability)
+    end
+    if specBonuses[B.POWER] == nil and itemData.power ~= nil then
+        specBonuses[B.POWER] = SignedBonus(itemData.power)
+    end
+    if specBonuses[B.DURATION] == nil and itemData.duration ~= nil then
+        specBonuses[B.DURATION] = SignedBonus(itemData.duration)
+    end
+    if effectId ~= nil and effectId > 0 then
+        specBonuses[B.EFFECT] = effectId
+    end
+    local incomplete = false
+    if role == "main" and (effectId == nil or tonumber(effectId) <= 0) then
+        incomplete = true
+    end
+    if itemData.incomplete == true then
+        incomplete = true
+    end
+    local out = {
+        uid = uid > 0 and uid or nil,
+        tradeSkill = tradeSkill or 0,
+        slotType = slotType,
+        skillLevel = skillLevel or 0,
+        cultivationType = cultType,
+        effectId = effectId,
+        bonuses = specBonuses,
+        role = role,
+        incomplete = incomplete,
+        boundUid = tonumber(itemData.boundUid) or (incomplete and uid > 0 and uid or nil),
+        power = tonumber(specBonuses[B.POWER]) or 0,
+        stability = tonumber(specBonuses[B.STABILITY]) or 0,
+        duration = tonumber(specBonuses[B.DURATION]) or 0,
+        name = itemData.name,
+        rarity = itemData.rarity,
+    }
+    -- Engine apo field: true/false when known; omit when unknown.
+    if itemData.isRefinable ~= nil then
+        out.isRefinable = itemData.isRefinable == true
+    elseif uid > 0 and StockPiler3.Items and StockPiler3.Items.GetByUid then
+        local learned = StockPiler3.Items.GetByUid(uid)
+        if type(learned) == "table" and learned.isRefinable ~= nil then
+            out.isRefinable = learned.isRefinable == true
+        end
+    end
+    return out
+end
+
+--- Cached by uid; parse without role hint so one entry serves all Matches calls.
+function MS.FromItemDataCached(itemData, roleHint)
+    if type(itemData) ~= "table" then
+        return nil
+    end
+    if IsMaterialSpec(itemData) then
+        return MS.FromItemData(itemData, roleHint)
+    end
+    local uid = tonumber(itemData.uniqueID or itemData.uniqueId) or 0
+    if uid <= 0 then
+        return MS.FromItemData(itemData, roleHint)
+    end
+    local I = Inv()
+    local cache = I and I._specParseCache
+    if type(cache) ~= "table" then
+        cache = {}
+        if I then
+            I._specParseCache = cache
+        end
+    end
+    local hit = cache[uid]
+    if hit == false then
+        return nil
+    end
+    if type(hit) == "table" then
+        -- Re-parse incomplete mains so description EFFECT can upgrade the cache.
+        if hit.incomplete ~= true then
+            if roleHint and roleHint ~= "" and hit.role ~= roleHint then
+                local copy = MS.Copy(hit)
+                if copy then
+                    copy.role = roleHint
+                end
+                return copy
+            end
+            return hit
+        end
+    end
+    local spec = MS.FromItemData(itemData, nil)
+    if spec == nil then
+        cache[uid] = false
+        return nil
+    end
+    -- Do not cache thin parses (bag AsItemData often lacks CraftItemInfo once).
+    local rich = (tonumber(spec.slotType) or 0) > 0
+        or (tonumber(spec.skillLevel) or 0) > 0
+        or (spec.incomplete ~= true and (tonumber(spec.effectId) or 0) > 0)
+    if rich then
+        cache[uid] = spec
+    end
+    if roleHint and roleHint ~= "" and spec.role ~= roleHint then
+        local copy = MS.Copy(spec)
+        if copy then
+            copy.role = roleHint
+        end
+        return copy
+    end
+    return spec
+end
+
+function MS.Copy(spec)
+    if type(spec) ~= "table" then
+        return nil
+    end
+    local bonuses = NormalizeBonusKeys(spec.bonuses)
+    local out = {
+        uid = tonumber(spec.uid) or nil,
+        tradeSkill = spec.tradeSkill or 0,
+        slotType = spec.slotType or 0,
+        skillLevel = spec.skillLevel or 0,
+        cultivationType = spec.cultivationType or 0,
+        effectId = spec.effectId,
+        bonuses = bonuses,
+        role = spec.role or "ingredient",
+        incomplete = spec.incomplete == true,
+        boundUid = tonumber(spec.boundUid) or nil,
+        power = tonumber(spec.power) or tonumber(bonuses[2]) or 0,
+        stability = tonumber(spec.stability) or tonumber(bonuses[1]) or 0,
+        duration = tonumber(spec.duration) or tonumber(bonuses[3]) or 0,
+        name = spec.name,
+        rarity = spec.rarity,
+    }
+    if spec.isRefinable ~= nil then
+        out.isRefinable = spec.isRefinable == true
+    end
+    return out
+end
+
+local function SpecLooksThin(spec)
+    if type(spec) ~= "table" then
+        return true
+    end
+    if spec.incomplete == true then
+        return true
+    end
+    return (tonumber(spec.slotType) or 0) <= 0
+        and (tonumber(spec.skillLevel) or 0) <= 0
+end
+
+local function EnrichFromLearnedItems(other, itemData, roleHint)
+    if type(other) ~= "table" or not SpecLooksThin(other) then
+        return other
+    end
+    if not (StockPiler3.Items and StockPiler3.Items.ToSpec) then
+        return other
+    end
+    local uid = tonumber(other.uid) or 0
+    if uid <= 0 and type(itemData) == "table" then
+        uid = tonumber(itemData.uniqueID) or tonumber(itemData.uid) or 0
+    end
+    if uid <= 0 then
+        return other
+    end
+    local learned = StockPiler3.Items.ToSpec(uid)
+    if type(learned) ~= "table" or SpecLooksThin(learned) then
+        return other
+    end
+    local enriched = MS.AsApothecaryProduct(learned, roleHint or other.role)
+    return type(enriched) == "table" and enriched or other
+end
+
+--- itemData may be raw bag item or an already-built MaterialSpec.
+function MS.Matches(itemData, spec)
+    if type(itemData) ~= "table" or type(spec) ~= "table" then
+        return false
+    end
+    local boundUid = tonumber(spec.boundUid) or 0
+    if spec.incomplete == true then
+        if boundUid <= 0 then
+            boundUid = tonumber(spec.uid) or 0
+        end
+        if boundUid <= 0 then
+            return false
+        end
+        local itemUid = tonumber(itemData.uniqueID) or tonumber(itemData.uid) or 0
+        if itemUid <= 0 and IsMaterialSpec(itemData) then
+            itemUid = tonumber(itemData.boundUid) or tonumber(itemData.uid) or 0
+        end
+        return itemUid == boundUid
+    end
+
+    local other = itemData
+    if not IsMaterialSpec(itemData) then
+        other = MS.FromItemDataCached(itemData, nil)
+    end
+    if other == nil then
+        return false
+    end
+    -- Thin bag parses: prefer learned Items fingerprint (Artisan's vials, etc.).
+    other = EnrichFromLearnedItems(other, itemData, spec.role)
+    if other == nil or other.incomplete == true then
+        return false
+    end
+    -- Same uid always matches (fast path for exact stack).
+    local aUid = tonumber(other.uid) or 0
+    local bUid = tonumber(spec.uid) or 0
+    if aUid > 0 and aUid == bUid then
+        return true
+    end
+
+    local otherBonuses = NormalizeBonusKeys(other.bonuses)
+    local specBonuses = NormalizeBonusKeys(spec.bonuses)
+    local role = spec.role or other.role or "ingredient"
+    if tonumber(other.tradeSkill) ~= tonumber(spec.tradeSkill) then
+        return false
+    end
+    if (tonumber(other.cultivationType) or 0) ~= (tonumber(spec.cultivationType) or 0) then
+        return false
+    end
+    if tonumber(other.skillLevel) ~= tonumber(spec.skillLevel) then
+        return false
+    end
+    if role == "main" then
+        if tonumber(other.slotType) ~= tonumber(spec.slotType) then
+            return false
+        end
+        if tonumber(other.effectId) ~= tonumber(spec.effectId) then
+            return false
+        end
+        local B = CraftBonusRefs()
+        if not BonusMatch(otherBonuses, specBonuses, B.STABILITY) then
+            return false
+        end
+        if not BonusMatch(otherBonuses, specBonuses, B.POWER) then
+            return false
+        end
+        return true
+    end
+    if role == "container" then
+        local oSlot = tonumber(other.slotType) or 0
+        local sSlot = tonumber(spec.slotType) or 0
+        local oSkill = tonumber(other.skillLevel) or 0
+        local sSkill = tonumber(spec.skillLevel) or 0
+        if oSlot > 0 and sSlot > 0 then
+            return oSlot == sSlot and oSkill == sSkill
+        end
+        -- Thin bag items often omit TYPE but still expose craftingSkillRequirement.
+        if oSkill > 0 and oSkill == sSkill and sSlot > 0 then
+            return true
+        end
+        return false
+    end
+    if role == "stabilizer" or role == "goldweed" then
+        local B = CraftBonusRefs()
+        if tonumber(other.slotType) ~= tonumber(spec.slotType) then
+            if not (RoleFromSlotType(other.slotType) == "stabilizer"
+                and RoleFromSlotType(spec.slotType) == "stabilizer")
+            then
+                return false
+            end
+        end
+        if not BonusMatch(otherBonuses, specBonuses, B.STABILITY) then
+            return false
+        end
+        if not BonusMatch(otherBonuses, specBonuses, B.MULTIPLIER) then
+            return false
+        end
+        return true
+    end
+    if role == "extender" or role == "multiplier" or role == "stimulant" then
+        if tonumber(other.slotType) ~= tonumber(spec.slotType) then
+            return false
+        end
+        local B = CraftBonusRefs()
+        if role == "extender" and not BonusMatch(otherBonuses, specBonuses, B.DURATION) then
+            return false
+        end
+        if (role == "multiplier" or role == "stimulant")
+            and not BonusMatch(otherBonuses, specBonuses, B.MULTIPLIER)
+        then
+            return false
+        end
+        -- Potions-tab Mult + SCrit (SPECIAL_CHANCE / Super-Critical).
+        -- Squig Bits vs Majestic Fusk share +16 mult but differ on SCrit.
+        -- Future: may drop SPECIAL_CHANCE from matching — Super-Critical only
+        -- produces a different potion uid (Potent …), not progress on the
+        -- watched stock target. Treat like DESTROY_ON_FAIL if that lands.
+        if role == "multiplier"
+            and not BonusMatch(otherBonuses, specBonuses, B.SPECIAL_CHANCE)
+        then
+            return false
+        end
+        if role == "multiplier"
+            and not BonusMatch(otherBonuses, specBonuses, B.CRITICAL_CHANCE)
+        then
+            return false
+        end
+        return true
+    end
+    return tonumber(other.slotType) == tonumber(spec.slotType)
+end
+
+--- Recipe / demand identity. Omits DESTROY_ON_FAIL (via MaterialExceptions) so
+--- Fabricated vs Artisan's Glass Vial share keys despite differing on that bonus.
+function MS.Key(spec, boundUid)
+    if type(spec) ~= "table" then
+        return ""
+    end
+    local parts = {
+        "ts:" .. tostring(spec.tradeSkill or 0),
+        "st:" .. tostring(spec.slotType or 0),
+        "lv:" .. tostring(spec.skillLevel or 0),
+        "ct:" .. tostring(spec.cultivationType or 0),
+        "role:" .. tostring(spec.role or ""),
+    }
+    if spec.incomplete ~= true and spec.effectId ~= nil then
+        parts[#parts + 1] = "fx:" .. tostring(spec.effectId)
+    end
+    local uid = tonumber(boundUid) or tonumber(spec.boundUid) or 0
+    if spec.incomplete == true and uid > 0 then
+        parts[#parts + 1] = "uid:" .. tostring(uid)
+    end
+    if type(spec.bonuses) == "table" then
+        local ME = StockPiler3.MaterialExceptions
+        local refs = {}
+        for ref, val in pairs(NormalizeBonusKeys(spec.bonuses)) do
+            local nref = tonumber(ref) or 0
+            local skip = ME and ME.ShouldIgnoreBonusRef and ME.ShouldIgnoreBonusRef(nref) == true
+            if not skip then
+                refs[#refs + 1] = tostring(nref) .. "=" .. tostring(val)
+            end
+        end
+        table.sort(refs)
+        if #refs > 0 then
+            parts[#parts + 1] = "b:" .. table.concat(refs, ",")
+        end
+    end
+    return table.concat(parts, "|")
+end
+
+--- Normalize seed/plant forms to apo recipe context (ct:0) for planner have.
+function MS.AsApothecaryProduct(specOrItem, roleHint)
+    if type(specOrItem) ~= "table" then
+        return nil
+    end
+    local spec
+    if IsMaterialSpec(specOrItem) then
+        spec = MS.Copy(specOrItem)
+    else
+        spec = MS.Copy(MS.FromItemDataCached(specOrItem, roleHint))
+    end
+    if type(spec) ~= "table" then
+        return nil
+    end
+    if roleHint and roleHint ~= "" then
+        spec.role = roleHint
+    end
+    spec.cultivationType = 0
+    spec.tradeSkill = ApothecarySkill()
+    return spec
+end
+
+function MS.ProductKey(specOrItem, roleHint)
+    local product = MS.AsApothecaryProduct(specOrItem, roleHint)
+    if type(product) ~= "table" then
+        return ""
+    end
+    return MS.Key(product)
+end
+
+--- Stat-equivalent match across uid variants and cultivation→apo product forms.
+function MS.ProductMatches(itemData, spec)
+    if type(itemData) ~= "table" or type(spec) ~= "table" then
+        return false
+    end
+    if spec.incomplete == true then
+        local boundUid = tonumber(spec.boundUid) or tonumber(spec.uid) or 0
+        if boundUid <= 0 then
+            return false
+        end
+        return (tonumber(itemData.uniqueID) or tonumber(itemData.uid) or 0) == boundUid
+    end
+    local role = spec.role or nil
+    local product = MS.AsApothecaryProduct(itemData, role)
+    local target = MS.AsApothecaryProduct(spec, role)
+    if type(product) ~= "table" or type(target) ~= "table" or target.incomplete == true then
+        return false
+    end
+    -- Enrich thin bag items from learned Items (containers often lack CraftItemInfo).
+    local uid = tonumber(itemData.uniqueID) or tonumber(itemData.uid) or 0
+    local needsEnrich = (tonumber(product.slotType) or 0) <= 0
+        or (tonumber(product.skillLevel) or 0) <= 0
+        or (product.role == "main" and (product.incomplete == true or (tonumber(product.effectId) or 0) <= 0))
+    if needsEnrich and uid > 0 and StockPiler3.Items and StockPiler3.Items.ToSpec then
+        local learned = StockPiler3.Items.ToSpec(uid)
+        if type(learned) == "table" and learned.incomplete ~= true then
+            product = MS.AsApothecaryProduct(learned, role) or product
+        end
+    end
+    if product.incomplete == true then
+        return false
+    end
+    return MS.Matches(product, target)
+end
+
+function MS.Stability(spec)
+    if type(spec) ~= "table" then
+        return 0
+    end
+    local B = CraftBonusRefs()
+    if type(spec.bonuses) == "table" then
+        return tonumber(NormalizeBonusKeys(spec.bonuses)[B.STABILITY]) or 0
+    end
+    return tonumber(spec.stability) or 0
+end
+
+function MS.Label(spec)
+    if type(spec) ~= "table" then
+        return ""
+    end
+    if spec.name ~= nil then
+        return ToNarrow(spec.name)
+    end
+    local uid = tonumber(spec.uid) or tonumber(spec.boundUid) or 0
+    if uid > 0 and StockPiler3.Items and StockPiler3.Items.GetByUid then
+        local row = StockPiler3.Items.GetByUid(uid)
+        if type(row) == "table" and row.name ~= nil then
+            return ToNarrow(row.name)
+        end
+    end
+    return tostring(spec.role or "mat")
+end
+
+function MS.NeedLabel(spec)
+    return MS.Label(spec)
+end
+
+--- True if item is a seed/spore (must not fill apo brew slots).
+function MS.IsSeedOrSpore(itemOrSpec)
+    local ct = 0
+    if type(itemOrSpec) == "table" then
+        ct = tonumber(itemOrSpec.cultivationType) or 0
+        if ct == 0 and not IsMaterialSpec(itemOrSpec) then
+            local parsed = MS.FromItemDataCached(itemOrSpec, nil)
+            ct = parsed and tonumber(parsed.cultivationType) or 0
+        end
+    end
+    return ct == 1 or ct == 5
+end
+
+local function ResolveItemOrSpec(uidOrSpec)
+    if type(uidOrSpec) == "table" then
+        return uidOrSpec
+    end
+    local uid = tonumber(uidOrSpec) or 0
+    if uid <= 0 then
+        return nil
+    end
+    if StockPiler3.Inventory and StockPiler3.Inventory.ForEachItem then
+        local found = nil
+        StockPiler3.Inventory.ForEachItem(function(item)
+            if found == nil and (tonumber(item and item.uniqueID) or 0) == uid then
+                found = item
+            end
+        end)
+        if type(found) == "table" then
+            return found
+        end
+    end
+    if StockPiler3.Items and StockPiler3.Items.AsItemData then
+        return StockPiler3.Items.AsItemData(uid)
+    end
+    if StockPiler3.Items and StockPiler3.Items.ToSpec then
+        return StockPiler3.Items.ToSpec(uid)
+    end
+    return nil
+end
+
+--- Dump apo ProductKey + Matches for one or two bag/learned uids (butcher twin check).
+function MS.DumpFingerprintCompare(uidA, uidB, emit)
+    emit = type(emit) == "function" and emit or function() end
+    emit("=== StockPiler3 fingerprint ===")
+    local a = ResolveItemOrSpec(uidA)
+    local b = (uidB ~= nil and tostring(uidB) ~= "") and ResolveItemOrSpec(uidB) or nil
+    if type(a) ~= "table" then
+        emit("  A missing uid=" .. tostring(uidA))
+        emit("=== end fingerprint ===")
+        return
+    end
+    local productA = MS.AsApothecaryProduct(a, nil)
+    local keyA = type(productA) == "table" and MS.Key(productA) or ""
+    emit(string.format(
+        "  A uid=%s name=%s key=%s",
+        tostring(tonumber(a.uniqueID) or tonumber(a.uid) or uidA),
+        MS.Label(productA or a),
+        keyA
+    ))
+    if type(b) ~= "table" then
+        emit("=== end fingerprint ===")
+        return
+    end
+    local productB = MS.AsApothecaryProduct(b, nil)
+    local keyB = type(productB) == "table" and MS.Key(productB) or ""
+    emit(string.format(
+        "  B uid=%s name=%s key=%s",
+        tostring(tonumber(b.uniqueID) or tonumber(b.uid) or uidB),
+        MS.Label(productB or b),
+        keyB
+    ))
+    local matches = MS.ProductMatches(a, productB or b) == true
+        or MS.ProductMatches(b, productA or a) == true
+    emit(string.format(
+        "  ProductMatches=%s sameKey=%s",
+        tostring(matches),
+        tostring(keyA ~= "" and keyA == keyB)
+    ))
+    emit("=== end fingerprint ===")
+end

@@ -1,0 +1,486 @@
+----------------------------------------------------------------
+-- StockPiler3 Stores/InventoryStore — L0 counts + Flatten snapshot
+----------------------------------------------------------------
+
+StockPiler3 = StockPiler3 or {}
+StockPiler3.Inventory = StockPiler3.Inventory or {}
+local Inv = StockPiler3.Inventory
+
+Inv._snapGen = 0
+Inv._ready = false
+Inv._countByUid = {}
+Inv._slotIndex = { main = {}, craft = {} }
+Inv._itemBySlot = { main = {}, craft = {} }
+Inv._sampleByUid = {}
+-- MaterialSpec parse cache: cleared on snap bump.
+Inv._specParseCache = {}
+Inv._dirty = false
+Inv._dirtyFull = false
+Inv._needQueue = false
+Inv._snapPending = false
+Inv._snapPendingReason = nil
+Inv._pendingUidDelta = nil
+Inv._lastNetUidDelta = nil
+
+local function Bus()
+    return StockPiler3.EventBus
+end
+
+local function Events()
+    return StockPiler3.Events
+end
+
+local function SetSample(uid, item)
+    uid = tonumber(uid) or 0
+    if uid <= 0 then
+        return
+    end
+    if type(item) == "table" then
+        Inv._sampleByUid[uid] = item
+    end
+end
+
+local function ClearSampleIfUnused(uid)
+    uid = tonumber(uid) or 0
+    if uid <= 0 then
+        return
+    end
+    if (tonumber(Inv._countByUid[uid]) or 0) <= 0 then
+        Inv._sampleByUid[uid] = nil
+    end
+end
+
+local function BumpGenImmediate(reason, opts)
+    opts = type(opts) == "table" and opts or {}
+    Inv._snapGen = (tonumber(Inv._snapGen) or 0) + 1
+    Inv._snapPending = false
+    Inv._snapPendingReason = nil
+    Inv._pendingUidDelta = nil
+    if opts.keepLastNetDelta ~= true then
+        Inv._lastNetUidDelta = nil
+    end
+    Inv._specParseCache = {}
+    if StockPiler3.BagAdapter and StockPiler3.BagAdapter.InvalidateCache then
+        StockPiler3.BagAdapter.InvalidateCache()
+    end
+    local E = Events()
+    local B = Bus()
+    if B and E and E.INVENTORY_SNAPSHOT then
+        B.Fire(E.INVENTORY_SNAPSHOT, { snapGen = Inv._snapGen, reason = reason })
+    end
+end
+
+local function BumpGenDeferred(reason)
+    Inv._snapPending = true
+    if Inv._snapPendingReason == nil then
+        Inv._snapPendingReason = reason
+    end
+end
+
+local function RebuildFromBags(forceRefresh)
+    local BA = StockPiler3.BagAdapter
+    if not BA then
+        return false
+    end
+    local bags = forceRefresh and BA.FetchForce() or BA.FetchLight()
+    local counts = {}
+    local slotIndex = { main = {}, craft = {} }
+    local itemBySlot = { main = {}, craft = {} }
+    local sampleByUid = {}
+    for i = 1, #bags do
+        local entry = bags[i]
+        BA.IterateSlots(entry, function(bagType, slot, item)
+            local uid, qty = BA.SlotQty(item)
+            if uid > 0 and qty > 0 then
+                counts[uid] = (counts[uid] or 0) + qty
+                local bagSlots = slotIndex[bagType]
+                if type(bagSlots) ~= "table" then
+                    bagSlots = {}
+                    slotIndex[bagType] = bagSlots
+                end
+                bagSlots[slot] = { uid = uid, qty = qty }
+                local items = itemBySlot[bagType]
+                if type(items) ~= "table" then
+                    items = {}
+                    itemBySlot[bagType] = items
+                end
+                items[slot] = item
+                if sampleByUid[uid] == nil then
+                    sampleByUid[uid] = item
+                end
+            end
+        end)
+    end
+    Inv._countByUid = counts
+    Inv._slotIndex = slotIndex
+    Inv._itemBySlot = itemBySlot
+    Inv._sampleByUid = sampleByUid
+    Inv._specParseCache = {}
+    Inv._ready = true
+    Inv._dirty = false
+    Inv._dirtyFull = false
+    BumpGenImmediate(forceRefresh and "L3-full" or "L2-light")
+    return true
+end
+
+--- Publish one snapGen for all L0 AdjustUid since last flush.
+--- Zero-net rearrange/swap skips snapGen + INVENTORY_SNAPSHOT.
+function Inv.FlushPendingSnapGen()
+    if Inv._snapPending ~= true then
+        return false
+    end
+    local pend = Inv._pendingUidDelta
+    Inv._pendingUidDelta = nil
+    if type(pend) == "table" then
+        local net = {}
+        local anyNet = false
+        for uid, d in pairs(pend) do
+            uid = tonumber(uid) or 0
+            d = tonumber(d) or 0
+            if uid > 0 and d ~= 0 then
+                net[uid] = d
+                anyNet = true
+            end
+        end
+        if not anyNet then
+            Inv._snapPending = false
+            Inv._snapPendingReason = nil
+            Inv._lastNetUidDelta = nil
+            return false
+        end
+        Inv._lastNetUidDelta = net
+        BumpGenImmediate(Inv._snapPendingReason or "L0-batch", { keepLastNetDelta = true })
+        return true
+    end
+    Inv._lastNetUidDelta = nil
+    BumpGenImmediate(Inv._snapPendingReason or "L0-batch")
+    return true
+end
+
+--- Net uid deltas from the last L0 snap flush (nil = unknown / full rebuild).
+function Inv.GetLastNetUidDelta()
+    return Inv._lastNetUidDelta
+end
+
+function Inv.GetSnapGen()
+    return tonumber(Inv._snapGen) or 0
+end
+
+function Inv.CountByUid(uid)
+    uid = tonumber(uid) or 0
+    if uid <= 0 or Inv._ready ~= true then
+        return 0
+    end
+    return tonumber(Inv._countByUid[uid]) or 0
+end
+
+function Inv.AdjustUid(uid, delta, reason)
+    uid = tonumber(uid) or 0
+    delta = tonumber(delta) or 0
+    if uid <= 0 or delta == 0 or Inv._ready ~= true then
+        return false
+    end
+    local nextCount = (tonumber(Inv._countByUid[uid]) or 0) + delta
+    if nextCount < 0 then
+        Inv._dirtyFull = true
+        nextCount = 0
+    end
+    if nextCount == 0 then
+        Inv._countByUid[uid] = nil
+        Inv._sampleByUid[uid] = nil
+    else
+        Inv._countByUid[uid] = nextCount
+    end
+    local pend = Inv._pendingUidDelta
+    if type(pend) ~= "table" then
+        pend = {}
+        Inv._pendingUidDelta = pend
+    end
+    pend[uid] = (tonumber(pend[uid]) or 0) + delta
+    BumpGenDeferred(reason or "adjust")
+    return true
+end
+
+function Inv.MarkDirty(opts)
+    opts = type(opts) == "table" and opts or {}
+    Inv._dirty = true
+    if opts.full == true then
+        Inv._dirtyFull = true
+    end
+    if opts.needQueue == true then
+        Inv._needQueue = true
+    end
+    local E = Events()
+    local B = Bus()
+    if B and E and E.INVENTORY_DIRTY then
+        B.Fire(E.INVENTORY_DIRTY, {
+            reason = tostring(opts.reason or "unknown"),
+            needQueue = Inv._needQueue == true,
+        })
+    end
+    if StockPiler3.Scheduler and StockPiler3.Scheduler.EnqueueBagFlush then
+        StockPiler3.Scheduler.EnqueueBagFlush(opts.needQueue == true)
+    end
+end
+
+function Inv.OnSlotUpdated(bagType, slot, bagTable)
+    bagType = tostring(bagType or "main")
+    slot = tonumber(slot) or 0
+    if slot <= 0 then
+        Inv.MarkDirty({ reason = "slot-unknown", full = true })
+        return false
+    end
+    if Inv._ready ~= true or Inv._dirtyFull == true then
+        Inv.MarkDirty({ reason = "slot-not-ready" })
+        return false
+    end
+    local BA = StockPiler3.BagAdapter
+    if not BA then
+        Inv.MarkDirty({ reason = "no-adapter", full = true })
+        return false
+    end
+    local bagSlots = Inv._slotIndex[bagType]
+    if type(bagSlots) ~= "table" then
+        bagSlots = {}
+        Inv._slotIndex[bagType] = bagSlots
+    end
+    local itemSlots = Inv._itemBySlot[bagType]
+    if type(itemSlots) ~= "table" then
+        itemSlots = {}
+        Inv._itemBySlot[bagType] = itemSlots
+    end
+    local old = bagSlots[slot]
+    if type(old) ~= "table" then
+        old = { uid = 0, qty = 0 }
+    end
+    local newUid, newQty, item
+    if type(bagTable) == "table" and BA.ApplySlot then
+        newUid, newQty, item = BA.ApplySlot(bagType, slot, bagTable)
+    elseif type(bagTable) == "table" and BA.ReadSlotFromTable then
+        newUid, newQty, item = BA.ReadSlotFromTable(bagTable, slot)
+    else
+        newUid, newQty, item = BA.ReadSlot(bagType, slot)
+    end
+    newUid = tonumber(newUid) or 0
+    newQty = tonumber(newQty) or 0
+    if old.uid == newUid then
+        local delta = newQty - (tonumber(old.qty) or 0)
+        if delta ~= 0 then
+            Inv.AdjustUid(newUid, delta, "L0-slot")
+        end
+    else
+        if (tonumber(old.uid) or 0) > 0 then
+            Inv.AdjustUid(old.uid, -(tonumber(old.qty) or 0), "L0-slot-clear")
+            ClearSampleIfUnused(old.uid)
+        end
+        if newUid > 0 then
+            Inv.AdjustUid(newUid, newQty, "L0-slot-set")
+        end
+    end
+    if newUid > 0 and newQty > 0 then
+        bagSlots[slot] = { uid = newUid, qty = newQty }
+        itemSlots[slot] = item
+        SetSample(newUid, item)
+    else
+        bagSlots[slot] = nil
+        itemSlots[slot] = nil
+    end
+    Inv._dirty = false
+    return true
+end
+
+--- Bridge / hitch labels historically say ApplySlots; same entry as ApplySlotUpdates.
+function Inv.ApplySlots(bagType, updatedSlots, reason)
+    return Inv.ApplySlotUpdates(bagType, updatedSlots, reason)
+end
+
+function Inv.ForceFullRefresh()
+    Inv._dirtyFull = true
+    Inv.MarkDirty({ full = true, reason = "force" })
+end
+
+function Inv.ApplySlotUpdates(bagType, updatedSlots, reason)
+    bagType = tostring(bagType or "main")
+    reason = tostring(reason or "slot-updates")
+    if type(updatedSlots) ~= "table" then
+        Inv.MarkDirty({ reason = reason .. "-noslots", full = true })
+        return false
+    end
+    local slots = {}
+    local n = 0
+    for i, v in ipairs(updatedSlots) do
+        local slot = tonumber(v) or 0
+        if slot > 0 then
+            n = n + 1
+            slots[n] = slot
+        end
+    end
+    if n == 0 then
+        for k, v in pairs(updatedSlots) do
+            local slot = tonumber(k)
+            if slot == nil or slot <= 0 then
+                slot = tonumber(v) or 0
+            end
+            if slot > 0 then
+                n = n + 1
+                slots[n] = slot
+            end
+        end
+    end
+    if n == 0 then
+        Inv.MarkDirty({ reason = reason .. "-empty", full = true })
+        return false
+    end
+    local BA = StockPiler3.BagAdapter
+    local bagTable = nil
+    if BA and BA.GetBagTable then
+        bagTable = BA.GetBagTable(bagType)
+    end
+    if type(bagTable) ~= "table" and Inv._ready == true then
+        Inv.MarkDirty({ reason = reason .. "-nobag" })
+        return false
+    end
+    for i = 1, n do
+        if Inv.OnSlotUpdated(bagType, slots[i], bagTable) ~= true then
+            return false
+        end
+    end
+    return true
+end
+
+function Inv.Flatten(opts)
+    opts = type(opts) == "table" and opts or {}
+    return RebuildFromBags(opts.force == true or opts.forceEngine == true)
+end
+
+function Inv.Flush(opts)
+    opts = type(opts) == "table" and opts or {}
+    local force = opts.force == true or Inv._dirtyFull == true or Inv._ready ~= true
+    if force then
+        RebuildFromBags(opts.forceEngine == true)
+    elseif Inv._dirty == true then
+        RebuildFromBags(false)
+    end
+    local needQueue = Inv._needQueue == true
+    Inv._needQueue = false
+    return needQueue
+end
+
+function Inv.RefreshAllIfNeeded(opts)
+    opts = type(opts) == "table" and opts or {}
+    if opts.force == true or Inv._ready ~= true or Inv._dirtyFull == true then
+        Inv.Flush({ force = true, forceEngine = opts.force == true })
+        return true
+    end
+    if Inv._dirty == true then
+        if StockPiler3.Scheduler and StockPiler3.Scheduler.EnqueueBagFlush then
+            StockPiler3.Scheduler.EnqueueBagFlush(false)
+        else
+            Inv.Flush({ force = false })
+        end
+        return true
+    end
+    return false
+end
+
+function Inv.GetSample(uid)
+    uid = tonumber(uid) or 0
+    if uid <= 0 then
+        return nil
+    end
+    local sample = Inv._sampleByUid[uid]
+    if type(sample) == "table" then
+        return sample
+    end
+    if type(Inv._itemBySlot) == "table" then
+        for _, slots in pairs(Inv._itemBySlot) do
+            if type(slots) == "table" then
+                for _, item in pairs(slots) do
+                    if type(item) == "table" and (tonumber(item.uniqueID) or 0) == uid then
+                        Inv._sampleByUid[uid] = item
+                        return item
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+--- fn(item [, bagKey, slot]). Extra args are optional (Lua ignores unused params).
+function Inv.ForEachItem(fn)
+    if type(fn) ~= "function" then
+        return
+    end
+    if Inv._ready ~= true then
+        Inv.Flush({ force = true, forceEngine = false })
+    end
+    if Inv._ready == true and type(Inv._itemBySlot) == "table" then
+        for bagKey, slots in pairs(Inv._itemBySlot) do
+            if type(slots) == "table" then
+                for slot, item in pairs(slots) do
+                    if type(item) == "table" then
+                        fn(item, bagKey, tonumber(slot) or 0)
+                    end
+                end
+            end
+        end
+        return
+    end
+    local BA = StockPiler3.BagAdapter
+    if not BA then
+        return
+    end
+    local bags = BA.FetchLight()
+    for i = 1, #bags do
+        local bag = bags[i]
+        local defaultKey = type(bag) == "table" and tostring(bag.bagType or bag.bagKey or "craft") or "craft"
+        BA.IterateSlots(bag, function(bagType, slot, item)
+            if type(item) == "table" then
+                fn(item, tostring(bagType or defaultKey), tonumber(slot) or 0)
+            end
+        end)
+    end
+end
+
+function Inv.CanUseCraftingItem(item)
+    if type(item) ~= "table" then
+        return false
+    end
+    if DataUtils and type(DataUtils.PlayerTradeSkillLevelIsEnoughForItem) == "function" then
+        local ok, enough
+        if StockPiler3.Debug and StockPiler3.Debug.TryCallQuiet then
+            ok, enough = StockPiler3.Debug.TryCallQuiet(
+                "DataUtils.PlayerTradeSkillLevelIsEnoughForItem",
+                DataUtils.PlayerTradeSkillLevelIsEnoughForItem,
+                item
+            )
+        else
+            ok, enough = pcall(DataUtils.PlayerTradeSkillLevelIsEnoughForItem, item)
+        end
+        if ok then
+            return enough == true
+        end
+    end
+    local req = tonumber(item.craftingSkillRequirement) or 0
+    if req <= 0 then
+        return true
+    end
+    local cultType = tonumber(item.cultivationType) or 0
+    local Caps = StockPiler3.TradeSkillCaps
+    local level = 0
+    if cultType ~= 0 then
+        level = Caps and Caps.GetCultSkill and Caps.GetCultSkill() or 0
+    else
+        level = Caps and Caps.GetApoSkill and Caps.GetApoSkill() or 0
+    end
+    return level >= req
+end
+
+function Inv.IsDirty()
+    return Inv._dirty == true or Inv._dirtyFull == true
+end
+
+function Inv.ClearSpecParseCache()
+    Inv._specParseCache = {}
+end

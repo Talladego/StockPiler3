@@ -1,0 +1,204 @@
+----------------------------------------------------------------
+-- StockPiler3 Stores/GardenStore — plot cache (soft dirty vs planGen)
+----------------------------------------------------------------
+
+StockPiler3 = StockPiler3 or {}
+StockPiler3.Garden = StockPiler3.Garden or {}
+local Garden = StockPiler3.Garden
+
+Garden._gen = 0
+Garden._planGen = 0
+Garden._plots = {}
+Garden._syncAllDue = false
+Garden._syncAllFrame = 0
+Garden._lastFiredGen = 0
+
+local function IsPlotEmptyStage(stage)
+    if GameData and GameData.CultivationStage then
+        return (tonumber(stage) or 0) == (GameData.CultivationStage.EMPTY or 0)
+    end
+    return (tonumber(stage) or 0) == 0
+end
+
+--- Plant/empty/lock/seed changes invalidate plan; stage-timer pulses do not.
+local function ActionablePlotChange(prev, row)
+    if type(prev) ~= "table" then
+        return true
+    end
+    if (tonumber(prev.seedUid) or 0) ~= (tonumber(row.seedUid) or 0) then
+        return true
+    end
+    if (tonumber(prev.plantUid) or 0) ~= (tonumber(row.plantUid) or 0) then
+        return true
+    end
+    if (prev.locked == true) ~= (row.locked == true) then
+        return true
+    end
+    if IsPlotEmptyStage(prev.stage) ~= IsPlotEmptyStage(row.stage) then
+        return true
+    end
+    return false
+end
+
+local function AdditiveFillKey(row)
+    if type(row) ~= "table" or type(row.additives) ~= "table" then
+        return ""
+    end
+    local parts = {}
+    for cultType, slot in pairs(row.additives) do
+        if type(slot) == "table" and (slot.filled == true or (tonumber(slot.id) or 0) ~= 0) then
+            parts[#parts + 1] = tostring(cultType) .. ":"
+                .. tostring(tonumber(slot.uniqueID) or tonumber(slot.id) or 0)
+        end
+    end
+    table.sort(parts)
+    return table.concat(parts, ",")
+end
+
+local function ApplyPlotRow(plotNum, row)
+    local prev = Garden._plots[plotNum]
+    local anyChange = type(prev) ~= "table" or prev.stage ~= row.stage
+        or prev.seedUid ~= row.seedUid or prev.plantUid ~= row.plantUid
+        or (prev.locked == true) ~= (row.locked == true)
+        or AdditiveFillKey(prev) ~= AdditiveFillKey(row)
+        or (tonumber(prev.stageTimer) or 0) ~= (tonumber(row.stageTimer) or 0)
+    local planChange = ActionablePlotChange(prev, row)
+    Garden._plots[plotNum] = row
+    return anyChange, planChange
+end
+
+local function FireGardenChanged(gardenGen, plotNum, soft)
+    gardenGen = tonumber(gardenGen) or 0
+    if gardenGen <= 0 then
+        return
+    end
+    if (tonumber(Garden._lastFiredGen) or 0) == gardenGen then
+        return
+    end
+    Garden._lastFiredGen = gardenGen
+    local B = StockPiler3.EventBus
+    local E = StockPiler3.Events
+    if not (B and E) then
+        return
+    end
+    if E.GARDEN_SNAPSHOT then
+        B.Fire(E.GARDEN_SNAPSHOT, { gardenGen = gardenGen, soft = soft == true })
+    end
+    if E.GARDEN_DIRTY then
+        B.Fire(E.GARDEN_DIRTY, {
+            gardenGen = gardenGen,
+            plotNum = plotNum,
+            soft = soft == true,
+            planGen = Garden.GetPlanGen(),
+        })
+    end
+end
+
+function Garden.GetGen()
+    return tonumber(Garden._gen) or 0
+end
+
+function Garden.GetPlanGen()
+    return tonumber(Garden._planGen) or 0
+end
+
+function Garden.GetPlots()
+    local out = {}
+    for k, v in pairs(Garden._plots) do
+        out[k] = v
+    end
+    return out
+end
+
+function Garden.GetPlot(plotNum)
+    plotNum = tonumber(plotNum) or 0
+    if plotNum <= 0 then
+        return nil
+    end
+    return Garden._plots[plotNum]
+end
+
+function Garden.SyncAll()
+    local frame = tonumber(StockPiler3.FrameCounter) or 0
+    if frame > 0 and Garden._syncAllFrame == frame then
+        return
+    end
+    Garden._syncAllFrame = frame
+    Garden._syncAllDue = false
+    local CA = StockPiler3.CultivatorAdapter
+    if not CA then
+        return
+    end
+    local n = CA.MaxPlotSlots and CA.MaxPlotSlots() or CA.NumPlots()
+    local changed = false
+    local planChanged = false
+    for plotNum = 1, n do
+        local row = CA.GetPlotInfo and CA.GetPlotInfo(plotNum) or CA.ReadPlot(plotNum)
+        local anyChange, plotPlanChange = ApplyPlotRow(plotNum, row)
+        if anyChange then
+            changed = true
+        end
+        if plotPlanChange then
+            planChanged = true
+        end
+        if StockPiler3.CraftChatAdapter and StockPiler3.CraftChatAdapter.TryConfirmFromPlot then
+            StockPiler3.CraftChatAdapter.TryConfirmFromPlot(plotNum, row)
+        end
+    end
+    if changed then
+        Garden._gen = (tonumber(Garden._gen) or 0) + 1
+        if planChanged then
+            Garden._planGen = (tonumber(Garden._planGen) or 0) + 1
+        end
+        -- Soft dirty: stage-only pulse still bumps gardenGen but planGen may stay.
+        FireGardenChanged(Garden._gen, 0, planChanged ~= true)
+    end
+end
+
+function Garden.SyncPlot(plotNum)
+    plotNum = tonumber(plotNum) or 0
+    local CA = StockPiler3.CultivatorAdapter
+    if plotNum <= 0 or not CA then
+        return
+    end
+    local genBefore = tonumber(Garden._gen) or 0
+    local planGenBefore = tonumber(Garden._planGen) or 0
+    local row = CA.GetPlotInfo and CA.GetPlotInfo(plotNum) or CA.ReadPlot(plotNum)
+    local anyChange, planChange = ApplyPlotRow(plotNum, row)
+    if StockPiler3.CraftChatAdapter and StockPiler3.CraftChatAdapter.TryConfirmFromPlot then
+        StockPiler3.CraftChatAdapter.TryConfirmFromPlot(plotNum, row)
+    end
+    if anyChange then
+        Garden._gen = genBefore + 1
+    end
+    if planChange then
+        Garden._planGen = planGenBefore + 1
+    end
+    if (tonumber(Garden._gen) or 0) > genBefore then
+        FireGardenChanged(Garden._gen, plotNum, planChange ~= true)
+    end
+end
+
+function Garden.FlushPendingSyncAll()
+    if Garden._syncAllDue ~= true then
+        return
+    end
+    Garden.SyncAll()
+end
+
+function Garden.OnCultivationUpdated()
+    local plotNum = 0
+    if GameData and GameData.Player and GameData.Player.Cultivation then
+        plotNum = tonumber(GameData.Player.Cultivation.UpdatedIndex) or 0
+    end
+    if plotNum > 0 then
+        Garden.SyncPlot(plotNum)
+    else
+        Garden._syncAllDue = true
+    end
+end
+
+function Garden.MarkSoftDirty(plotNum)
+    Garden._gen = (tonumber(Garden._gen) or 0) + 1
+    FireGardenChanged(Garden._gen, tonumber(plotNum) or 0, true)
+end
