@@ -867,6 +867,16 @@ function Buy.IssueOne(opId)
     local jobs = Buy.CollectBuyJobs()
     if type(jobs) ~= "table" or #jobs == 0 then
         if (tonumber(Buy._visitBought) or 0) > 0 then
+            local meta = StockPiler3.Planner and StockPiler3.Planner._vendorBuyJobsMeta
+            if type(meta) == "table" then
+                LogBuy(string.format(
+                    "idle-no-jobs source=%s skippedContainers=%s maxBottleGap=%s focusWatches=%s",
+                    tostring(meta.source),
+                    tostring(meta.skippedContainers),
+                    tostring(meta.maxBottleGap),
+                    tostring(meta.focusWatchCount)
+                ))
+            end
             ArmPlanAfterBuyFill("idle-no-jobs")
         end
         return done(false)

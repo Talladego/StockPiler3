@@ -3277,16 +3277,11 @@ function Planner.CollectVendorBuyJobs(opts)
         allowPlantBuys = not (Caps and Caps.CanAutoGrow and Caps.CanAutoGrow() == true)
     end
 
-    -- fillOpts.fallback: skip shared containers (buy non-growable bottlenecks only).
-    local function AddBuyNeed(pool, spec, role, need, bottleGap, fillOpts)
+    local function AddBuyNeed(pool, spec, role, need, bottleGap)
         if type(spec) ~= "table" or (tonumber(need) or 0) <= 0 then
             return
         end
-        fillOpts = type(fillOpts) == "table" and fillOpts or {}
         role = role or spec.role
-        if fillOpts.fallback == true and tostring(role or "") == "container" then
-            return
-        end
         if SpecIsHarvestByproduct(spec) then
             return
         end
@@ -3376,18 +3371,14 @@ function Planner.CollectVendorBuyJobs(opts)
         return out
     end
 
-    local function FillPoolFromFocus(pool, focus, fillOpts)
-        if type(focus) ~= "table" or type(focus.watches) ~= "table" then
+    local function FillPoolFromWatches(pool, watches)
+        if type(watches) ~= "table" then
             return
         end
-        fillOpts = type(fillOpts) == "table" and fillOpts or {}
-        for i = 1, #focus.watches do
-            local fw = focus.watches[i]
+        for i = 1, #watches do
+            local fw = watches[i]
             local recipe = fw and fw.recipe
             local deficit = math.max(0, (tonumber(fw and fw.target) or 0) - (tonumber(fw and fw.stock) or 0))
-            if deficit <= 0 and type(fw) == "table" then
-                deficit = math.max(0, (tonumber(fw.target) or 0) - (tonumber(fw.stock) or 0))
-            end
             if type(recipe) == "table" and deficit > 0 then
                 local RS = RecipeSpec()
                 if RS and RS.HydrateRecipeSlots then
@@ -3405,8 +3396,7 @@ function Planner.CollectVendorBuyJobs(opts)
                             spec,
                             slot.role or spec.role,
                             craftsNeeded * per,
-                            fw.bottleGap,
-                            fillOpts
+                            fw.bottleGap
                         )
                     end
                 end
@@ -3414,44 +3404,17 @@ function Planner.CollectVendorBuyJobs(opts)
         end
     end
 
-    local pool = {}
+    -- All buy candidates (not atMax-only): SpecKey pool sums shared flasks/mats.
     local focus = CollectFocus("buy")
-    local focusCount = type(focus.watches) == "table" and #focus.watches or 0
+    local watches = type(focus.allWatches) == "table" and focus.allWatches or focus.watches
+    local watchCount = type(watches) == "table" and #watches or 0
     Planner._vendorBuyJobsMeta.maxBottleGap = focus.maxBottleGap
-    Planner._vendorBuyJobsMeta.focusWatchCount = focusCount
-    FillPoolFromFocus(pool, focus, nil)
+    Planner._vendorBuyJobsMeta.focusWatchCount = watchCount
+    Planner._vendorBuyJobsMeta.skippedContainers = false
+    local pool = {}
+    FillPoolFromWatches(pool, watches)
     jobs = JobsFromPool(pool)
-    -- Covered+shared (gap=0): best-tier focus under-counts combined flask claim across
-    -- lower tiers. Buy across all candidates including containers before the
-    -- growable-only fallback (which skips containers).
-    if #jobs == 0
-        and (tonumber(focus.maxBottleGap) or 0) <= 0
-        and type(focus.allWatches) == "table"
-        and #focus.allWatches > 0
-    then
-        pool = {}
-        FillPoolFromFocus(pool, { watches = focus.allWatches }, nil)
-        jobs = JobsFromPool(pool)
-        if #jobs > 0 then
-            Planner._vendorBuyJobsMeta.source = "shared-all"
-            Planner._vendorBuyJobsMeta.focusWatchCount = #focus.allWatches
-            Planner._vendorBuyJobsMeta.skippedContainers = false
-            return jobs
-        end
-    end
-    -- Fair focus empty (e.g. max-gap watch only needs growables): fall back to all
-    -- shorts for buyable non-growable bottlenecks — never pooled containers.
-    if #jobs == 0 and type(focus.allWatches) == "table" and #focus.allWatches > 0 then
-        pool = {}
-        FillPoolFromFocus(pool, { watches = focus.allWatches }, { fallback = true })
-        jobs = JobsFromPool(pool)
-        Planner._vendorBuyJobsMeta.source = (#jobs > 0) and "fallback" or "none"
-        Planner._vendorBuyJobsMeta.focusWatchCount = #focus.allWatches
-        Planner._vendorBuyJobsMeta.skippedContainers = true
-    else
-        Planner._vendorBuyJobsMeta.source = (#jobs > 0) and "focus" or "none"
-        Planner._vendorBuyJobsMeta.skippedContainers = false
-    end
+    Planner._vendorBuyJobsMeta.source = (#jobs > 0) and "all" or "none"
     return jobs
 end
 

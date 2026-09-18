@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.87** — Seed buffer stamp: tip seedUids first; ResolveSeed cold-miss only; snapGen cache.
+**Version 0.3.88** — AutoBuy pools all watch deficits (shared flasks); drop container-skip fallback.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
