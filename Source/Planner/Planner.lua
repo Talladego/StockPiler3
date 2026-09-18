@@ -1752,8 +1752,17 @@ end
 
 --- All growable seed UIDs for this watch (recipe slots + tip). Shared mats across
 --- watches must appear here so a short cushion demotes every sharing row.
+--- Hot path: tip / prior stamp first; ResolveSeedForSpec only on cold miss.
 local function StampRowSeedBufferUids(row)
     if type(row) ~= "table" then
+        return
+    end
+    local snapGen = CurrentSnapGen()
+    local prior = row.seedBufferSeedUids
+    if type(prior) == "table" and #prior > 0
+        and snapGen > 0
+        and tonumber(row._seedBufferUidSnapGen) == snapGen
+    then
         return
     end
     local uids = {}
@@ -1765,31 +1774,7 @@ local function StampRowSeedBufferUids(row)
             uids[#uids + 1] = uid
         end
     end
-    local RS = RecipeSpec()
-    local SM = StockPiler3.SeedMap
-    local recipe = row.recipe or row.specRecipe
-    if type(recipe) == "table" and SM and SM.IsGrowableSpec then
-        if RS and RS.HydrateRecipeSlots then
-            RS.HydrateRecipeSlots(recipe)
-        end
-        local slots = recipe.slots or {}
-        for i = 1, #slots do
-            local slot = slots[i]
-            local spec = ResolveSlotSpec(slot)
-            if type(spec) == "table" and SM.IsGrowableSpec(spec) == true then
-                if not (SM.IsOneWayHarvestSpec and SM.IsOneWayHarvestSpec(spec) == true) then
-                    local seedUid = 0
-                    if SM.ResolveSeedForSpec then
-                        local seed = SM.ResolveSeedForSpec(spec)
-                        if type(seed) == "table" then
-                            seedUid = tonumber(seed.uniqueID or seed.uid) or 0
-                        end
-                    end
-                    add(seedUid)
-                end
-            end
-        end
-    end
+    -- Prefer plan tip seedUids (already resolved during status tip build).
     local tips = row.statusTipSlots
     if type(tips) == "table" then
         for i = 1, #tips do
@@ -1799,7 +1784,36 @@ local function StampRowSeedBufferUids(row)
             end
         end
     end
+    -- Cold miss only: ResolveSeed when tips did not yield any seed UIDs.
+    if #uids == 0 then
+        local RS = RecipeSpec()
+        local SM = StockPiler3.SeedMap
+        local recipe = row.recipe or row.specRecipe
+        if type(recipe) == "table" and SM and SM.IsGrowableSpec then
+            if RS and RS.HydrateRecipeSlots then
+                RS.HydrateRecipeSlots(recipe)
+            end
+            local slots = recipe.slots or {}
+            for i = 1, #slots do
+                local slot = slots[i]
+                local spec = ResolveSlotSpec(slot)
+                if type(spec) == "table" and SM.IsGrowableSpec(spec) == true then
+                    if not (SM.IsOneWayHarvestSpec and SM.IsOneWayHarvestSpec(spec) == true) then
+                        local seedUid = 0
+                        if SM.ResolveSeedForSpec then
+                            local seed = SM.ResolveSeedForSpec(spec)
+                            if type(seed) == "table" then
+                                seedUid = tonumber(seed.uniqueID or seed.uid) or 0
+                            end
+                        end
+                        add(seedUid)
+                    end
+                end
+            end
+        end
+    end
     row.seedBufferSeedUids = uids
+    row._seedBufferUidSnapGen = snapGen
 end
 
 local function SeedBufferShort(recipe, potionKey, row)
@@ -1817,7 +1831,14 @@ local function SeedBufferShort(recipe, potionKey, row)
     -- Stocked watches still enforce buffer (protect seed lines from exhaustion).
     if RS and RS.WatchHasSeedBufferShort then
         if type(row) == "table" then
-            StampRowSeedBufferUids(row)
+            local snapGen = CurrentSnapGen()
+            local prior = row.seedBufferSeedUids
+            local stamped = type(prior) == "table" and #prior > 0
+                and snapGen > 0
+                and tonumber(row._seedBufferUidSnapGen) == snapGen
+            if not stamped then
+                StampRowSeedBufferUids(row)
+            end
         end
         local seedUids = type(row) == "table" and row.seedBufferSeedUids or nil
         return RS.WatchHasSeedBufferShort(recipe, { seedUids = seedUids }) == true

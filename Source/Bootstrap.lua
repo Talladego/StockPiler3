@@ -3,7 +3,7 @@
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
-StockPiler3.Version = L"0.3.86"
+StockPiler3.Version = L"0.3.87"
 
 local function T(key, tokens)
     if StockPiler3.T then
