@@ -13,6 +13,33 @@ StockPiler3 = StockPiler3 or {}
 StockPiler3.MaterialSpec = StockPiler3.MaterialSpec or {}
 local MS = StockPiler3.MaterialSpec
 
+local function T(key, tokens)
+    if StockPiler3.T then
+        return StockPiler3.T(key, tokens)
+    end
+    return L"[" .. towstring(tostring(key or "")) .. L"]"
+end
+
+local function CultivationTypes()
+    if GameData and GameData.CultivationTypes then
+        return GameData.CultivationTypes
+    end
+    return { NONE = 0, SEED = 1, SOIL = 2, WATERCAN = 3, NUTRIENT = 4, SPORE = 5 }
+end
+
+--- Soil / Water / Nutrient plot additives — never apo recipe mats.
+local function CultivationTypeIsAdditive(cultType)
+    cultType = tonumber(cultType) or 0
+    if cultType <= 0 then
+        return false
+    end
+    local types = CultivationTypes()
+    local soil = tonumber(types.SOIL) or 2
+    local water = tonumber(types.WATERCAN) or 3
+    local nutrient = tonumber(types.NUTRIENT) or 4
+    return cultType == soil or cultType == water or cultType == nutrient
+end
+
 local function Inv()
     return StockPiler3.Inventory
 end
@@ -183,6 +210,7 @@ local function SlotTypeConstants()
         MULTIPLIER = 4,
         CONTAINER = 5,
         CONTAINER_DYE = 6,
+        CONTAINER_ESSENCE = 7,
         GOLDWEED = 10,
         STIMULANT = 18,
     }
@@ -371,6 +399,7 @@ end
 local DESC_EFFECT_PATTERNS = {
     { "intelligence", "int" },
     { "strength", "str" },
+    { "power potion", "str" },
     { "willpower", "wil" },
     { "toughness", "tou" },
     { "ballistic skill", "rskill" },
@@ -654,6 +683,24 @@ local function SpecLooksThin(spec)
         and (tonumber(spec.skillLevel) or 0) <= 0
 end
 
+--- Soil / Water / Nutrient (and Classify heuristics). Never AutoBuy / ProductMatches as apo mats.
+function MS.IsCultivationAdditive(itemOrSpec)
+    if type(itemOrSpec) ~= "table" then
+        return false
+    end
+    if CultivationTypeIsAdditive(itemOrSpec.cultivationType) then
+        return true
+    end
+    local AD = StockPiler3.Additives
+    if AD and AD.Classify and not IsMaterialSpec(itemOrSpec) then
+        local info = AD.Classify(itemOrSpec)
+        if type(info) == "table" and CultivationTypeIsAdditive(info.cultType) then
+            return true
+        end
+    end
+    return false
+end
+
 local function EnrichFromLearnedItems(other, itemData, roleHint)
     if type(other) ~= "table" or not SpecLooksThin(other) then
         return other
@@ -705,7 +752,19 @@ function MS.Matches(itemData, spec)
     end
     -- Thin bag parses: prefer learned Items fingerprint (Artisan's vials, etc.).
     other = EnrichFromLearnedItems(other, itemData, spec.role)
-    if other == nil or other.incomplete == true then
+    if other == nil then
+        return false
+    end
+    local role = spec.role or other.role or "ingredient"
+    -- Incomplete mains stay uid-bound; incomplete containers need slot enrich.
+    if other.incomplete == true and role ~= "container" then
+        return false
+    end
+    -- Plot additives never match apo recipe slots (even if skill tiers coincide).
+    if role ~= "" and role ~= "ingredient"
+        and (MS.IsCultivationAdditive(other) or MS.IsCultivationAdditive(itemData))
+        and (tonumber(spec.cultivationType) or 0) == 0
+    then
         return false
     end
     -- Same uid always matches (fast path for exact stack).
@@ -717,14 +776,20 @@ function MS.Matches(itemData, spec)
 
     local otherBonuses = NormalizeBonusKeys(other.bonuses)
     local specBonuses = NormalizeBonusKeys(spec.bonuses)
-    local role = spec.role or other.role or "ingredient"
     if tonumber(other.tradeSkill) ~= tonumber(spec.tradeSkill) then
         return false
     end
     if (tonumber(other.cultivationType) or 0) ~= (tonumber(spec.cultivationType) or 0) then
         return false
     end
-    if tonumber(other.skillLevel) ~= tonumber(spec.skillLevel) then
+    local otherSkill = tonumber(other.skillLevel) or 0
+    if otherSkill <= 0 and type(itemData) == "table" then
+        otherSkill = tonumber(itemData.craftingSkillRequirement)
+            or tonumber(itemData.skillLevel)
+            or tonumber(itemData.skillReq)
+            or 0
+    end
+    if otherSkill ~= (tonumber(spec.skillLevel) or 0) then
         return false
     end
     if role == "main" then
@@ -744,18 +809,17 @@ function MS.Matches(itemData, spec)
         return true
     end
     if role == "container" then
+        -- Require slot + skill (SP2). Skill-only matched Fertile Soil (150 Cult Soil)
+        -- after ProductMatches stripped cultivationType.
         local oSlot = tonumber(other.slotType) or 0
         local sSlot = tonumber(spec.slotType) or 0
-        local oSkill = tonumber(other.skillLevel) or 0
-        local sSkill = tonumber(spec.skillLevel) or 0
-        if oSlot > 0 and sSlot > 0 then
-            return oSlot == sSlot and oSkill == sSkill
+        if oSlot <= 0 and type(itemData) == "table" then
+            oSlot = tonumber(itemData.slotType) or 0
         end
-        -- Thin bag items often omit TYPE but still expose craftingSkillRequirement.
-        if oSkill > 0 and oSkill == sSkill and sSlot > 0 then
-            return true
+        if oSlot <= 0 or sSlot <= 0 then
+            return false
         end
-        return false
+        return oSlot == sSlot and otherSkill == (tonumber(spec.skillLevel) or 0)
     end
     if role == "stabilizer" or role == "goldweed" then
         local B = CraftBonusRefs()
@@ -846,8 +910,12 @@ function MS.Key(spec, boundUid)
 end
 
 --- Normalize seed/plant forms to apo recipe context (ct:0) for planner have.
+--- Never convert Soil/Water/Nutrient additives into apo products (AutoBuy false hits).
 function MS.AsApothecaryProduct(specOrItem, roleHint)
     if type(specOrItem) ~= "table" then
+        return nil
+    end
+    if MS.IsCultivationAdditive(specOrItem) then
         return nil
     end
     local spec
@@ -857,6 +925,9 @@ function MS.AsApothecaryProduct(specOrItem, roleHint)
         spec = MS.Copy(MS.FromItemDataCached(specOrItem, roleHint))
     end
     if type(spec) ~= "table" then
+        return nil
+    end
+    if CultivationTypeIsAdditive(spec.cultivationType) then
         return nil
     end
     if roleHint and roleHint ~= "" then
@@ -880,6 +951,13 @@ function MS.ProductMatches(itemData, spec)
     if type(itemData) ~= "table" or type(spec) ~= "table" then
         return false
     end
+    -- Plot additives are never recipe mats (even after skill-tier coincidence).
+    if MS.IsCultivationAdditive(itemData) then
+        return false
+    end
+    if MS.IsCultivationAdditive(spec) then
+        return false
+    end
     if spec.incomplete == true then
         local boundUid = tonumber(spec.boundUid) or tonumber(spec.uid) or 0
         if boundUid <= 0 then
@@ -900,7 +978,9 @@ function MS.ProductMatches(itemData, spec)
         or (product.role == "main" and (product.incomplete == true or (tonumber(product.effectId) or 0) <= 0))
     if needsEnrich and uid > 0 and StockPiler3.Items and StockPiler3.Items.ToSpec then
         local learned = StockPiler3.Items.ToSpec(uid)
-        if type(learned) == "table" and learned.incomplete ~= true then
+        if type(learned) == "table" and learned.incomplete ~= true
+            and not MS.IsCultivationAdditive(learned)
+        then
             product = MS.AsApothecaryProduct(learned, role) or product
         end
     end
@@ -938,8 +1018,418 @@ function MS.Label(spec)
     return tostring(spec.role or "mat")
 end
 
-function MS.NeedLabel(spec)
-    return MS.Label(spec)
+local ROLE_LOC_KEYS = {
+    container = "material.role.container",
+    main = "material.role.main",
+    stabilizer = "material.role.stabilizer",
+    goldweed = "material.role.goldweed",
+    extender = "material.role.extender",
+    multiplier = "material.role.multiplier",
+    stimulant = "material.role.stimulant",
+    ingredient = "material.role.ingredient",
+}
+
+function MS.RoleTitle(role)
+    role = role or ""
+    local key = ROLE_LOC_KEYS[role]
+    if key then
+        return T(key)
+    end
+    if role ~= "" then
+        return towstring(role)
+    end
+    return T("material.role.material")
+end
+
+function MS.TradeSkillDisplayName(spec)
+    local ts = type(spec) == "table" and tonumber(spec.tradeSkill) or 0
+    if GameData and GameData.TradeSkills then
+        local g = GameData.TradeSkills
+        if ts == g.APOTHECARY then
+            return T("material.trade.apothecary")
+        end
+        if ts == g.CULTIVATION then
+            return T("material.trade.cultivation")
+        end
+        if ts == g.TALISMAN then
+            return T("material.trade.talisman")
+        end
+    end
+    if type(spec) == "table" and (tonumber(spec.cultivationType) or 0) ~= 0 then
+        return T("material.trade.cultivation")
+    end
+    return T("material.trade.apothecary")
+end
+
+local function EffectPhrase(key)
+    if not key or key == "" then
+        return nil
+    end
+    key = tostring(key)
+    local function FromLocale(localeKey)
+        if StockPiler3.Locale and StockPiler3.Locale.ResolveTemplate then
+            local template = StockPiler3.Locale.ResolveTemplate(localeKey)
+            if template ~= nil and template ~= L"" then
+                return template
+            end
+        end
+        return nil
+    end
+    local phrase = FromLocale("effect.full." .. key)
+    if phrase then
+        return phrase
+    end
+    -- Tip-friendly fallback when full name is missing (hybrids historically short-only).
+    phrase = FromLocale("effect.short." .. key)
+    if phrase then
+        return phrase
+    end
+    return towstring(key)
+end
+
+--- When craftingBonus EFFECT is missing (incomplete mains), try item/DB description.
+local function EnrichSpecEffectId(spec)
+    if type(spec) ~= "table" then
+        return nil
+    end
+    local existing = tonumber(spec.effectId) or 0
+    if existing > 0 then
+        return existing
+    end
+    local uid = tonumber(spec.boundUid) or tonumber(spec.uid) or tonumber(spec.uniqueID) or 0
+    if uid <= 0 then
+        return nil
+    end
+    local itemData = nil
+    if StockPiler3.Items and StockPiler3.Items.AsItemData then
+        itemData = StockPiler3.Items.AsItemData(uid)
+    end
+    local hasDesc = type(itemData) == "table"
+        and (itemData.description ~= nil or itemData.desc ~= nil or itemData.descriptionNarrow ~= nil)
+    if (not hasDesc) and type(GetDatabaseItemData) == "function" then
+        local ok, data = pcall(GetDatabaseItemData, uid)
+        if ok and type(data) == "table" then
+            itemData = data
+        end
+    end
+    if type(itemData) ~= "table" then
+        itemData = { uniqueID = uid }
+    end
+    local bonuses = ParseBonuses(itemData)
+    local effectId = ResolveMainEffectId(itemData, bonuses)
+    effectId = tonumber(effectId) or 0
+    if effectId > 0 then
+        -- Stamp for display; leave incomplete so Key stays uid-bound (no fx:).
+        spec.effectId = effectId
+        return effectId
+    end
+    return nil
+end
+
+function MS.EffectDisplayName(spec)
+    if type(spec) ~= "table" then
+        return nil
+    end
+    local effectId = tonumber(spec.effectId) or 0
+    if effectId <= 0 then
+        effectId = EnrichSpecEffectId(spec) or 0
+    end
+    if effectId <= 0 then
+        return nil
+    end
+    local ek = MS.EffectKeyFromEffectId(effectId)
+    if ek then
+        local phrase = EffectPhrase(ek)
+        if phrase and phrase ~= L"" then
+            return phrase
+        end
+    end
+    return T("material.tip.effect_id", { id = tostring(effectId) })
+end
+
+function MS.FormatBonusLine(ref, value)
+    ref = tonumber(ref) or 0
+    value = tonumber(value) or 0
+    if ref <= 0 or value == 0 then
+        return nil
+    end
+    local B = CraftBonusRefs()
+    local destroyRef = B.DESTROY_ON_FAIL or 15
+    if ref == destroyRef then
+        return nil
+    end
+    local text
+    if type(CraftItemInfo) == "table" and type(CraftItemInfo.FormatBonus) == "function" then
+        text = CraftItemInfo.FormatBonus(ref, value)
+    end
+    if text == nil or text == L"" then
+        local name
+        if type(CraftItemInfo) == "table" and type(CraftItemInfo.GetBonusName) == "function" then
+            name = CraftItemInfo.GetBonusName(ref)
+        end
+        if name == nil or name == L"" then
+            local fallback = {
+                [1] = T("material.bonus.stability"),
+                [2] = T("material.bonus.power"),
+                [3] = T("material.bonus.duration"),
+                [4] = T("material.bonus.multiplier"),
+                [12] = T("material.bonus.supercrit"),
+                [13] = T("material.bonus.fail"),
+                [14] = T("material.bonus.supercrit"),
+            }
+            name = fallback[ref] or T("material.bonus.generic")
+        end
+        local percentRefs = { [12] = true, [13] = true, [14] = true }
+        local valueStr = tostring(value)
+        if percentRefs[ref] then
+            if value < 0 then
+                text = T("material.bonus.pct", { value = valueStr, name = name })
+            else
+                text = T("material.bonus.pct_plus", { value = valueStr, name = name })
+            end
+        elseif value < 0 then
+            text = T("material.bonus.flat", { value = valueStr, name = name })
+        else
+            text = T("material.bonus.flat_plus", { value = valueStr, name = name })
+        end
+    end
+    local kind = "positive"
+    if value < 0 then
+        kind = "negative"
+    elseif ref == 3 or ref == 4 or ref == 12 or ref == 14 then
+        kind = "bonus"
+    end
+    return { text = text, kind = kind }
+end
+
+local function CultivationTypeName(cultType)
+    cultType = tonumber(cultType) or 0
+    local types = GameData and GameData.CultivationTypes
+    local spore = (types and types.SPORE) or 5
+    local seed = (types and types.SEED) or 1
+    if cultType == spore then
+        return T("material.cult.spore")
+    end
+    if cultType == seed or cultType == 0 then
+        return T("material.cult.seed")
+    end
+    if cultType == ((types and types.SOIL) or 2) then
+        return T("material.cult.soil")
+    end
+    if cultType == ((types and types.WATERCAN) or 3) then
+        return T("material.cult.watering_can")
+    end
+    if cultType == ((types and types.NUTRIENT) or 4) then
+        return T("material.cult.nutrient")
+    end
+    return T("material.cult.seed")
+end
+
+local function ResolveSeedItem(seed)
+    if type(seed) ~= "table" then
+        return nil
+    end
+    if (tonumber(seed.cultivationType) or 0) ~= 0 and type(seed.craftingBonus) == "table" then
+        return seed
+    end
+    local uid = tonumber(seed.uniqueID) or tonumber(seed.uid) or 0
+    if uid <= 0 then
+        return nil
+    end
+    local Inv = StockPiler3.Inventory
+    if Inv and Inv.ForEachItem then
+        local found = nil
+        Inv.ForEachItem(function(item)
+            if found == nil and (tonumber(item and item.uniqueID) or 0) == uid then
+                found = item
+            end
+        end)
+        if type(found) == "table" then
+            return found
+        end
+    end
+    if type(GetDatabaseItemData) == "function" then
+        local ok, data = pcall(GetDatabaseItemData, uid)
+        if ok and type(data) == "table" then
+            return data
+        end
+    end
+    return nil
+end
+
+function MS.GrowsPhrase(spec)
+    if type(spec) ~= "table" then
+        return nil
+    end
+    local role = spec.role or ""
+    if role == "main" then
+        local effectName = MS.EffectDisplayName(spec)
+        if effectName and effectName ~= L"" then
+            return T("material.tip.grows", { name = effectName })
+        end
+        return T("material.tip.grows_main")
+    end
+    if role ~= "" and role ~= "mat" and role ~= "ingredient" then
+        return T("material.tip.grows", { name = MS.RoleTitle(role) })
+    end
+    return nil
+end
+
+local function NeedBonusParts(spec)
+    local parts = {}
+    if type(spec) ~= "table" then
+        return parts
+    end
+    local B = CraftBonusRefs()
+    local skip = {
+        [B.CRAFTING_FAMILY] = true,
+        [B.EFFECT] = true,
+        [B.TYPE] = true,
+        [B.CRAFTING_LEVEL] = true,
+        [B.GROW_TIME] = true,
+        [B.DESTROY_ON_FAIL] = true,
+    }
+    local order = {
+        B.STABILITY,
+        B.POWER,
+        B.MULTIPLIER,
+        B.DURATION,
+        B.CRITICAL_CHANCE,
+        B.SPECIAL_CHANCE,
+        B.FAIL_CHANCE,
+        B.YIELD,
+    }
+    for i = 1, #order do
+        local ref = order[i]
+        if ref and not skip[ref] then
+            local val = spec.bonuses and spec.bonuses[ref]
+            if val and tonumber(val) ~= 0 then
+                local line = MS.FormatBonusLine(ref, val)
+                if line and line.text and line.text ~= L"" then
+                    parts[#parts + 1] = line.text
+                end
+            end
+        end
+    end
+    return parts
+end
+
+local function JoinNeedParts(parts)
+    if #parts == 0 then
+        return L""
+    end
+    local text = parts[1]
+    for i = 2, #parts do
+        text = text .. L", " .. parts[i]
+    end
+    return text
+end
+
+--- Split NeedLabel into header + parenthetical detail (no outer parens).
+function MS.NeedLabelParts(spec, context)
+    if type(spec) ~= "table" then
+        return { header = T("material.tip.fallback_material"), detail = L"" }
+    end
+    context = type(context) == "table" and context or {}
+    local asSeed = context.asSeed == true or type(context.seed) == "table"
+    local plantSpec = spec
+    local lineSpec = spec
+    local cultType = tonumber(spec.cultivationType) or 0
+    if asSeed then
+        local seedItem = ResolveSeedItem(context.seed)
+        if type(seedItem) == "table" then
+            local seedSpec = MS.FromItemData(seedItem)
+            if type(seedSpec) == "table" then
+                lineSpec = seedSpec
+                cultType = tonumber(seedSpec.cultivationType) or tonumber(seedItem.cultivationType) or cultType
+            else
+                cultType = tonumber(seedItem.cultivationType) or cultType
+            end
+        elseif (tonumber(context.cultType) or 0) > 0 then
+            cultType = tonumber(context.cultType)
+        end
+        if cultType <= 0 then
+            cultType = (GameData and GameData.CultivationTypes and GameData.CultivationTypes.SEED) or 1
+        end
+    end
+
+    local lv = tonumber(lineSpec.skillLevel) or tonumber(plantSpec.skillLevel) or 0
+    local trade = T("material.trade.apothecary")
+    local slot = MS.RoleTitle(plantSpec.role or lineSpec.role or "mat")
+    if asSeed then
+        trade = T("material.trade.cultivating")
+        slot = CultivationTypeName(cultType)
+        if lv <= 0 then
+            lv = tonumber(plantSpec.skillLevel) or 0
+        end
+    elseif (tonumber(lineSpec.cultivationType) or 0) ~= 0 then
+        trade = T("material.trade.cultivating")
+        slot = CultivationTypeName(lineSpec.cultivationType)
+    else
+        trade = MS.TradeSkillDisplayName(lineSpec)
+        if lineSpec.role == "container" then
+            local cit = SlotTypeConstants()
+            local st = tonumber(lineSpec.slotType) or 0
+            if st == (tonumber(cit.CONTAINER_ESSENCE) or 7) then
+                slot = T("material.slot.essence_container")
+            elseif st == (tonumber(cit.CONTAINER_DYE) or 6) then
+                slot = T("material.slot.dye_container")
+            else
+                slot = T("material.slot.container")
+            end
+        end
+    end
+
+    local header = T("material.tip.header", {
+        lv = tostring(lv),
+        trade = trade,
+        role = slot,
+    })
+    local paren = {}
+    if asSeed then
+        local grows = MS.GrowsPhrase(plantSpec)
+        if grows then
+            paren[#paren + 1] = grows
+        end
+    elseif (plantSpec.role or "") == "main" then
+        local effectName = MS.EffectDisplayName(plantSpec)
+        -- Learned incomplete mains often omit EFFECT; recipe/potion effectKey fills the tip.
+        if (effectName == nil or effectName == L"") and type(context.effectKey) == "string"
+            and context.effectKey ~= ""
+        then
+            effectName = EffectPhrase(context.effectKey)
+        end
+        if (effectName == nil or effectName == L"") and (tonumber(context.effectId) or 0) > 0 then
+            effectName = MS.EffectDisplayName({ effectId = tonumber(context.effectId) })
+        end
+        if effectName and effectName ~= L"" then
+            paren[#paren + 1] = effectName
+        end
+    end
+    local bonusSpec = lineSpec
+    if asSeed and type(lineSpec.bonuses) ~= "table" then
+        bonusSpec = plantSpec
+    end
+    local bonusParts = NeedBonusParts(bonusSpec)
+    for i = 1, #bonusParts do
+        paren[#paren + 1] = bonusParts[i]
+    end
+    return {
+        header = header,
+        detail = JoinNeedParts(paren),
+    }
+end
+
+--- Recipe-style slot line (header + optional detail parens).
+function MS.NeedLabel(spec, context)
+    local parts = MS.NeedLabelParts(spec, context)
+    if parts.detail ~= nil and parts.detail ~= L"" then
+        return T("material.tip.need_parens", {
+            header = parts.header,
+            detail = parts.detail,
+        })
+    end
+    return parts.header
 end
 
 --- True if item is a seed/spore (must not fill apo brew slots).

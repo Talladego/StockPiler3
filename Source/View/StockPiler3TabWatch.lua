@@ -147,10 +147,24 @@ local function EnsureWatchNameRarityColors(data)
     if type(data) ~= "table" then
         return 255, 255, 255
     end
-    if data.nameR then
+    local itemData = data.itemData
+    local needResolve = type(itemData) ~= "table"
+        or (tonumber(itemData.rarity) or 0) <= 0
+        or not (StockPiler3.Inventory and StockPiler3.Inventory.ItemDataHasUseBonus
+            and StockPiler3.Inventory.ItemDataHasUseBonus(itemData))
+    if needResolve and StockPiler3.Inventory and StockPiler3.Inventory.ResolvePotionItemData then
+        local uid = tonumber(data.uniqueID) or 0
+        itemData = StockPiler3.Inventory.ResolvePotionItemData(data.potionKey or data.potionBaseKey, uid, itemData)
+        if type(itemData) == "table" then
+            data.itemData = itemData
+        end
+    end
+    if data.nameR ~= nil and data.nameG ~= nil and data.nameB ~= nil
+        and type(data.itemData) == "table" and (tonumber(data.itemData.rarity) or 0) > 0
+    then
         return tonumber(data.nameR) or 255, tonumber(data.nameG) or 255, tonumber(data.nameB) or 255
     end
-    local itemData = data.itemData
+    itemData = data.itemData
     if itemData and DataUtils and DataUtils.GetItemRarityColor then
         local ok, color = pcall(DataUtils.GetItemRarityColor, itemData)
         if ok and type(color) == "table" then
@@ -160,6 +174,7 @@ local function EnsureWatchNameRarityColors(data)
             return data.nameR, data.nameG, data.nameB
         end
     end
+    data.nameR, data.nameG, data.nameB = 255, 255, 255
     return 255, 255, 255
 end
 
@@ -528,11 +543,13 @@ local function UpdateSeedBufferEnableCheckbox()
     if not DoesWindowExist(SEED_BUFFER_ENABLE_WIN) then
         return
     end
+    local canGrow = CanAutoGrowUi()
     local row = CharRow(false)
-    local on = type(row) ~= "table" or row.growSeedBufferEnabled ~= false
+    local on = canGrow and (type(row) ~= "table" or row.growSeedBufferEnabled ~= false)
     syncingUi = true
     ButtonSetCheckButtonFlag(SEED_BUFFER_ENABLE_WIN, true)
     ButtonSetPressedFlag(SEED_BUFFER_ENABLE_WIN, on)
+    ButtonSetDisabledFlag(SEED_BUFFER_ENABLE_WIN, not canGrow)
     syncingUi = false
 end
 
@@ -595,6 +612,34 @@ local function AdjustTarget(data, delta)
     AfterTargetChipChanged(data, potionKey, oldTarget, newTarget)
 end
 
+local function AdjustPriority(data, delta)
+    if type(data) ~= "table" then
+        return
+    end
+    local potionKey = data.potionRecipeKey or data.id or data.potionKey
+    if potionKey == nil or not StockPiler3.Watch or not StockPiler3.Watch.BumpPriorityTier then
+        return
+    end
+    local oldTier = tonumber(data.priorityTier)
+    if oldTier == nil and StockPiler3.Watch.GetPriorityTier then
+        oldTier = StockPiler3.Watch.GetPriorityTier(potionKey)
+    end
+    oldTier = tonumber(oldTier) or 1
+    local watch = StockPiler3.Watch.BumpPriorityTier(potionKey, delta)
+    local newTier = tonumber(watch and watch.priorityTier) or oldTier
+    if StockPiler3.Watch.GetPriorityTier then
+        newTier = StockPiler3.Watch.GetPriorityTier(potionKey)
+    end
+    if newTier == oldTier then
+        return
+    end
+    data.priorityTier = newTier
+    data.priorityTierText = towstring(tostring(newTier))
+    AfterWatchSettingsChanged()
+    -- Force rebuild so list re-sorts by tier.
+    StockPiler3TabWatch.Refresh({ forcePlan = true })
+end
+
 function StockPiler3TabWatch.Initialize()
     LabelSetText("SP3TabWatchBannerTitle", T("watch.banner_title"))
     LabelSetText("SP3TabWatchBannerText", T("watch.banner_text"))
@@ -608,7 +653,8 @@ function StockPiler3TabWatch.Initialize()
     TintStepper("SP3TabWatchSeedBufferChipBg")
     TintStepper("SP3TabWatchReserveChipBg")
     TintStepper("SP3TabWatchBudgetChipBg")
-    ButtonSetText("SP3TabWatchColPotion", T("watch.col.potion"))
+    ButtonSetText("SP3TabWatchColPrio", T("watch.col.prio"))
+    ButtonSetText("SP3TabWatchColPotion", T("watch.col.name"))
     ButtonSetText("SP3TabWatchColStock", T("watch.col.stock"))
     ButtonSetText("SP3TabWatchColStatus", T("watch.col.status"))
     ButtonSetText("SP3TabWatchColCraftable", T("watch.col.craftable"))
@@ -629,7 +675,7 @@ function StockPiler3TabWatch.RefreshSkillGates()
     local additives = canGrow and type(row) == "table" and row.autoGrowAdditives == true
     local autoBuy = canBuy and type(row) == "table" and row.autoBuyEnabled == true
     local combatPause = type(row) ~= "table" or row.autoGrowPauseCombat ~= false
-    local seedBufOn = type(row) ~= "table" or row.growSeedBufferEnabled ~= false
+    local seedBufOn = canGrow and (type(row) ~= "table" or row.growSeedBufferEnabled ~= false)
     local seedBuf = StockPiler3.Watch and StockPiler3.Watch.GetSeedBufferMin and StockPiler3.Watch.GetSeedBufferMin() or 5
     local reserve = type(row) == "table" and tonumber(row.autoBuyReserveGold) or 10
     local budget = type(row) == "table" and tonumber(row.autoBuyBudgetGold) or 50
@@ -664,11 +710,8 @@ function StockPiler3TabWatch.ClearRowPaintCache()
 end
 
 function StockPiler3TabWatch.InvalidateBrewChrome()
+    -- Row chip paint only. Clearing Ui brew/content keys forced mid-brew RefreshWatch.
     StockPiler3TabWatch._rowPaintKey = nil
-    if StockPiler3.Ui then
-        StockPiler3.Ui._watchUiLastKey = nil
-        StockPiler3.Ui._watchUiLastBrewKey = nil
-    end
 end
 
 function StockPiler3TabWatch.Refresh(opts)
@@ -741,6 +784,7 @@ function StockPiler3TabWatch.UpdateRows()
                     tostring(data.craftableText or ""),
                     tostring(data.craftable or 0),
                     tostring(data.targetText or data.target or 0),
+                    tostring(data.priorityTierText or data.priorityTier or 1),
                     tostring(data.statusKey or ""),
                     tostring(data.autoGrow == true),
                     tostring(data.craftableShared == true),
@@ -759,6 +803,10 @@ function StockPiler3TabWatch.UpdateRows()
                         lastIcon[rowIndex] = data.iconNum
                         SetIconTexture(rowName .. "Icon", data.iconNum)
                     end
+                    local prio = tonumber(data.priorityTier) or 1
+                    LabelSetText(rowName .. "Prio", data.priorityTierText or towstring(tostring(prio)))
+                    TintStepper(rowName .. "PrioChipBg")
+                    LabelSetTextColor(rowName .. "Prio", 255, 255, 255)
                     LabelSetText(rowName .. "Name", data.name or L"")
                     LabelSetTextColor(rowName .. "Name", nameR, nameG, nameB)
                     LabelSetText(rowName .. "Status", data.statusText or L"")
@@ -858,6 +906,10 @@ function StockPiler3TabWatch.OnToggleSeedBuffer()
     if syncingUi then
         return
     end
+    if not CanAutoGrowUi() then
+        UpdateSeedBufferEnableCheckbox()
+        return
+    end
     local row = CharRow(true)
     if type(row) ~= "table" then
         return
@@ -865,6 +917,7 @@ function StockPiler3TabWatch.OnToggleSeedBuffer()
     row.growSeedBufferEnabled = ButtonGetPressedFlag(SEED_BUFFER_ENABLE_WIN) == true
     NotifySettings(T("watch.seed_buffer", { state = OnOff(row.growSeedBufferEnabled) }))
     AfterWatchSettingsChanged()
+    UpdateSeedBufferEnableCheckbox()
 end
 
 function StockPiler3TabWatch.OnToggleAutoBuy()
@@ -904,6 +957,10 @@ function StockPiler3TabWatch.OnToggleCombatPause()
 end
 
 local function AdjustSeedBuffer(flags, dir)
+    if not CanAutoGrowUi() then
+        UpdateSeedBufferEnableCheckbox()
+        return
+    end
     local row = CharRow(true)
     if type(row) ~= "table" then
         return
@@ -1014,6 +1071,16 @@ function StockPiler3TabWatch.OnTargetRButtonUp(flags)
     AdjustTarget(data, ChipDelta(flags, -1))
 end
 
+function StockPiler3TabWatch.OnPrioLButtonUp(flags)
+    local data = RowDataFromActiveChild()
+    AdjustPriority(data, ChipDelta(flags, 1))
+end
+
+function StockPiler3TabWatch.OnPrioRButtonUp(flags)
+    local data = RowDataFromActiveChild()
+    AdjustPriority(data, ChipDelta(flags, -1))
+end
+
 function StockPiler3TabWatch.OnLoadRow()
     local data = RowDataFromActiveChild()
     if not data or not StockPiler3.Brew then
@@ -1042,6 +1109,577 @@ local function Tip(text)
     Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_RIGHT)
 end
 
+local function ToNarrow(v)
+    if StockPiler3.Persistence and StockPiler3.Persistence.ToNarrow then
+        return StockPiler3.Persistence.ToNarrow(v) or ""
+    end
+    if type(v) == "wstring" or (type(v) == "userdata" and type(WStringToString) == "function") then
+        local ok, s = pcall(WStringToString, v)
+        if ok and type(s) == "string" then
+            return s
+        end
+    end
+    return tostring(v or "")
+end
+
+local function RgbDef(rgb)
+    if type(rgb) ~= "table" then
+        return nil
+    end
+    return {
+        r = tonumber(rgb[1]) or 255,
+        g = tonumber(rgb[2]) or 255,
+        b = tonumber(rgb[3]) or 255,
+    }
+end
+
+local STATUS_TIP_COLORS = {
+    no_recipe = COLOR_BLOCK,
+    potion_stocked = COLOR_OK,
+    ready_to_craft = COLOR_OK,
+    ready_to_craft_shared = COLOR_WARN,
+    restocking = COLOR_WARN,
+    enable_autogrow = COLOR_BLOCK,
+    need_apothecary = COLOR_BLOCK,
+    need_skill = COLOR_BLOCK,
+    buy_ingredients = COLOR_BLOCK,
+    need_seeds = COLOR_WARN,
+}
+
+local function StatusTitleColor(statusKey)
+    local def = RgbDef(STATUS_TIP_COLORS[statusKey or ""])
+    if def ~= nil then
+        return def
+    end
+    if Tooltips and Tooltips.COLOR_HEADING then
+        return Tooltips.COLOR_HEADING
+    end
+    return nil
+end
+
+local function PlanTipCacheKey()
+    local planGen = 0
+    local cacheKey = ""
+    if StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Get then
+        local plan = StockPiler3.PlanSnapshot.Get()
+        if type(plan) == "table" then
+            planGen = tonumber(plan.planGen) or 0
+            cacheKey = tostring(plan.cacheKey or "")
+        end
+    end
+    return tostring(planGen) .. ":" .. cacheKey
+end
+
+local function GrowingNoteKind(notes)
+    local n = string.lower(ToNarrow(notes))
+    if string.find(n, "needs planting", 1, true)
+        or string.find(n, "converting", 1, true)
+        or string.find(n, "need seed", 1, true)
+        or string.find(n, "buy seeds", 1, true)
+        or string.find(n, "buy plants", 1, true)
+    then
+        return "warning"
+    end
+    if string.find(n, "buy flasks", 1, true)
+        or string.find(n, "buy materials", 1, true)
+        or string.find(n, "autogrow off", 1, true)
+        or string.find(n, "needs cultivation", 1, true)
+    then
+        return "negative"
+    end
+    if string.find(n, "ready to harvest", 1, true)
+        or string.find(n, "growing", 1, true)
+        or string.find(n, "germination", 1, true)
+        or string.find(n, "seedling", 1, true)
+        or string.find(n, "flowering", 1, true)
+        or string.find(n, "planting", 1, true)
+    then
+        return "positive"
+    end
+    return "body"
+end
+
+local function SpecIsAutoGrowProgressableTip(entry)
+    if type(entry) ~= "table" then
+        return false
+    end
+    if entry.role == "container" then
+        return false
+    end
+    local spec = entry.spec
+    if type(spec) ~= "table" then
+        return false
+    end
+    local SM = StockPiler3.SeedMap
+    if SM and SM.IsGrowableSpec and SM.IsGrowableSpec(spec) == true then
+        return true
+    end
+    return false
+end
+
+local function TipEntrySpecKey(entry)
+    if type(entry) ~= "table" then
+        return ""
+    end
+    if type(entry.specKey) == "string" and entry.specKey ~= "" then
+        return entry.specKey
+    end
+    local MS = StockPiler3.MaterialSpec
+    local spec = entry.spec
+    if MS and MS.Key and type(spec) == "table" then
+        local bound = nil
+        if spec.incomplete == true then
+            bound = tonumber(spec.boundUid) or tonumber(spec.uid) or nil
+        end
+        local k = MS.Key(spec, bound)
+        if type(k) == "string" and k ~= "" then
+            return k
+        end
+    end
+    return ""
+end
+
+local function TitleCaseStatusNote(notes)
+    local narrow = ToNarrow(notes)
+    if narrow == "" then
+        return notes
+    end
+    local lower = string.lower(narrow)
+    if lower == "stocked" then
+        return T("watch.note.stocked")
+    end
+    if lower == "shared" or lower == "(shared)" then
+        return T("watch.note.shared")
+    end
+    if lower == "pooled" or lower == "(pooled)" then
+        return T("watch.note.pooled")
+    end
+    if lower == "buy flasks" then
+        return T("watch.note.buy_flasks")
+    end
+    if lower == "buy materials" then
+        return T("watch.note.buy_materials")
+    end
+    if lower == "buy seeds" then
+        return T("watch.note.buy_seeds")
+    end
+    if lower == "buy plants" then
+        return T("watch.note.buy_plants")
+    end
+    if lower == "needs planting" then
+        return T("watch.note.needs_planting")
+    end
+    if lower == "needs cultivation" then
+        return T("watch.note.needs_cult")
+    end
+    if lower == "autogrow off for this watch" then
+        return T("watch.note.autogrow_off")
+    end
+    local first = string.sub(narrow, 1, 1)
+    local rest = string.sub(narrow, 2)
+    if first >= "a" and first <= "z" then
+        return towstring(string.upper(first) .. rest)
+    end
+    return notes
+end
+
+local function TrimStatusTooltipRows(rows, limit)
+    limit = tonumber(limit) or 17
+    if type(rows) ~= "table" or #rows <= limit then
+        return rows
+    end
+
+    local function isIngredientDivider(i)
+        local prev = rows[i - 1]
+        local nextRow = rows[i + 1]
+        if not (nextRow and nextRow.kind == "ingredient") or not prev then
+            return false
+        end
+        if prev.kind == "stocked" or prev.kind == "bonus" or prev.kind == "effect"
+            or prev.kind == "positive" or prev.kind == "negative"
+        then
+            return true
+        end
+        if prev.kind == "body" or prev.kind == "warning" then
+            local t = ToNarrow(prev.text)
+            if string.find(t, "Have ", 1, true) then
+                return true
+            end
+        end
+        return false
+    end
+
+    for i = #rows, 1, -1 do
+        if #rows <= limit then
+            return rows
+        end
+        local r = rows[i]
+        if r.kind == "meta" then
+            local t = ToNarrow(r.text)
+            if string.find(t, "Recipe yield", 1, true) then
+                table.remove(rows, i)
+            end
+        end
+    end
+    for i = #rows, 1, -1 do
+        if #rows <= limit then
+            return rows
+        end
+        if rows[i].kind == "warning" then
+            local t = ToNarrow(rows[i].text)
+            if string.find(t, "success", 1, true) then
+                table.remove(rows, i)
+            end
+        end
+    end
+
+    while #rows > limit do
+        local removed = false
+        for i = #rows, 1, -1 do
+            if rows[i].kind == "separator" and not isIngredientDivider(i) then
+                table.remove(rows, i)
+                removed = true
+                break
+            end
+        end
+        if not removed then
+            break
+        end
+    end
+    return rows
+end
+
+local function BuildStatusTooltipRows(data)
+    local rows = {
+        {
+            text = data.statusText or T("watch.col.status"),
+            kind = "title",
+            color = StatusTitleColor(data.statusKey),
+        },
+    }
+
+    local function appendMeta(text)
+        if text and text ~= L"" then
+            rows[#rows + 1] = { text = text, kind = "meta" }
+        end
+    end
+
+    local slots = data.statusTipSlots
+    local recipe = data.recipe or data.specRecipe
+    local craftsNeeded = tonumber(data.craftsNeeded) or 0
+    local deficit = tonumber(data.potionDeficit) or 0
+    local liveHave = tonumber(data.potionHave)
+    local liveMin = tonumber(data.potionMin) or tonumber(data.target) or 0
+    if liveHave ~= nil and liveMin > 0 then
+        deficit = math.max(0, liveMin - liveHave)
+        if deficit <= 0 then
+            craftsNeeded = 0
+        end
+    end
+    local yield = tonumber(data.recipeYield) or 0
+    if type(recipe) == "table" and yield <= 0 then
+        yield = tonumber(recipe.recipeYield) or 0
+    end
+
+    if type(slots) == "table" and #slots > 0 then
+        if craftsNeeded > 0 and deficit > 0 then
+            rows[#rows + 1] = {
+                text = T("tip.watch.need_crafts", {
+                    crafts = tostring(craftsNeeded),
+                    deficit = tostring(deficit),
+                }),
+                kind = "body",
+            }
+            if yield > 0 then
+                appendMeta(T("tip.watch.yield_best_case", { yield = tostring(yield) }))
+            end
+            if data.statusKey == "enable_autogrow" then
+                rows[#rows + 1] = {
+                    text = T("tip.watch.enable_autogrow_row"),
+                    kind = "warning",
+                    color = RgbDef(COLOR_BLOCK),
+                }
+            elseif data.statusKey == "need_skill" then
+                local lines = data.statusLines
+                if type(lines) == "table" and #lines > 0 then
+                    for i = 1, #lines do
+                        rows[#rows + 1] = {
+                            text = lines[i],
+                            kind = "warning",
+                            color = RgbDef(COLOR_BLOCK),
+                        }
+                    end
+                else
+                    rows[#rows + 1] = {
+                        text = data.statusText or T("tip.watch.need_higher_skill"),
+                        kind = "warning",
+                        color = RgbDef(COLOR_BLOCK),
+                    }
+                end
+            elseif data.statusKey == "need_apothecary" then
+                rows[#rows + 1] = {
+                    text = T("tip.watch.apo_only_brew"),
+                    kind = "warning",
+                    color = RgbDef(COLOR_BLOCK),
+                }
+            elseif data.statusKey == "buy_ingredients" and not CanAutoGrowUi() then
+                local st = string.lower(ToNarrow(data.statusText))
+                if not string.find(st, "flask", 1, true) then
+                    rows[#rows + 1] = {
+                        text = T("tip.watch.cult_required"),
+                        kind = "warning",
+                        color = RgbDef(COLOR_BLOCK),
+                    }
+                end
+            end
+            local RS = StockPiler3.RecipeSpec
+            local uid = tonumber(data.uniqueID) or 0
+            if RS and RS.ExpectedCraftsForDeficit and type(recipe) == "table" then
+                local expectedCrafts, rate = RS.ExpectedCraftsForDeficit(deficit, recipe, uid)
+                if rate ~= nil and rate < 0.99 and expectedCrafts and expectedCrafts > craftsNeeded then
+                    local pct = math.floor(rate * 100 + 0.5)
+                    rows[#rows + 1] = {
+                        text = T("tip.watch.success_expected", {
+                            pct = tostring(pct),
+                            crafts = tostring(expectedCrafts),
+                        }),
+                        kind = "warning",
+                    }
+                end
+                if RS.FormatApoSkillUpLine then
+                    local apoLine = RS.FormatApoSkillUpLine(recipe)
+                    if apoLine and apoLine ~= L"" then
+                        appendMeta(apoLine)
+                    end
+                end
+            end
+        elseif data.statusNeedLine and data.statusNeedLine ~= L"" then
+            appendMeta(data.statusNeedLine)
+        end
+
+        local RT = StockPiler3.RecipeTooltip
+        rows[#rows + 1] = {
+            text = (RT and RT.SEP_LINE) or T("watch.sep"),
+            kind = "separator",
+        }
+
+        local MS = StockPiler3.MaterialSpec
+        local Grow = StockPiler3.Grow
+        local colorOk = RgbDef(COLOR_OK)
+        local colorWarn = RgbDef(COLOR_WARN)
+        local colorBlock = RgbDef(COLOR_BLOCK)
+        local slotShown = 0
+        for i = 1, #slots do
+            local entry = slots[i]
+            if type(entry) == "table" and type(entry.spec) == "table" then
+                if slotShown > 0 then
+                    if RT and RT.AppendSeparator then
+                        RT.AppendSeparator(rows)
+                    else
+                        rows[#rows + 1] = { text = T("watch.sep"), kind = "separator" }
+                    end
+                end
+                slotShown = slotShown + 1
+
+                local parts = MS and MS.NeedLabelParts and MS.NeedLabelParts(entry.spec) or nil
+                local header = parts and parts.header
+                    or (MS and MS.NeedLabel and MS.NeedLabel(entry.spec))
+                    or T("watch.material_fallback")
+                local detail = parts and parts.detail or L""
+                rows[#rows + 1] = {
+                    text = header,
+                    kind = "ingredient",
+                    role = entry.role,
+                }
+                if detail ~= nil and detail ~= L"" then
+                    rows[#rows + 1] = {
+                        text = detail,
+                        kind = "bonus",
+                        role = entry.role,
+                    }
+                end
+
+                -- Live Have: copy tip-slot fields locally — never write back into statusTipSlots.
+                local tipHave = tonumber(entry.have) or 0
+                local tipNeed = tonumber(entry.need) or 0
+                local tipDeficit = tonumber(entry.deficit) or math.max(0, tipNeed - tipHave)
+                local tipStocked = entry.stocked == true or tipDeficit <= 0
+                local Planner = StockPiler3.Planner
+                if Planner and Planner.CountItemsMatchingSpec and type(entry.spec) == "table" then
+                    local live = Planner.CountItemsMatchingSpec(entry.spec, { cacheOnly = true })
+                    if live ~= nil then
+                        tipHave = tonumber(live) or tipHave
+                        tipDeficit = math.max(0, tipNeed - tipHave)
+                        tipStocked = tipDeficit <= 0
+                    end
+                end
+                local stocked = tipStocked
+                local agProgressable = SpecIsAutoGrowProgressableTip(entry)
+                local haveColor = colorOk
+                if not stocked then
+                    if entry.kind == "convert" then
+                        local feedable = data.convertFeedable == true
+                        if not feedable then
+                            for j = 1, #slots do
+                                local sibling = slots[j]
+                                if type(sibling) == "table" and sibling.kind == "plant" then
+                                    feedable = true
+                                    break
+                                end
+                            end
+                        end
+                        haveColor = feedable and colorWarn or colorBlock
+                    elseif agProgressable then
+                        haveColor = colorWarn
+                    else
+                        haveColor = colorBlock
+                    end
+                end
+                local statusNote = nil
+                local noteKind = stocked and "stocked" or "body"
+                if (entry.kind == "plant" or (agProgressable and entry.kind ~= "convert"))
+                    and not stocked
+                then
+                    local notes = nil
+                    if Grow and Grow.GrowingNotesForSpec then
+                        notes = Grow.GrowingNotesForSpec(entry.spec, { cacheOnly = true })
+                    end
+                    if notes == nil or notes == L"" then
+                        notes = entry.growingNotes
+                    end
+                    if notes == nil or notes == L"" then
+                        notes = L""
+                    end
+                    if notes == L"" then
+                        if not CanAutoGrowUi() then
+                            notes = T("watch.note.needs_cult")
+                            haveColor = colorBlock
+                        elseif data.autoGrow == true then
+                            local seedUid = tonumber(entry.seedUid) or 0
+                            local credit = tonumber(entry.seedCredit) or 0
+                            if seedUid > 0 and credit <= 0 then
+                                notes = T("watch.note.buy_seeds")
+                                haveColor = colorWarn
+                            elseif seedUid <= 0 then
+                                notes = T("watch.note.buy_plants")
+                                haveColor = colorWarn
+                            else
+                                notes = T("watch.note.needs_planting")
+                                haveColor = colorWarn
+                            end
+                        else
+                            notes = T("watch.note.autogrow_off")
+                            haveColor = colorBlock
+                        end
+                    end
+                    statusNote = TitleCaseStatusNote(notes)
+                    noteKind = GrowingNoteKind(notes)
+                elseif not stocked then
+                    if entry.role == "container" then
+                        statusNote = T("watch.note.buy_flasks")
+                    elseif entry.buySeedOrMat == true
+                        and (tonumber(entry.seedUid) or 0) > 0
+                    then
+                        statusNote = T("watch.note.buy_seeds")
+                    else
+                        statusNote = T("watch.note.buy_materials")
+                    end
+                    noteKind = "block"
+                    haveColor = colorBlock
+                elseif stocked then
+                    local contestedKeys = data.contestedSpecKeys
+                    local specKey = TipEntrySpecKey(entry)
+                    local claimContested = (data.craftableShared == true
+                            or data.statusKey == "ready_to_craft_shared"
+                            or data.statusKey == "buy_ingredients")
+                        and type(contestedKeys) == "table"
+                        and specKey ~= ""
+                        and contestedKeys[specKey] == true
+                    local noteNarrow = string.lower(ToNarrow(entry.note))
+                    if claimContested or noteNarrow == "(shared)" then
+                        if data.statusKey == "buy_ingredients"
+                            and not SpecIsAutoGrowProgressableTip(entry)
+                        then
+                            if entry.role == "container" then
+                                statusNote = T("watch.note.buy_flasks")
+                            elseif entry.buySeedOrMat == true
+                                and (tonumber(entry.seedUid) or 0) > 0
+                            then
+                                statusNote = T("watch.note.buy_seeds")
+                            else
+                                statusNote = T("watch.note.buy_materials")
+                            end
+                            noteKind = "block"
+                            haveColor = colorBlock
+                        else
+                            statusNote = T("watch.note.shared")
+                            noteKind = "warning"
+                            haveColor = colorWarn
+                        end
+                    elseif entry.sharedPool == true or noteNarrow == "(pooled)" then
+                        statusNote = T("watch.note.pooled")
+                        noteKind = "warning"
+                        haveColor = colorWarn
+                    else
+                        statusNote = T("watch.note.stocked")
+                        noteKind = "stocked"
+                    end
+                end
+                local haveText
+                if statusNote and statusNote ~= L"" then
+                    haveText = T("tip.watch.have_need_note", {
+                        have = tostring(tipHave),
+                        need = tostring(tipNeed),
+                        note = statusNote,
+                    })
+                else
+                    haveText = T("tip.watch.have_need", {
+                        have = tostring(tipHave),
+                        need = tostring(tipNeed),
+                    })
+                end
+                rows[#rows + 1] = {
+                    text = haveText,
+                    kind = noteKind,
+                    color = haveColor,
+                }
+            end
+        end
+    elseif type(recipe) == "table" then
+        appendMeta(T("tip.status.plan_pending"))
+        if type(data.statusLines) == "table" and #data.statusLines > 0 then
+            for i = 1, #data.statusLines do
+                appendMeta(data.statusLines[i])
+            end
+        end
+        if liveHave ~= nil and liveMin > 0 then
+            appendMeta(T("tip.watch.have_target", {
+                have = tostring(liveHave),
+                target = tostring(liveMin),
+            }))
+        end
+    elseif type(data.statusLines) == "table" and #data.statusLines > 0 then
+        for i = 1, #data.statusLines do
+            appendMeta(data.statusLines[i])
+        end
+        if liveHave ~= nil and liveMin > 0 then
+            appendMeta(T("tip.watch.have_target", {
+                have = tostring(liveHave),
+                target = tostring(liveMin),
+            }))
+        end
+    elseif data.statusDetail and data.statusDetail ~= L"" then
+        appendMeta(data.statusDetail)
+    elseif liveHave ~= nil and liveMin > 0 then
+        appendMeta(T("tip.watch.have_target", {
+            have = tostring(liveHave),
+            target = tostring(liveMin),
+        }))
+    end
+
+    return rows
+end
+
 function StockPiler3TabWatch.OnMouseOverEnabled()
     Tip(T("tip.watch.autogrow_master"))
 end
@@ -1059,10 +1697,18 @@ function StockPiler3TabWatch.OnMouseOverCombatPause()
 end
 
 function StockPiler3TabWatch.OnMouseOverSeedBufferEnable()
+    if not CanAutoGrowUi() then
+        Tip(T("tip.watch.cult_required"))
+        return
+    end
     Tip(T("tip.watch.seed_buffer"))
 end
 
 function StockPiler3TabWatch.OnMouseOverSeedBuffer()
+    if not CanAutoGrowUi() then
+        Tip(T("tip.watch.cult_required"))
+        return
+    end
     Tip(T("tip.watch.seed_buffer"))
 end
 
@@ -1079,16 +1725,31 @@ function StockPiler3TabWatch.OnMouseOverIcon()
     if not data then
         return
     end
+    local uid = tonumber(data.uniqueID) or 0
     local itemData = data.itemData
-    -- Stock CraftingSystem.GetCraftingData ipairs(itemData.craftingBonus) with no nil guard.
-    if type(itemData) == "table" and Tooltips and Tooltips.CreateItemTooltip then
-        if type(itemData.craftingBonus) ~= "table" then
-            itemData.craftingBonus = {}
+    if StockPiler3.Inventory and StockPiler3.Inventory.ResolvePotionItemData then
+        itemData = StockPiler3.Inventory.ResolvePotionItemData(
+            data.potionKey or data.potionBaseKey,
+            uid,
+            itemData
+        )
+        if type(itemData) == "table" then
+            data.itemData = itemData
+            -- Refresh rarity tint if we just got a richer sample.
+            data.nameR, data.nameG, data.nameB = nil, nil, nil
+            EnsureWatchNameRarityColors(data)
         end
-        Tooltips.CreateItemTooltip(itemData, SystemData.ActiveWindow.name, Tooltips.ANCHOR_WINDOW_RIGHT, false)
+    end
+    if StockPiler3.Inventory and StockPiler3.Inventory.ShowItemTooltip
+        and StockPiler3.Inventory.ShowItemTooltip(itemData, SystemData.ActiveWindow.name)
+    then
         return
     end
     Tip(data.name or T("ui.potion_fallback"))
+end
+
+function StockPiler3TabWatch.OnMouseOverName()
+    StockPiler3TabWatch.OnMouseOverIcon()
 end
 
 function StockPiler3TabWatch.OnMouseOverStatus()
@@ -1096,7 +1757,39 @@ function StockPiler3TabWatch.OnMouseOverStatus()
     if not data then
         return
     end
-    Tip(data.statusText or T("ui.dash"))
+    local RT = StockPiler3.RecipeTooltip
+    if not RT or not RT.ShowColoredRows then
+        Tip(data.statusText or T("watch.col.status"))
+        return
+    end
+
+    local engineMax = (Tooltips and tonumber(Tooltips.NUM_ROWS)) or 17
+    local snapGen = 0
+    if StockPiler3.Inventory and StockPiler3.Inventory.GetSnapGen then
+        snapGen = tonumber(StockPiler3.Inventory.GetSnapGen()) or 0
+    end
+    local genKey = PlanTipCacheKey() .. ":s" .. tostring(snapGen)
+    local watchKey = tostring(data.potionKey or data.id or "")
+    local cache = StockPiler3TabWatch._statusTipCache
+    if type(cache) ~= "table" or cache.genKey ~= genKey then
+        cache = { genKey = genKey, byWatch = {} }
+        StockPiler3TabWatch._statusTipCache = cache
+    end
+    local tipRows = watchKey ~= "" and cache.byWatch[watchKey] or nil
+    if type(tipRows) ~= "table" then
+        tipRows = BuildStatusTooltipRows(data)
+        TrimStatusTooltipRows(tipRows, engineMax)
+        if watchKey ~= "" then
+            cache.byWatch[watchKey] = tipRows
+        end
+    end
+
+    RT.ShowColoredRows(
+        SystemData.ActiveWindow.name,
+        tipRows,
+        Tooltips.ANCHOR_WINDOW_TOP,
+        engineMax
+    )
 end
 
 function StockPiler3TabWatch.OnMouseOverStock()
@@ -1120,6 +1813,10 @@ end
 
 function StockPiler3TabWatch.OnMouseOverTarget()
     Tip(T("tip.watch.target_chip"))
+end
+
+function StockPiler3TabWatch.OnMouseOverPrio()
+    Tip(T("tip.watch.prio_chip"))
 end
 
 function StockPiler3TabWatch.OnMouseOverRowAutoGrow()

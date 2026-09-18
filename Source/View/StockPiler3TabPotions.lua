@@ -142,7 +142,7 @@ local function ApplyPotionStats(row, itemData)
     end
 end
 
-local function BuildRecipeDataForPotion(potionName, recipe, potionLevel, potionUid)
+local function BuildRecipeDataForPotion(potionName, recipe, potionLevel, potionUid, potionBase)
     if type(recipe) ~= "table" then
         return nil
     end
@@ -161,6 +161,22 @@ local function BuildRecipeDataForPotion(potionName, recipe, potionLevel, potionU
             recipeYield = tonumber(stats.yield)
         end
     end
+    local effectKey = nil
+    if type(potionBase) == "table" and type(potionBase.effectKey) == "string" and potionBase.effectKey ~= "" then
+        effectKey = potionBase.effectKey
+    end
+    if (type(effectKey) ~= "string" or effectKey == "") and RS and RS.ResolveEffectKeyForPotion
+        and type(potionBase) == "table"
+    then
+        effectKey = RS.ResolveEffectKeyForPotion(potionBase, {
+            recipe = recipe,
+            stamp = false,
+            allowClassify = true,
+        })
+    end
+    if type(effectKey) == "string" and effectKey ~= "" and RS and RS.NormalizeEffectKeyForUi then
+        effectKey = RS.NormalizeEffectKeyForUi(effectKey) or effectKey
+    end
     return {
         name = potionName,
         potionLevel = tonumber(potionLevel) or 0,
@@ -171,6 +187,7 @@ local function BuildRecipeDataForPotion(potionName, recipe, potionLevel, potionU
         brewAttempts = attempts,
         brewSuccesses = successes,
         successRate = successRate,
+        effectKey = effectKey,
         materials = recipe.slots or {},
     }
 end
@@ -378,57 +395,8 @@ local function ResolvePotionItemData(uid)
     if uid <= 0 then
         return nil
     end
-    local sample = nil
-    if StockPiler3.Inventory and StockPiler3.Inventory.GetSample then
-        sample = StockPiler3.Inventory.GetSample(uid)
-    end
-    local function HasUseBonus(item)
-        if type(item) ~= "table" or type(item.bonus) ~= "table" then
-            return false
-        end
-        for _, b in pairs(item.bonus) do
-            if type(b) == "table" and tonumber(b.type) == 3 and (tonumber(b.reference) or 0) > 0 then
-                return true
-            end
-        end
-        return false
-    end
-    -- Overlay iLevel/rarity from Account.items when bag/DB shells omit them
-    -- (common on chars that share learned potions but do not hold the item).
-    local function EnrichFromLearned(item)
-        if type(item) ~= "table" then
-            return item
-        end
-        local Items = StockPiler3.Items
-        local learned = Items and Items.AsItemData and Items.AsItemData(uid) or nil
-        if type(learned) ~= "table" then
-            return item
-        end
-        local lvl = tonumber(item.iLevel) or tonumber(item.level) or 0
-        local learnedLvl = tonumber(learned.iLevel) or tonumber(learned.level) or 0
-        if lvl <= 0 and learnedLvl > 0 then
-            item.iLevel = learnedLvl
-        end
-        if (tonumber(item.rarity) or 0) <= 0 and (tonumber(learned.rarity) or 0) > 0 then
-            item.rarity = learned.rarity
-        end
-        return item
-    end
-    if HasUseBonus(sample) then
-        return EnrichFromLearned(sample)
-    end
-    if type(GetDatabaseItemData) == "function" then
-        local ok, data = pcall(GetDatabaseItemData, uid)
-        if ok and type(data) == "table" and HasUseBonus(data) then
-            return EnrichFromLearned(data)
-        end
-    end
-    if type(sample) == "table" then
-        return EnrichFromLearned(sample)
-    end
-    local Items = StockPiler3.Items
-    if Items and Items.AsItemData then
-        return Items.AsItemData(uid)
+    if StockPiler3.Inventory and StockPiler3.Inventory.ResolvePotionItemData then
+        return StockPiler3.Inventory.ResolvePotionItemData(nil, uid, nil)
     end
     return nil
 end
@@ -530,7 +498,13 @@ local function BuildVisibleList()
             row.yieldNum = stats.yield
             row.yieldText = FormatYieldStat(stats.yield)
         end
-        row.recipeData = BuildRecipeDataForPotion(baseName, recipe, row.levelNum or row.rankNum, uid)
+        row.recipeData = BuildRecipeDataForPotion(
+            baseName,
+            recipe,
+            row.levelNum or row.rankNum,
+            uid,
+            potionBase
+        )
         row.hasRecipe = row.recipeData ~= nil
         if PassesFilters(row, nameFilter, effectFilter) then
             rows[#rows + 1] = row
@@ -768,12 +742,9 @@ function StockPiler3TabPotions.OnMouseOverIcon()
         return
     end
     local itemData = data.itemData
-    -- Stock CraftingSystem.GetCraftingData ipairs(itemData.craftingBonus) with no nil guard.
-    if type(itemData) == "table" and Tooltips and Tooltips.CreateItemTooltip then
-        if type(itemData.craftingBonus) ~= "table" then
-            itemData.craftingBonus = {}
-        end
-        Tooltips.CreateItemTooltip(itemData, SystemData.ActiveWindow.name, Tooltips.ANCHOR_WINDOW_RIGHT, false)
+    if StockPiler3.Inventory and StockPiler3.Inventory.ShowItemTooltip
+        and StockPiler3.Inventory.ShowItemTooltip(itemData, SystemData.ActiveWindow.name)
+    then
         return
     end
     Tooltips.CreateTextOnlyTooltip(SystemData.ActiveWindow.name, data.name or T("ui.potion_fallback"))

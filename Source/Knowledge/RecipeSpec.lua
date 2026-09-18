@@ -175,46 +175,105 @@ local function ResolveSlotSpec(slot)
     return nil
 end
 
-local function SlimSlotsForStorage(slots)
-    local slim = {}
+local function CollectSlotBuckets(slots)
+    local buckets = {}
+    local index = {}
     if type(slots) ~= "table" then
-        return slim
+        return buckets
     end
     for i = 1, #slots do
         local slot = slots[i]
         if type(slot) == "table" then
             local spec = ResolveSlotSpec(slot)
-            local entry = {
-                role = slot.role or (spec and spec.role) or "ingredient",
-                uid = tonumber(slot.uid) or nil,
-                perCraft = math.max(1, tonumber(slot.perCraft) or 1),
-            }
-            if type(spec) == "table" and spec.incomplete == true then
-                entry.boundUid = tonumber(spec.boundUid) or entry.uid
-            end
-            -- Keep a slim exemplar for tips/hydrate; full match uses MS.Key after hydrate.
             if type(spec) == "table" then
-                entry.spec = {
-                    uid = tonumber(spec.uid) or entry.uid,
-                    role = spec.role or entry.role,
-                    power = tonumber(spec.power) or 0,
-                    stability = tonumber(spec.stability) or 0,
-                    duration = tonumber(spec.duration) or 0,
-                    tradeSkill = tonumber(spec.tradeSkill) or 0,
-                    skillLevel = tonumber(spec.skillLevel) or 0,
-                    cultivationType = tonumber(spec.cultivationType) or 0,
-                    slotType = tonumber(spec.slotType) or 0,
-                    effectId = spec.effectId,
-                    bonuses = type(spec.bonuses) == "table" and spec.bonuses or nil,
-                    incomplete = spec.incomplete == true,
-                    boundUid = entry.boundUid,
-                }
-                if spec.isRefinable ~= nil then
-                    entry.spec.isRefinable = spec.isRefinable == true
+                local role = tostring(slot.role or spec.role or "")
+                local boundUid = 0
+                if spec.incomplete == true then
+                    boundUid = tonumber(slot.uid)
+                        or tonumber(slot.boundUid)
+                        or tonumber(spec.boundUid)
+                        or tonumber(spec.uid)
+                        or 0
+                end
+                local fp = SpecFingerprint(spec, boundUid)
+                local k = role .. "\0" .. fp
+                local idx = index[k]
+                local per = math.max(1, tonumber(slot.perCraft) or 1)
+                if idx then
+                    buckets[idx].perCraft = (tonumber(buckets[idx].perCraft) or 0) + per
+                    -- Prefer an incomplete exemplar with a bound uid.
+                    if buckets[idx].boundUid <= 0 and boundUid > 0 then
+                        buckets[idx].boundUid = boundUid
+                        buckets[idx].slot = slot
+                        buckets[idx].spec = spec
+                    end
+                else
+                    buckets[#buckets + 1] = {
+                        role = role,
+                        fp = fp,
+                        perCraft = per,
+                        boundUid = boundUid,
+                        slot = slot,
+                        spec = spec,
+                    }
+                    index[k] = #buckets
                 end
             end
-            slim[#slim + 1] = entry
         end
+    end
+    table.sort(buckets, function(a, b)
+        local oa = ROLE_ORDER[a.role] or 99
+        local ob = ROLE_ORDER[b.role] or 99
+        if oa ~= ob then
+            return oa < ob
+        end
+        return tostring(a.fp) < tostring(b.fp)
+    end)
+    return buckets
+end
+
+local function SlimSlotsForStorage(slots)
+    local slim = {}
+    if type(slots) ~= "table" then
+        return slim
+    end
+    -- Canonical: merge same-role same-fingerprint, sort by role then fingerprint.
+    local buckets = CollectSlotBuckets(slots)
+    for i = 1, #buckets do
+        local b = buckets[i]
+        local slot = b.slot
+        local spec = b.spec
+        local entry = {
+            role = b.role,
+            uid = tonumber(slot and slot.uid) or (b.boundUid > 0 and b.boundUid) or nil,
+            perCraft = math.max(1, tonumber(b.perCraft) or 1),
+        }
+        if type(spec) == "table" and spec.incomplete == true then
+            entry.boundUid = b.boundUid > 0 and b.boundUid or entry.uid
+        elseif b.boundUid > 0 then
+            entry.boundUid = b.boundUid
+        end
+        if type(spec) == "table" then
+            entry.spec = {
+                uid = tonumber(spec.uid) or entry.uid,
+                role = spec.role or entry.role,
+                power = tonumber(spec.power) or 0,
+                stability = tonumber(spec.stability) or 0,
+                duration = tonumber(spec.duration) or 0,
+                tradeSkill = tonumber(spec.tradeSkill) or 0,
+                skillLevel = tonumber(spec.skillLevel) or 0,
+                cultivationType = tonumber(spec.cultivationType) or 0,
+                slotType = tonumber(spec.slotType) or 0,
+                effectId = spec.effectId,
+                bonuses = type(spec.bonuses) == "table" and spec.bonuses or nil,
+                incomplete = spec.incomplete == true,
+                boundUid = entry.boundUid,
+            }
+            if spec.isRefinable ~= nil then
+                entry.spec.isRefinable = spec.isRefinable == true
+            end
+        end
+        slim[#slim + 1] = entry
     end
     return slim
 end
@@ -228,31 +287,39 @@ local function HydrateRecipeSlots(recipe)
     end
 end
 
+--- Order-independent recipe identity: multiset of (role, SpecFingerprint) with summed perCraft.
 local function SlotsFingerprint(slots)
+    local buckets = CollectSlotBuckets(slots)
     local parts = {}
-    if type(slots) ~= "table" then
-        return ""
-    end
-    for i = 1, #slots do
-        local slot = slots[i]
-        if type(slot) == "table" then
-            local spec = ResolveSlotSpec(slot)
-            if type(spec) == "table" then
-                local boundUid = 0
-                if spec.incomplete == true then
-                    boundUid = tonumber(slot.uid)
-                        or tonumber(slot.boundUid)
-                        or tonumber(spec.boundUid)
-                        or tonumber(spec.uid)
-                        or 0
-                end
-                parts[#parts + 1] = tostring(slot.role or spec.role or "")
-                    .. "x" .. tostring(slot.perCraft or 1)
-                    .. ":" .. SpecFingerprint(spec, boundUid)
-            end
-        end
+    for i = 1, #buckets do
+        local b = buckets[i]
+        parts[#parts + 1] = tostring(b.role)
+            .. "x" .. tostring(b.perCraft)
+            .. ":" .. tostring(b.fp)
     end
     return table.concat(parts, "|")
+end
+
+--- Merge same-role same-fingerprint slots; stable role + fingerprint order.
+local function MergeSlotsByFingerprint(slots)
+    local buckets = CollectSlotBuckets(slots)
+    local out = {}
+    for i = 1, #buckets do
+        local b = buckets[i]
+        local slot = b.slot
+        local uid = tonumber(slot and slot.uid) or 0
+        if uid <= 0 and b.boundUid > 0 then
+            uid = b.boundUid
+        end
+        out[#out + 1] = {
+            role = b.role,
+            uid = uid > 0 and uid or nil,
+            boundUid = b.boundUid > 0 and b.boundUid or nil,
+            perCraft = math.max(1, tonumber(b.perCraft) or 1),
+            spec = b.spec,
+        }
+    end
+    return out
 end
 
 local function MaterialsToSpecSlots(materials)
@@ -296,10 +363,7 @@ local function MaterialsToSpecSlots(materials)
             end
         end
     end
-    table.sort(slots, function(a, b)
-        return (ROLE_ORDER[a.role] or 99) < (ROLE_ORDER[b.role] or 99)
-    end)
-    return slots
+    return MergeSlotsByFingerprint(slots)
 end
 
 local function SpecStabilityTotal(slots)
@@ -586,6 +650,15 @@ end
 --- Never subtract the full buffer min from plant stacks — that zeroed brew when
 --- seeds were already at buffer (e.g. 5 Spumepetal plants − 5 reserve = 0 craftable).
 local function GrowReserveForSpec(spec)
+    local Caps = StockPiler3.TradeSkillCaps
+    -- Apo/Butcher-only: no Cultivation → never reserve plants for grow/refine.
+    if not (Caps and Caps.CanAutoGrow and Caps.CanAutoGrow() == true) then
+        return 0
+    end
+    local Watch = StockPiler3.Watch
+    if Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() ~= true then
+        return 0
+    end
     local char = CharacterRow()
     if type(char) ~= "table" or char.growSeedBufferEnabled == false then
         return 0
@@ -595,8 +668,10 @@ local function GrowReserveForSpec(spec)
         return 0
     end
     -- Only reserve when AutoGrow is in play.
-    local Watch = StockPiler3.Watch
     if Watch and Watch.HasAnyAutoGrow and Watch.HasAnyAutoGrow() ~= true then
+        if Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() ~= true then
+            return 0
+        end
         if char.autoGrowEnabled ~= true then
             return 0
         end
@@ -1018,12 +1093,20 @@ function RS.CountCraftsPossible(recipe, opts)
     -- Wire brewRespectGrowReserve: opts.respectGrowReserve OR character flag.
     -- Explicit opts.respectGrowReserve == false opts out (non-reserve craftable memo).
     local charRespect = true
-    local char = CharacterRow()
-    if type(char) == "table" then
-        charRespect = char.brewRespectGrowReserve ~= false
+    local Caps = StockPiler3.TradeSkillCaps
+    if Caps and Caps.CanAutoGrow and Caps.CanAutoGrow() ~= true then
+        charRespect = false
+    else
+        local char = CharacterRow()
+        if type(char) == "table" then
+            charRespect = char.brewRespectGrowReserve ~= false
+        end
     end
     local respect = (opts.respectGrowReserve == true) or charRespect
     if opts.respectGrowReserve == false then
+        respect = false
+    end
+    if Caps and Caps.CanAutoGrow and Caps.CanAutoGrow() ~= true then
         respect = false
     end
 
@@ -1104,16 +1187,27 @@ local function EffectKeyFromRecipeMain(recipe)
     HydrateRecipeSlots(recipe)
     local slots = recipe.slots or {}
     local MS = StockPiler3.MaterialSpec
+    local Items = StockPiler3.Items
     for i = 1, #slots do
         local slot = slots[i]
         if type(slot) == "table" and (slot.role == "main" or (type(slot.spec) == "table" and slot.spec.role == "main")) then
             local spec = ResolveSlotSpec(slot)
             local effectId = type(spec) == "table" and tonumber(spec.effectId) or 0
-            if effectId <= 0 then
-                local uid = tonumber(slot.uid) or 0
-                if uid > 0 and StockPiler3.Items and StockPiler3.Items.GetByUid then
-                    local row = StockPiler3.Items.GetByUid(uid)
-                    effectId = type(row) == "table" and tonumber(row.effectId) or 0
+            local uid = tonumber(slot.uid) or (type(spec) == "table" and tonumber(spec.uid)) or 0
+            if effectId <= 0 and uid > 0 and Items and Items.GetByUid then
+                local row = Items.GetByUid(uid)
+                effectId = type(row) == "table" and tonumber(row.effectId) or 0
+                -- Incomplete mains often omit craftingBonus EFFECT; enrich from item/DB.
+                if effectId <= 0 and MS and MS.FromItemData then
+                    local probe = row
+                    if type(probe) ~= "table" then
+                        probe = { uniqueID = uid }
+                    end
+                    local enriched = MS.FromItemData(probe, "main")
+                    effectId = type(enriched) == "table" and tonumber(enriched.effectId) or 0
+                    if effectId > 0 and type(row) == "table" then
+                        row.effectId = effectId
+                    end
                 end
             end
             if effectId > 0 and MS and MS.EffectKeyFromEffectId then
@@ -1124,16 +1218,17 @@ local function EffectKeyFromRecipeMain(recipe)
     return nil
 end
 
---- Resolve potion Effect column key:
---- stored → output potion Use: ability → recipe fx: → main effectId → Classify fallback.
+--- Resolve potion Effect column key from the potion / recipe — not the product name.
+--- Order: Use: ability → recipe fx: → main EFFECT id → stored.
 --- opts.recipe / opts.recipeKey / opts.itemData optional.
 --- opts.stamp ~= false stamps potion.effectKey when found.
---- opts.allowClassify == false skips bag/DB Use + Classify (cheap fx:/main only).
+--- opts.allowClassify == false skips bag/DB Use (fx:/main only).
 function RS.ResolveEffectKeyForPotion(potion, opts)
     opts = type(opts) == "table" and opts or {}
     local key = nil
+    local stored = nil
     if type(potion) == "table" and type(potion.effectKey) == "string" and potion.effectKey ~= "" then
-        key = RS.NormalizeEffectKeyForUi(potion.effectKey)
+        stored = RS.NormalizeEffectKeyForUi(potion.effectKey)
     end
 
     local function ResolveOutputItemData()
@@ -1148,7 +1243,6 @@ function RS.ResolveEffectKeyForPotion(potion, opts)
         if type(itemData) ~= "table" and uid > 0 and StockPiler3.Inventory and StockPiler3.Inventory.GetSample then
             itemData = StockPiler3.Inventory.GetSample(uid)
         end
-        -- Prefer a sample that carries USE bonus; thin shells may lack it.
         local hasUse = false
         if type(itemData) == "table" and type(itemData.bonus) == "table" then
             for _, b in pairs(itemData.bonus) do
@@ -1167,13 +1261,34 @@ function RS.ResolveEffectKeyForPotion(potion, opts)
         return itemData
     end
 
-    -- Produced potion Use: (tooltip SoT) before recipe/main heuristics.
-    if key == nil and opts.allowClassify ~= false
+    -- Finished potion Use: ability (engine tooltip SoT).
+    if opts.allowClassify ~= false
         and StockPiler3.Classify and StockPiler3.Classify.GetEffectKeyFromPotionUse
     then
         local itemData = ResolveOutputItemData()
         if type(itemData) == "table" then
             key = RS.NormalizeEffectKeyForUi(StockPiler3.Classify.GetEffectKeyFromPotionUse(itemData))
+            if key and type(potion) == "table" and StockPiler3.Classify.GetPotionUseAbilityId then
+                local abilityId = StockPiler3.Classify.GetPotionUseAbilityId(itemData)
+                if (tonumber(abilityId) or 0) > 0 then
+                    potion.useAbilityId = tonumber(abilityId)
+                end
+            end
+        end
+        -- Offline: replay stored Use ability id through GetAbilityDesc.
+        if key == nil and type(potion) == "table" and (tonumber(potion.useAbilityId) or 0) > 0
+            and type(GetAbilityDesc) == "function"
+        then
+            local iLevel = tonumber(potion.iLevel) or 0
+            local ok, text = pcall(GetAbilityDesc, tonumber(potion.useAbilityId), iLevel)
+            if ok and text ~= nil and StockPiler3.Classify.GetEffectKeyFromPotionUse then
+                key = RS.NormalizeEffectKeyForUi(
+                    StockPiler3.Classify.GetEffectKeyFromPotionUse({
+                        bonus = { { type = 3, reference = tonumber(potion.useAbilityId) } },
+                        iLevel = iLevel,
+                    })
+                )
+            end
         end
     end
 
@@ -1217,13 +1332,8 @@ function RS.ResolveEffectKeyForPotion(potion, opts)
         end
         key = EffectKeyFromRecipeMain(recipe)
     end
-    if key == nil and opts.allowClassify ~= false
-        and StockPiler3.Classify and StockPiler3.Classify.GetEffectKey
-    then
-        local itemData = ResolveOutputItemData()
-        if type(itemData) == "table" then
-            key = RS.NormalizeEffectKeyForUi(StockPiler3.Classify.GetEffectKey(itemData))
-        end
+    if key == nil then
+        key = stored
     end
     if key and type(potion) == "table" and opts.stamp ~= false then
         potion.effectKey = key
@@ -1231,7 +1341,7 @@ function RS.ResolveEffectKeyForPotion(potion, opts)
     return key
 end
 
---- Cheap boot pass: fill missing effectKey from fx: / main effectId only (no Classify/bag).
+--- Boot: fill / refresh effectKey from potion Use: or recipe main EFFECT (not product name).
 function RS.MigratePotionEffectKeys()
     local potions = PotionsTable()
     if type(potions) ~= "table" then
@@ -1240,18 +1350,18 @@ function RS.MigratePotionEffectKeys()
     local stamped = 0
     for _, potion in pairs(potions) do
         if type(potion) == "table" then
-            local existing = potion.effectKey
-            if type(existing) ~= "string" or existing == "" then
-                local key = RS.ResolveEffectKeyForPotion(potion, {
-                    stamp = true,
-                    allowClassify = false,
-                })
-                if key then
-                    stamped = stamped + 1
-                end
+            local before = potion.effectKey
+            local key = RS.ResolveEffectKeyForPotion(potion, {
+                stamp = true,
+                allowClassify = true,
+            })
+            if key and key ~= before then
+                stamped = stamped + 1
+            elseif key and (type(before) ~= "string" or before == "") then
+                stamped = stamped + 1
             else
-                local norm = RS.NormalizeEffectKeyForUi(existing)
-                if norm and norm ~= existing then
+                local norm = before and RS.NormalizeEffectKeyForUi(before) or nil
+                if norm and norm ~= before then
                     potion.effectKey = norm
                     stamped = stamped + 1
                 end
@@ -1264,13 +1374,78 @@ function RS.MigratePotionEffectKeys()
     return stamped
 end
 
---- True when `shortKey` is a proper role-prefix of `longKey` (missing trailing slots).
+--- Role names that open a fingerprint segment (`rolexN:spec...`). Spec payloads may
+--- contain "|" so fingerprints cannot be split on "|" alone.
+local FINGERPRINT_ROLE = {
+    container = true,
+    main = true,
+    stabilizer = true,
+    extender = true,
+    multiplier = true,
+    ingredient = true,
+}
+
+--- Split recipe fingerprint into role segments (`rolexN:spec...`).
+local function FingerprintRoleParts(key)
+    key = tostring(key or "")
+    if key == "" then
+        return {}
+    end
+    local starts = {}
+    local pos = 1
+    local n = string.len(key)
+    while pos <= n do
+        local s, e, role = string.find(key, "([%a]+)x%d+:", pos)
+        if not s then
+            break
+        end
+        if FINGERPRINT_ROLE[role] == true
+            and (s == 1 or string.sub(key, s - 1, s - 1) == "|")
+        then
+            starts[#starts + 1] = s
+        end
+        pos = e + 1
+    end
+    local parts = {}
+    for i = 1, #starts do
+        local from = starts[i]
+        local to = n
+        if starts[i + 1] then
+            to = starts[i + 1] - 2
+        end
+        if to >= from then
+            parts[#parts + 1] = string.sub(key, from, to)
+        end
+    end
+    return parts
+end
+
+--- True when shortKey's role segments are a proper subset of longKey's.
+--- Covers missing trailing slots and mid-board omissions (e.g. no stabilizer).
 local function IsStrictFingerprintSubset(shortKey, longKey)
     shortKey = tostring(shortKey or "")
     longKey = tostring(longKey or "")
     if shortKey == "" or longKey == "" or shortKey == longKey then
         return false
     end
+    local shortParts = FingerprintRoleParts(shortKey)
+    local longParts = FingerprintRoleParts(longKey)
+    if #shortParts > 0 and #longParts > 0 then
+        if #shortParts >= #longParts then
+            return false
+        end
+        local longSet = {}
+        for i = 1, #longParts do
+            longSet[longParts[i]] = true
+        end
+        for i = 1, #shortParts do
+            if longSet[shortParts[i]] ~= true then
+                return false
+            end
+        end
+        return true
+    end
+    -- Fallback: legacy trailing-prefix check (older fingerprints).
     if #shortKey >= #longKey then
         return false
     end
@@ -1278,6 +1453,96 @@ local function IsStrictFingerprintSubset(shortKey, longKey)
         return false
     end
     return string.sub(longKey, #shortKey + 1, #shortKey + 1) == "|"
+end
+
+--- Union of recipeKeys + alternateRecipeSpecKeys + active pointers (deduped).
+local function CollectPotionRecipeKeyList(potion)
+    local seen = {}
+    local out = {}
+    local function add(k)
+        k = tostring(k or "")
+        if k ~= "" and seen[k] ~= true then
+            seen[k] = true
+            out[#out + 1] = k
+        end
+    end
+    if type(potion) ~= "table" then
+        return out
+    end
+    if type(potion.recipeKeys) == "table" then
+        for i = 1, #potion.recipeKeys do
+            add(potion.recipeKeys[i])
+        end
+    end
+    if type(potion.alternateRecipeSpecKeys) == "table" then
+        for i = 1, #potion.alternateRecipeSpecKeys do
+            add(potion.alternateRecipeSpecKeys[i])
+        end
+    end
+    add(potion.activeRecipeKey)
+    add(potion.activeRecipeSpecKey)
+    add(potion.recipeSpecKey)
+    return out
+end
+
+local function RecipeOutcomeUidSet(recipe)
+    local uids = {}
+    if type(recipe) ~= "table" then
+        return uids
+    end
+    if type(recipe.outcomes) == "table" then
+        for uidStr, _ in pairs(recipe.outcomes) do
+            local uid = tonumber(uidStr) or 0
+            if uid > 0 then
+                uids[uid] = true
+            end
+        end
+    end
+    local outUid = tonumber(recipe.outputUid) or tonumber(recipe.activeOutcomeUid) or 0
+    if outUid > 0 then
+        uids[outUid] = true
+    end
+    return uids
+end
+
+local function RecipeOutcomesOverlap(a, b)
+    local ua = RecipeOutcomeUidSet(a)
+    local ub = RecipeOutcomeUidSet(b)
+    if next(ua) == nil then
+        return true
+    end
+    for uid in pairs(ua) do
+        if ub[uid] == true then
+            return true
+        end
+    end
+    return false
+end
+
+local function ApplyPotionRecipeKeyList(potion, kept)
+    potion.recipeKeys = kept
+    potion.alternateRecipeSpecKeys = kept
+    local active = tostring(potion.activeRecipeKey or potion.activeRecipeSpecKey or "")
+    local activeOk = false
+    for i = 1, #kept do
+        if kept[i] == active then
+            activeOk = true
+            break
+        end
+    end
+    if not activeOk then
+        local best = kept[1] or ""
+        for i = 2, #kept do
+            if #tostring(kept[i]) > #tostring(best) then
+                best = kept[i]
+            end
+        end
+        potion.activeRecipeKey = best ~= "" and best or nil
+        potion.activeRecipeSpecKey = potion.activeRecipeKey
+        if potion.activeRecipeKey then
+            potion.recipeSpecKey = potion.activeRecipeKey
+        end
+    end
 end
 
 function RS.RegisterKnownPotion(outputUid, out, recipeSpecKey, quality)
@@ -1316,12 +1581,8 @@ function RS.RegisterKnownPotion(outputUid, out, recipeSpecKey, quality)
     recipeSpecKey = tostring(recipeSpecKey or "")
     local recipeKeyAdded = false
     if quality ~= "failed" and recipeSpecKey ~= "" then
-        local keys = PotionRecipeKeys(existing)
-        if type(keys) ~= "table" then
-            keys = {}
-        end
-        existing.recipeKeys = keys
-        -- Incomplete board snapshots (e.g. missing multiplier) are strict prefixes of the
+        local keys = CollectPotionRecipeKeyList(existing)
+        -- Incomplete board snapshots (missing mid/trailing slots) are subsets of the
         -- full fingerprint — do not register them as alternate recipes / active.
         local weaker = false
         for i = 1, #keys do
@@ -1351,9 +1612,10 @@ function RS.RegisterKnownPotion(outputUid, out, recipeSpecKey, quality)
                     kept[#kept + 1] = k
                 end
             end
-            existing.recipeKeys = kept
-            existing.alternateRecipeSpecKeys = kept
+            ApplyPotionRecipeKeyList(existing, kept)
             existing.activeRecipeKey = recipeSpecKey
+            existing.activeRecipeSpecKey = recipeSpecKey
+            existing.recipeSpecKey = recipeSpecKey
             RS.ResolveEffectKeyForPotion(existing, {
                 recipeKey = recipeSpecKey,
                 out = out,
@@ -1366,56 +1628,95 @@ function RS.RegisterKnownPotion(outputUid, out, recipeSpecKey, quality)
     return existing, isNew, recipeKeyAdded
 end
 
---- Drop incomplete alternate fingerprints that are strict subsets of a richer learned recipe.
+--- Drop dangling / dominated alternate fingerprints on potions.
+--- Removes keys missing from recipes, and role-subset keys of a richer sibling.
 function RS.ScrubSubsetPotionRecipeKeys()
     local potions = PotionsTable()
+    local recipes = RecipesTable()
     if type(potions) ~= "table" then
         return 0
     end
     local removed = 0
     for _, potion in pairs(potions) do
         if type(potion) == "table" then
-            local keys = PotionRecipeKeys(potion)
-            if type(keys) == "table" and #keys > 1 then
+            local keys = CollectPotionRecipeKeyList(potion)
+            if #keys > 0 then
                 local kept = {}
                 for i = 1, #keys do
                     local a = tostring(keys[i] or "")
-                    if a ~= "" then
-                        local dominated = false
+                    local drop = false
+                    if a == "" then
+                        drop = true
+                    elseif type(recipes) ~= "table" or type(recipes[a]) ~= "table" then
+                        drop = true
+                    else
                         for j = 1, #keys do
                             local b = tostring(keys[j] or "")
-                            if a ~= b and IsStrictFingerprintSubset(a, b) then
-                                dominated = true
+                            if a ~= b
+                                and type(recipes[b]) == "table"
+                                and IsStrictFingerprintSubset(a, b)
+                            then
+                                drop = true
                                 break
                             end
                         end
-                        if dominated then
-                            removed = removed + 1
-                        else
-                            kept[#kept + 1] = a
-                        end
+                    end
+                    if drop then
+                        removed = removed + 1
+                    else
+                        kept[#kept + 1] = a
                     end
                 end
-                potion.recipeKeys = kept
-                potion.alternateRecipeSpecKeys = kept
-                local active = tostring(potion.activeRecipeKey or potion.activeRecipeSpecKey or "")
-                local activeOk = false
-                for i = 1, #kept do
-                    if kept[i] == active then
-                        activeOk = true
-                        break
-                    end
+                ApplyPotionRecipeKeyList(potion, kept)
+            end
+        end
+    end
+    return removed
+end
+
+--- Delete unreferenced recipes that are role-subsets of a richer recipe sharing outcomes.
+function RS.ScrubOrphanSubsetRecipes()
+    local recipes = RecipesTable()
+    local potions = PotionsTable()
+    if type(recipes) ~= "table" then
+        return 0
+    end
+    local referenced = {}
+    if type(potions) == "table" then
+        for _, potion in pairs(potions) do
+            if type(potion) == "table" then
+                local keys = CollectPotionRecipeKeyList(potion)
+                for i = 1, #keys do
+                    referenced[keys[i]] = true
                 end
-                if not activeOk then
-                    -- Prefer the longest (richest) remaining fingerprint.
-                    local best = kept[1] or ""
-                    for i = 2, #kept do
-                        if #tostring(kept[i]) > #tostring(best) then
-                            best = kept[i]
-                        end
-                    end
-                    potion.activeRecipeKey = best ~= "" and best or nil
+            end
+        end
+    end
+    local allKeys = {}
+    for k, recipe in pairs(recipes) do
+        if type(recipe) == "table" then
+            allKeys[#allKeys + 1] = tostring(k)
+        end
+    end
+    local removed = 0
+    for i = 1, #allKeys do
+        local a = allKeys[i]
+        if referenced[a] ~= true and type(recipes[a]) == "table" then
+            local drop = false
+            for j = 1, #allKeys do
+                local b = allKeys[j]
+                if a ~= b
+                    and type(recipes[b]) == "table"
+                    and IsStrictFingerprintSubset(a, b)
+                    and RecipeOutcomesOverlap(recipes[a], recipes[b])
+                then
+                    drop = true
+                    break
                 end
+            end
+            if drop then
+                recipes[a] = nil
+                removed = removed + 1
             end
         end
     end
@@ -1445,11 +1746,7 @@ function RS.RelinkPotionRecipeKeysFromOutcomes()
                         }
                         potions[potionKey] = potion
                     end
-                    local keys = PotionRecipeKeys(potion)
-                    if type(keys) ~= "table" then
-                        keys = {}
-                        potion.recipeKeys = keys
-                    end
+                    local keys = CollectPotionRecipeKeyList(potion)
                     local weaker = false
                     for i = 1, #keys do
                         if IsStrictFingerprintSubset(recipeKey, tostring(keys[i] or "")) then
@@ -1466,7 +1763,10 @@ function RS.RelinkPotionRecipeKeysFromOutcomes()
                             end
                         end
                         if not seen then
-                            keys[#keys + 1] = recipeKey
+                            if type(potion.recipeKeys) ~= "table" then
+                                potion.recipeKeys = {}
+                            end
+                            potion.recipeKeys[#potion.recipeKeys + 1] = recipeKey
                             added = added + 1
                         end
                     end
@@ -1475,6 +1775,7 @@ function RS.RelinkPotionRecipeKeysFromOutcomes()
         end
     end
     RS.ScrubSubsetPotionRecipeKeys()
+    RS.ScrubOrphanSubsetRecipes()
     return added
 end
 
@@ -1770,6 +2071,162 @@ function RS.MigrateRecipeFingerprintsV2()
     return true
 end
 
+--- One-shot: canonicalize fingerprints (load-order independent); merge order-duplicate recipes.
+function RS.MigrateRecipeFingerprintsV3()
+    local acct = StockPiler3.Account
+    if type(acct) ~= "table" then
+        return false
+    end
+    if acct.recipeFingerprintMigrateV3 == true then
+        return false
+    end
+    local recipes = RecipesTable()
+    if type(recipes) ~= "table" then
+        acct.recipeFingerprintMigrateV3 = true
+        return false
+    end
+
+    local function MergeRecipeStats(dest, recipe)
+        local function addField(name)
+            dest[name] = (tonumber(dest[name]) or 0) + (tonumber(recipe[name]) or 0)
+        end
+        addField("brewAttempts")
+        addField("brewSuccesses")
+        addField("brewCrits")
+        addField("brewSuperCrits")
+        addField("brewFailures")
+        addField("brewVolatiles")
+        addField("yieldProductSum")
+        addField("yieldSamples")
+        addField("crafts")
+        if type(recipe.outcomes) == "table" then
+            dest.outcomes = dest.outcomes or {}
+            for uid, row in pairs(recipe.outcomes) do
+                local existing = dest.outcomes[uid]
+                if type(existing) ~= "table" then
+                    dest.outcomes[uid] = row
+                elseif type(row) == "table" then
+                    existing.successes = (tonumber(existing.successes) or 0)
+                        + (tonumber(row.successes) or 0)
+                    existing.productSum = (tonumber(existing.productSum) or 0)
+                        + (tonumber(row.productSum) or 0)
+                    if (tonumber(row.yield) or 0) > (tonumber(existing.yield) or 0) then
+                        existing.yield = row.yield
+                    end
+                end
+            end
+        end
+        if (tonumber(dest.yieldSamples) or 0) > 0 then
+            dest.recipeYield = (tonumber(dest.yieldProductSum) or 0)
+                / (tonumber(dest.yieldSamples) or 1)
+        end
+    end
+
+    local keyMap = {}
+    local rebuilt = {}
+    for oldKey, recipe in pairs(recipes) do
+        if type(recipe) == "table" then
+            HydrateRecipeSlots(recipe)
+            local newKey = SlotsFingerprint(recipe.slots)
+            if newKey == nil or newKey == "" then
+                newKey = tostring(oldKey)
+            end
+            keyMap[tostring(oldKey)] = newKey
+            local dest = rebuilt[newKey]
+            if type(dest) ~= "table" then
+                recipe.recipeSpecKey = newKey
+                recipe.slots = SlimSlotsForStorage(recipe.slots)
+                rebuilt[newKey] = recipe
+            else
+                MergeRecipeStats(dest, recipe)
+            end
+        end
+    end
+    for k in pairs(recipes) do
+        recipes[k] = nil
+    end
+    for k, v in pairs(rebuilt) do
+        recipes[k] = v
+    end
+
+    local potions = PotionsTable()
+    if type(potions) == "table" then
+        for _, potion in pairs(potions) do
+            if type(potion) == "table" then
+                local oldActive = tostring(
+                    potion.activeRecipeKey
+                        or potion.activeRecipeSpecKey
+                        or potion.recipeSpecKey
+                        or ""
+                )
+                local keys = CollectPotionRecipeKeyList(potion)
+                local seen = {}
+                local nextKeys = {}
+                for i = 1, #keys do
+                    local old = tostring(keys[i] or "")
+                    local neu = keyMap[old] or old
+                    if neu ~= "" and seen[neu] ~= true then
+                        seen[neu] = true
+                        nextKeys[#nextKeys + 1] = neu
+                    end
+                end
+                ApplyPotionRecipeKeyList(potion, nextKeys)
+                local neuActive = keyMap[oldActive] or oldActive
+                if neuActive ~= "" and seen[neuActive] == true then
+                    potion.activeRecipeKey = neuActive
+                    potion.activeRecipeSpecKey = neuActive
+                    potion.recipeSpecKey = neuActive
+                elseif #nextKeys > 0 then
+                    potion.activeRecipeKey = nextKeys[1]
+                    potion.activeRecipeSpecKey = nextKeys[1]
+                    potion.recipeSpecKey = nextKeys[1]
+                end
+            end
+        end
+    end
+
+    local settings = StockPiler3.Settings
+    if type(settings) == "table" and type(settings.characters) == "table" then
+        for _, char in pairs(settings.characters) do
+            if type(char) == "table" and type(char.watches) == "table" then
+                local nextWatches = {}
+                for watchKey, watch in pairs(char.watches) do
+                    if type(watch) == "table" then
+                        local parsed = RS.ParsePotionRecipeKey and RS.ParsePotionRecipeKey(watchKey)
+                        local newWatchKey = watchKey
+                        if type(parsed) == "table" and parsed.recipeSpecKey then
+                            local neuRk = keyMap[tostring(parsed.recipeSpecKey)]
+                                or tostring(parsed.recipeSpecKey)
+                            local outUid = tonumber(parsed.outputUid) or 0
+                            if RS.PotionRecipeKey and outUid > 0 then
+                                newWatchKey = RS.PotionRecipeKey(outUid, neuRk)
+                            end
+                        end
+                        if watch.recipeSpecKey then
+                            watch.recipeSpecKey = keyMap[tostring(watch.recipeSpecKey)]
+                                or watch.recipeSpecKey
+                        end
+                        if watch.potionKey == nil and type(parsed) == "table" then
+                            watch.potionKey = parsed.potionKey
+                        end
+                        -- Prefer newer watch row if two keys collapse onto one.
+                        if type(nextWatches[newWatchKey]) ~= "table" then
+                            nextWatches[newWatchKey] = watch
+                        end
+                    end
+                end
+                char.watches = nextWatches
+            end
+        end
+    end
+
+    acct.recipeFingerprintMigrateV3 = true
+    if StockPiler3.Knowledge and StockPiler3.Knowledge.Touch then
+        StockPiler3.Knowledge.Touch("recipe-fingerprint-migrate-v3")
+    end
+    return true
+end
+
 -- Expose hydrate for planner
 function RS.HydrateRecipeSlots(recipe)
     HydrateRecipeSlots(recipe)
@@ -1885,7 +2342,9 @@ end
 
 --- True when Seed Buffer is on and any growable refinable recipe line for this watch
 --- is below the buffer (bag + in-ground + outstanding). Memoized per bag snapGen.
-function RS.WatchHasSeedBufferShort(recipe)
+--- opts.seedUids: known seed uniqueIDs from plan tip / statusTipSlots — prefer these and
+--- skip SeedMap.ResolveSeedForSpec / FindPlantUidForSpec (live Watch hitch path).
+function RS.WatchHasSeedBufferShort(recipe, opts)
     if not (StockPiler3.Watch and StockPiler3.Watch.IsSeedBufferEnabled
         and StockPiler3.Watch.IsSeedBufferEnabled() == true)
     then
@@ -1894,6 +2353,7 @@ function RS.WatchHasSeedBufferShort(recipe)
     if type(recipe) ~= "table" then
         return false
     end
+    opts = type(opts) == "table" and opts or {}
     local Inv = StockPiler3.Inventory
     local snapGen = Inv and Inv.GetSnapGen and tonumber(Inv.GetSnapGen()) or 0
     local recipeId = tostring(
@@ -1908,16 +2368,77 @@ function RS.WatchHasSeedBufferShort(recipe)
         return memo.byRecipe[recipeId] == true
     end
 
-    local SM = StockPiler3.SeedMap
     local Refine = StockPiler3.Refine
+    local buffer = StockPiler3.Watch.GetSeedBufferMin and StockPiler3.Watch.GetSeedBufferMin() or 5
+
+    local function CreditForSeed(seedUid)
+        seedUid = tonumber(seedUid) or 0
+        if seedUid <= 0 then
+            return nil
+        end
+        if Refine and Refine.GetSeedBudget then
+            local budget = Refine.GetSeedBudget(seedUid)
+            return tonumber(budget and budget.credit) or 0
+        end
+        if Inv and Inv.CountByUid then
+            return tonumber(Inv.CountByUid(seedUid)) or 0
+        end
+        return 0
+    end
+
+    local function AnyKnownSeedShort(seedUids)
+        if type(seedUids) ~= "table" or #seedUids == 0 then
+            return nil
+        end
+        local any = false
+        local checked = false
+        for i = 1, #seedUids do
+            local credit = CreditForSeed(seedUids[i])
+            if credit ~= nil then
+                checked = true
+                if credit < buffer then
+                    any = true
+                    break
+                end
+            end
+        end
+        if not checked then
+            return nil
+        end
+        return any
+    end
+
+    -- Hot path: plan tip / row-stamped seedUids — CountByUid budget only.
+    local knownShort = AnyKnownSeedShort(opts.seedUids)
+    if knownShort ~= nil then
+        memo.byRecipe[recipeId] = knownShort
+        return knownShort
+    end
+
+    local SM = StockPiler3.SeedMap
     if type(SM) ~= "table" or not SM.IsGrowableSpec then
         memo.byRecipe[recipeId] = false
         return false
     end
-    local buffer = StockPiler3.Watch.GetSeedBufferMin and StockPiler3.Watch.GetSeedBufferMin() or 5
     if RS.HydrateRecipeSlots then
         RS.HydrateRecipeSlots(recipe)
     end
+
+    -- Prefer snap-cached AutoGrow seed lines (one ResolveSeed storm per snap) over
+    -- per-slot ResolveSeed inside this recipe walk.
+    local lineByKey = nil
+    local lines = RS.CollectAutoGrowSeedLines and RS.CollectAutoGrowSeedLines() or nil
+    if type(lines) == "table" and #lines > 0 then
+        lineByKey = {}
+        for i = 1, #lines do
+            local line = lines[i]
+            local k = type(line) == "table" and tostring(line.specKey or "") or ""
+            if k ~= "" then
+                lineByKey[k] = line
+            end
+        end
+    end
+
     local slots = recipe.slots or {}
     local seen = {}
     local short = false
@@ -1928,26 +2449,34 @@ function RS.WatchHasSeedBufferShort(recipe)
             if SM.IsOneWayHarvestSpec and SM.IsOneWayHarvestSpec(spec) == true then
                 -- One-way: ignore for buffer short.
             else
-                local productKey = StockPiler3.MaterialSpec and StockPiler3.MaterialSpec.ProductKey
-                    and StockPiler3.MaterialSpec.ProductKey(spec) or tostring(i)
+                local productKey = SpecFingerprint(spec)
+                if type(productKey) ~= "string" or productKey == "" then
+                    local M = MS()
+                    productKey = (M and M.ProductKey and M.ProductKey(spec)) or tostring(i)
+                end
                 if seen[productKey] ~= true then
                     seen[productKey] = true
-                    local seed = SM.ResolveSeedForSpec and SM.ResolveSeedForSpec(spec)
                     local seedUid = 0
-                    local plantUid = 0
-                    if type(seed) == "table" then
-                        seedUid = tonumber(seed.uniqueID) or 0
-                        plantUid = tonumber(seed.plantUid) or 0
-                    end
-                    if plantUid <= 0 and SM.FindPlantUidForSpec then
-                        plantUid = tonumber(SM.FindPlantUidForSpec(spec)) or 0
-                    end
-                    if seedUid > 0 and plantUid > 0 then
-                        local credit = 0
-                        if Refine and Refine.GetSeedBudgetForSpec then
-                            local budget = Refine.GetSeedBudgetForSpec(spec, seedUid)
-                            credit = tonumber(budget and budget.credit) or 0
+                    local line = lineByKey and lineByKey[productKey]
+                    if type(line) ~= "table" then
+                        local M = MS()
+                        local pk = M and M.ProductKey and M.ProductKey(spec)
+                        if type(pk) == "string" and pk ~= "" and lineByKey then
+                            line = lineByKey[pk]
                         end
+                    end
+                    if type(line) == "table" then
+                        seedUid = tonumber(line.seedUid) or 0
+                    end
+                    -- Cold miss only: ResolveSeed when seed lines cache has no mapping.
+                    if seedUid <= 0 then
+                        local seed = SM.ResolveSeedForSpec and SM.ResolveSeedForSpec(spec)
+                        if type(seed) == "table" then
+                            seedUid = tonumber(seed.uniqueID) or 0
+                        end
+                    end
+                    if seedUid > 0 then
+                        local credit = CreditForSeed(seedUid) or 0
                         if credit < buffer then
                             short = true
                             break

@@ -60,13 +60,13 @@ local function ReadAdditivesMap(src)
             if uid <= 0 then
                 uid = id
             end
-            out[ct] = {
+            -- Also drop live engine item refs from additives (avoids accidental deep cycles).
+out[ct] = {
                 id = id,
                 uniqueID = uid,
                 filled = id ~= 0 or uid ~= 0,
                 iconNum = tonumber(slot.iconNum) or 0,
                 name = slot.name,
-                item = slot,
             }
         end
     end

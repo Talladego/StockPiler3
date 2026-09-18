@@ -8,6 +8,7 @@ StockPiler3.Buy = StockPiler3.Buy or {}
 local Buy = StockPiler3.Buy
 
 Buy.BRASS_PER_GOLD = 10000
+Buy.BRASS_PER_SILVER = 100
 Buy.MAX_PURCHASES_PER_VISIT = 80
 Buy.PENDING_BUY_TIMEOUT_SEC = 1.0
 Buy.NO_SPEND_COOLDOWN_SEC = 2.0
@@ -118,6 +119,32 @@ local function IsGrowableStoreItem(item)
     return cult == seed or cult == spore
 end
 
+--- Soil / Water / Nutrient — never AutoBuy as recipe mats (same skill tier ≠ match).
+local function IsCultivationAdditiveStoreItem(item)
+    if type(item) ~= "table" then
+        return false
+    end
+    local MS = StockPiler3.MaterialSpec
+    if MS and MS.IsCultivationAdditive then
+        return MS.IsCultivationAdditive(item) == true
+    end
+    local cult = tonumber(item.cultivationType) or 0
+    local soil = (GameData and GameData.CultivationTypes and GameData.CultivationTypes.SOIL) or 2
+    local water = (GameData and GameData.CultivationTypes and GameData.CultivationTypes.WATERCAN) or 3
+    local nutrient = (GameData and GameData.CultivationTypes and GameData.CultivationTypes.NUTRIENT) or 4
+    return cult == soil or cult == water or cult == nutrient
+end
+
+local function StoreItemRejectedForBuy(item)
+    if IsCultivationAdditiveStoreItem(item) then
+        return true
+    end
+    if Buy._allowPlantBuys ~= true and IsGrowableStoreItem(item) then
+        return true
+    end
+    return false
+end
+
 local function HasAltCurrency(item)
     local alt = item and item.altCurrency
     if type(alt) ~= "table" then
@@ -166,19 +193,49 @@ local function JobAcquireKey(job, item)
     return nil
 end
 
+--- Brass → compact g/s/b (WAR: 1g = 100s = 10000b). Avoids "0g" for sub-gold spends.
+local function FormatSpentLabel(brass)
+    brass = math.max(0, math.floor((tonumber(brass) or 0) + 1e-9))
+    local perGold = Buy.BRASS_PER_GOLD or 10000
+    local perSilver = Buy.BRASS_PER_SILVER or 100
+    local g = math.floor(brass / perGold)
+    local rem = brass - (g * perGold)
+    local s = math.floor(rem / perSilver)
+    local b = rem - (s * perSilver)
+    if g > 0 then
+        if s > 0 and b > 0 then
+            return string.format("%dg %ds %db", g, s, b)
+        end
+        if s > 0 then
+            return string.format("%dg %ds", g, s)
+        end
+        if b > 0 then
+            return string.format("%dg %db", g, b)
+        end
+        return string.format("%dg", g)
+    end
+    if s > 0 then
+        if b > 0 then
+            return string.format("%ds %db", s, b)
+        end
+        return string.format("%ds", s)
+    end
+    return string.format("%db", b)
+end
+
 local function ChatMaterialFill(uid, name, count, spentBrass)
     local CC = StockPiler3.CraftChatAdapter
-    local gold = math.floor((tonumber(spentBrass) or 0) / (Buy.BRASS_PER_GOLD or 10000))
+    local spentLabel = FormatSpentLabel(spentBrass)
     if CC and CC.PrintWithItem then
         CC.PrintWithItem(
             "AutoBuy: " .. tostring(count) .. "x ",
             uid,
             name,
-            " (spent " .. tostring(gold) .. "g)"
+            " (spent " .. spentLabel .. ")"
         )
     elseif CC and CC.Print then
         CC.Print("AutoBuy: " .. tostring(count) .. "x " .. tostring(name or "?")
-            .. " (spent " .. tostring(gold) .. "g)")
+            .. " (spent " .. spentLabel .. ")")
     end
 end
 
@@ -210,7 +267,9 @@ local function NoteFillProgress(job, item, bought, unitCost)
     row.spent = (tonumber(row.spent) or 0) + unitCost * bought
     local need = tonumber(row.need) or 0
     local acquired = VisitAcquired(key)
-    if need > 0 and acquired >= need then
+    -- Print when this material's need is filled, or immediately if visit already stopped
+    -- (pending buy confirmed after store close — FlushFillChat already ran).
+    if (need > 0 and acquired >= need) or Buy._visitStopReason ~= nil then
         ChatMaterialFill(row.uid, row.name, row.count, row.spent)
         Buy._fillChatPending[key] = nil
     end
@@ -232,6 +291,14 @@ local function AccountConfirmedBuy(pending, liveMoney)
     AddVisitAcquired(key, qty)
     if type(pending.job) == "table" and type(pending.item) == "table" then
         NoteFillProgress(pending.job, pending.item, qty, unitCost)
+    elseif (tonumber(pending.uid) or 0) > 0 then
+        -- Still announce when job/item tables were dropped but uid is known.
+        NoteFillProgress(
+            { uid = pending.uid, deficit = qty, acquireKey = pending.key },
+            { uniqueID = pending.uid, name = pending.name },
+            qty,
+            unitCost
+        )
     end
     LogBuy(string.format(
         "purchase uid=%s qty=%d cost=%d spent=%d moneyLeft=%d remainingWas=%d",
@@ -301,22 +368,97 @@ local function ResolvePendingBuy()
     return "waiting"
 end
 
+--- Confirm or drop open pending before visit-stop chat (store often closes mid-confirm).
+local function FinalizePendingBuyForStop()
+    local pending = Buy._pendingBuy
+    if type(pending) ~= "table" then
+        return
+    end
+    local state = ResolvePendingBuy()
+    if state == "confirmed" or state == "no-spend" then
+        return
+    end
+    local uid = tonumber(pending.uid) or 0
+    local qty = math.max(1, tonumber(pending.qty) or 1)
+    local bagNow = BagCountUid(uid)
+    local bagBefore = tonumber(pending.bagBefore) or 0
+    if uid > 0 and bagNow >= (bagBefore + qty) then
+        AccountConfirmedBuy(pending, PlayerMoneyBrass())
+        Buy._pendingBuy = nil
+        return
+    end
+    local live = PlayerMoneyBrass()
+    local before = tonumber(pending.beforeMoney) or 0
+    if live > 0 and before > 0 and live < before then
+        AccountConfirmedBuy(pending, live)
+        Buy._pendingBuy = nil
+        return
+    end
+    LogBuy(string.format(
+        "pending-drop-on-stop uid=%s qty=%d bag=%d->%d money=%d->%d",
+        tostring(uid),
+        qty,
+        bagBefore,
+        bagNow,
+        before,
+        live
+    ))
+    Buy._pendingBuy = nil
+end
+
 local function ChatVisitStop(reason)
     if Buy._visitStopReason ~= nil then
         return
     end
+    FinalizePendingBuyForStop()
     Buy._visitStopReason = tostring(reason or "stop")
     FlushFillChat()
     local bought = tonumber(Buy._visitBought) or 0
     local spent = tonumber(Buy._visitSpentBrass) or 0
-    local gold = math.floor(spent / (Buy.BRASS_PER_GOLD or 10000))
     local CC = StockPiler3.CraftChatAdapter
     if CC and CC.Print and bought > 0 then
         CC.Print("AutoBuy: visit stop (" .. Buy._visitStopReason
-            .. ") bought=" .. tostring(bought) .. " spent=" .. tostring(gold) .. "g")
+            .. ") bought=" .. tostring(bought)
+            .. " spent=" .. FormatSpentLabel(spent))
     end
     LogBuy("visit-stop " .. Buy._visitStopReason
         .. " bought=" .. tostring(bought) .. " spent=" .. tostring(spent))
+end
+
+local function WakeBrewAfterBuyFill(reason)
+    reason = tostring(reason or "buy-fill")
+    local Planner = StockPiler3.Planner
+    if Planner then
+        -- Allow closed-window sync to re-run on this snap after buy fill.
+        Planner._closedLiveSnapGen = nil
+    end
+    local PS = StockPiler3.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    if type(plan) == "table" and type(plan.rows) == "table" and #plan.rows > 0 then
+        if Planner and Planner.PatchWatchRowsLiveCounts then
+            -- Force shared polish path even when potion craftable/deficit unchanged.
+            Planner.PatchWatchRowsLiveCounts(plan.rows, {
+                syncSnapshot = true,
+                allowWarmHave = true,
+            })
+        elseif Planner and Planner.SyncLiveStatusClosedWindow then
+            Planner.SyncLiveStatusClosedWindow()
+        end
+    end
+    local Brew = StockPiler3.Brew
+    if Brew and Brew.InvalidateCanBrewCache then
+        Brew.InvalidateCanBrewCache()
+    end
+    if Brew and Brew.MaybeNotifyBrewReady then
+        Brew.MaybeNotifyBrewReady()
+    end
+    if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
+        StockPiler3Window.RequestFooterRefresh()
+    end
+    if StockPiler3.Ui and StockPiler3.Ui.MarkWatchUiDirty then
+        StockPiler3.Ui.MarkWatchUiDirty()
+    end
+    LogBuy("wake-brew-after-fill reason=" .. reason)
 end
 
 local function ArmPlanAfterBuyFill(reason)
@@ -334,6 +476,8 @@ local function ArmPlanAfterBuyFill(reason)
     if StockPiler3.Scheduler and StockPiler3.Scheduler.EnqueuePlanRebuild then
         StockPiler3.Scheduler.EnqueuePlanRebuild({ reason = reason or "buy-fill" })
     end
+    -- Do not wait for coalesced rebuild / vendor-open Watch defer — wake Brew now.
+    WakeBrewAfterBuyFill(reason or "buy-fill")
 end
 
 local function ResetVisit()
@@ -524,6 +668,14 @@ function Buy.FindStoreMatch(job)
     local spec = job.spec
     local incomplete = type(spec) == "table" and spec.incomplete == true
 
+    local function RowCost(row, item)
+        local cost = tonumber(row and row.cost) or tonumber(item and item.cost) or 0
+        if cost <= 0 and type(item) == "table" then
+            cost = tonumber(item.price) or tonumber(item.sellPrice) or 0
+        end
+        return cost
+    end
+
     -- Incomplete: exact uid only.
     if incomplete and uid > 0 and VA.FindStoreRowsByUid then
         local rows = VA.FindStoreRowsByUid(uid)
@@ -532,7 +684,7 @@ function Buy.FindStoreMatch(job)
                 local row = rows[i]
                 local item = row and row.item or row
                 if type(item) == "table" and not HasAltCurrency(item) then
-                    return item, tonumber(row.cost) or tonumber(item.cost) or 0
+                    return item, RowCost(row, item)
                 end
             end
         end
@@ -551,17 +703,83 @@ function Buy.FindStoreMatch(job)
             if type(item) == "table" and not HasAltCurrency(item) then
                 if row.canbuy == false then
                     -- skip sold-out / gated rows
-                elseif Buy._allowPlantBuys ~= true and IsGrowableStoreItem(item) then
-                    -- reject growables
-                elseif MS.Matches(item, spec) == true then
-                    local cost = tonumber(row.cost) or tonumber(item.cost) or 0
-                    if bestItem == nil or cost < (bestCost or math.huge) then
+                elseif StoreItemRejectedForBuy(item) then
+                    -- skip cult additives / growables
+                elseif MS.Matches(item, spec) == true
+                    or (MS.ProductMatches and MS.ProductMatches(item, spec) == true)
+                then
+                    local cost = RowCost(row, item)
+                    if bestItem == nil or (cost > 0 and cost < (bestCost or math.huge))
+                        or (bestCost == 0 and cost > 0)
+                    then
                         bestItem = item
                         bestCost = cost
                     end
                     -- Exact uid hit wins immediately.
                     if uid > 0 and (tonumber(item.uniqueID) or 0) == uid then
                         return item, cost
+                    end
+                end
+            end
+        end
+        if bestItem ~= nil then
+            return bestItem, bestCost or 0
+        end
+    end
+
+    -- Container fallback: bag twins share icon with vendor Artisan's/Fabricated vials
+    -- when store rows lack craftingSkillRequirement / bonuses (fingerprint miss).
+    if type(spec) == "table"
+        and tostring(spec.role or job.role or "") == "container"
+        and type(index) == "table"
+        and type(index.rows) == "table"
+    then
+        local Inv = StockPiler3.Inventory
+        local iconSet = {}
+        local bagUids = {}
+        if Inv and Inv.ForEachItem and MS then
+            Inv.ForEachItem(function(bagItem)
+                if type(bagItem) ~= "table" then
+                    return
+                end
+                local ok = false
+                if MS.ProductMatches and MS.ProductMatches(bagItem, spec) == true then
+                    ok = true
+                elseif MS.Matches and MS.Matches(bagItem, spec) == true then
+                    ok = true
+                end
+                if ok then
+                    local icon = tonumber(bagItem.iconNum) or 0
+                    if icon > 0 then
+                        iconSet[icon] = true
+                    end
+                    local bUid = tonumber(bagItem.uniqueID) or tonumber(bagItem.id) or 0
+                    if bUid > 0 then
+                        bagUids[bUid] = true
+                    end
+                end
+            end)
+        end
+        local bestItem, bestCost = nil, nil
+        for i = 1, #index.rows do
+            local row = index.rows[i]
+            local item = row and row.item
+            if type(item) == "table" and not HasAltCurrency(item) and row.canbuy ~= false then
+                if StoreItemRejectedForBuy(item) then
+                    -- skip
+                else
+                    local sUid = tonumber(item.uniqueID) or tonumber(item.id) or 0
+                    local icon = tonumber(item.iconNum) or 0
+                    local twin = (sUid > 0 and bagUids[sUid] == true)
+                        or (icon > 0 and iconSet[icon] == true)
+                    if twin then
+                        local cost = RowCost(row, item)
+                        if bestItem == nil or (cost > 0 and cost < (bestCost or math.huge))
+                            or (bestCost == 0 and cost > 0)
+                        then
+                            bestItem = item
+                            bestCost = cost
+                        end
                     end
                 end
             end
@@ -579,10 +797,10 @@ function Buy.FindStoreMatch(job)
                 local row = rows[i]
                 local item = row and row.item or row
                 if type(item) == "table" and not HasAltCurrency(item) then
-                    if Buy._allowPlantBuys ~= true and IsGrowableStoreItem(item) then
+                    if StoreItemRejectedForBuy(item) then
                         -- skip
                     else
-                        return item, tonumber(row.cost) or tonumber(item.cost) or 0
+                        return item, RowCost(row, item)
                     end
                 end
             end
@@ -663,11 +881,25 @@ function Buy.IssueOne(opId)
     local reserveBlock = false
     local budgetBlock = false
 
+    local matched = 0
+    local zeroCost = 0
+    local noMatch = 0
     for i = 1, #jobs do
         local job = jobs[i]
         local item, unitCost = Buy.FindStoreMatch(job)
         unitCost = tonumber(unitCost) or 0
-        if type(item) == "table" and unitCost > 0 then
+        if type(item) ~= "table" then
+            noMatch = noMatch + 1
+        elseif unitCost <= 0 then
+            zeroCost = zeroCost + 1
+            LogBuy(string.format(
+                "skip zero-cost uid=%s slot=%s key=%s",
+                tostring(tonumber(item.uniqueID) or job.uid or 0),
+                tostring(item.slotNum),
+                tostring(job.specKey or job.uid or i)
+            ))
+        elseif type(item) == "table" and unitCost > 0 then
+            matched = matched + 1
             local key = JobAcquireKey(job, item)
             local slotNum = tonumber(item.slotNum)
             local uid = tonumber(item.uniqueID) or tonumber(item.id) or tonumber(job.uid) or 0
@@ -719,6 +951,7 @@ function Buy.IssueOne(opId)
                                 qty = qty,
                                 key = key,
                                 uid = uid,
+                                name = item.name or job.name,
                                 at = NowSec(),
                                 job = job,
                                 item = item,
@@ -761,6 +994,26 @@ function Buy.IssueOne(opId)
         ChatVisitStop("budget")
         ArmPlanAfterBuyFill("budget")
         return done(false)
+    end
+    if #jobs > 0 and matched <= 0 then
+        local indexRows = 0
+        local index = VA.GetMatchIndex and VA.GetMatchIndex()
+        if type(index) == "table" and type(index.rows) == "table" then
+            indexRows = #index.rows
+        end
+        local now = NowSec()
+        local last = tonumber(Buy._lastNoMatchLogAt) or 0
+        if now <= 0 or (now - last) >= 3 then
+            Buy._lastNoMatchLogAt = now
+            LogBuy(string.format(
+                "no-store-match jobs=%d noMatch=%d zeroCost=%d indexRows=%s buyback=%s",
+                #jobs,
+                noMatch,
+                zeroCost,
+                tostring(indexRows),
+                tostring(VA.IsBuybackView and VA.IsBuybackView() == true)
+            ))
+        end
     end
     return done(false)
 end
@@ -879,15 +1132,99 @@ function Buy.DumpBuyPlan(opts)
         local j = jobs[i]
         local role = tostring(j.role or "")
         local incomplete = type(j.spec) == "table" and j.spec.incomplete == true
+        local item, cost = Buy.FindStoreMatch(j)
+        local matchUid = type(item) == "table" and (tonumber(item.uniqueID) or tonumber(item.id) or 0) or 0
+        local matchSlot = type(item) == "table" and tonumber(item.slotNum) or nil
         Emit(string.format(
-            "  [%d] uid=%s deficit=%s role=%s incomplete=%s key=%s",
+            "  [%d] uid=%s deficit=%s role=%s incomplete=%s key=%s match=%s cost=%s slot=%s",
             i,
             tostring(j.uid or j.uniqueID),
             tostring(j.deficit),
             role,
             tostring(incomplete),
-            tostring(j.specKey or j.acquireKey)
+            tostring(j.specKey or j.acquireKey),
+            matchUid > 0 and tostring(matchUid) or "nil",
+            tostring(cost),
+            tostring(matchSlot)
         ), force)
+    end
+    local VA = StockPiler3.VendorAdapter
+    if VA and VA.RefreshMatchIndex then
+        VA.RefreshMatchIndex()
+    end
+    local index = VA and VA.GetMatchIndex and VA.GetMatchIndex()
+    local indexRows = type(index) == "table" and type(index.rows) == "table" and #index.rows or 0
+    Emit(string.format(
+        "store indexRows=%s buyback=%s",
+        tostring(indexRows),
+        tostring(VA and VA.IsBuybackView and VA.IsBuybackView() == true)
+    ), force)
+    -- Dump store rows so no-store-match is diagnosable without a second command.
+    local MS = StockPiler3.MaterialSpec
+    local job0 = jobs[1]
+    local spec0 = type(job0) == "table" and job0.spec or nil
+    if type(index) == "table" and type(index.rows) == "table" then
+        local maxLines = math.min(#index.rows, 25)
+        Emit("--- store rows (" .. tostring(#index.rows) .. ") ---", force)
+        for i = 1, maxLines do
+            local row = index.rows[i]
+            local item = row and row.item
+            if type(item) == "table" then
+                local parsed = MS and MS.FromItemData and MS.FromItemData(item, nil)
+                local req = tonumber(item.craftingSkillRequirement) or 0
+                local pSkill = tonumber(parsed and parsed.skillLevel) or 0
+                local pSlot = tonumber(parsed and parsed.slotType) or 0
+                local pRole = tostring(parsed and parsed.role or "")
+                local cult = tonumber(item.cultivationType) or 0
+                local why = "ok"
+                if HasAltCurrency(item) then
+                    why = "alt"
+                elseif row.canbuy == false then
+                    why = "canbuy"
+                elseif StoreItemRejectedForBuy(item) then
+                    if IsCultivationAdditiveStoreItem(item) then
+                        why = "additive"
+                    else
+                        why = "growable"
+                    end
+                elseif type(spec0) == "table" and MS and MS.Matches then
+                    if MS.Matches(item, spec0) == true
+                        or (MS.ProductMatches and MS.ProductMatches(item, spec0) == true)
+                    then
+                        why = "MATCH"
+                    else
+                        why = "nomatch"
+                        if pSkill ~= (tonumber(spec0.skillLevel) or 0) then
+                            why = "skill"
+                        elseif tonumber(parsed and parsed.tradeSkill) ~= tonumber(spec0.tradeSkill) then
+                            why = "ts"
+                        elseif IsCultivationAdditiveStoreItem(item) then
+                            why = "additive"
+                        end
+                    end
+                end
+                local name = "?"
+                if type(item.name) == "wstring" and type(WStringToString) == "function" then
+                    name = WStringToString(item.name) or "?"
+                elseif item.name ~= nil then
+                    name = tostring(item.name)
+                end
+                Emit(string.format(
+                    "  #%d slot=%s uid=%s cost=%s req=%s pSkill=%s pSlot=%s pRole=%s ct=%s why=%s name=%s",
+                    i,
+                    tostring(tonumber(item.slotNum) or 0),
+                    tostring(tonumber(item.uniqueID) or tonumber(item.id) or 0),
+                    tostring(tonumber(row.cost) or tonumber(item.cost) or 0),
+                    tostring(req),
+                    tostring(pSkill),
+                    tostring(pSlot),
+                    pRole,
+                    tostring(cult),
+                    why,
+                    name
+                ), force)
+            end
+        end
     end
     Emit("=== end buy plan ===", force)
 end

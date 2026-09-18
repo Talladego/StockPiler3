@@ -253,13 +253,47 @@
                     </Anchors>
                 </FullResizeImage>
 
+                <Window name="$parentPrioChip" handleinput="false">
+                    <Size>
+                        <AbsPoint x="36" y="22" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+                            <AbsPoint x="4" y="5" />
+                        </Anchor>
+                    </Anchors>
+                    <Windows>
+                        <FullResizeImage name="$parentBg" inherits="EA_FullResizeImage_TintableSolidBackground" handleinput="false" layer="background">
+                            <Anchors>
+                                <Anchor point="topleft" relativePoint="topleft" />
+                                <Anchor point="bottomright" relativePoint="bottomright" />
+                            </Anchors>
+                        </FullResizeImage>
+                    </Windows>
+                </Window>
+                <Label name="$parentPrio" font="font_chat_text" maxchars="4" textalign="center" handleinput="true">
+                    <Size>
+                        <AbsPoint x="36" y="22" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+                            <AbsPoint x="4" y="5" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPiler3TabWatch.OnPrioLButtonUp" />
+                        <EventHandler event="OnRButtonUp" function="StockPiler3TabWatch.OnPrioRButtonUp" />
+                        <EventHandler event="OnMouseOver" function="StockPiler3TabWatch.OnMouseOverPrio" />
+                    </EventHandlers>
+                </Label>
+
                 <DynamicImage name="$parentIcon" handleinput="true" texturescale="0.34">
                     <Size>
                         <AbsPoint x="22" y="22" />
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
-                            <AbsPoint x="8" y="5" />
+                            <AbsPoint x="48" y="5" />
                         </Anchor>
                     </Anchors>
                     <EventHandlers>
@@ -267,15 +301,18 @@
                     </EventHandlers>
                 </DynamicImage>
 
-                <Label name="$parentName" font="font_chat_text" maxchars="64" textalign="leftcenter" handleinput="false" wordwrap="false">
+                <Label name="$parentName" font="font_chat_text" maxchars="64" textalign="leftcenter" handleinput="true" wordwrap="false">
                     <Size>
-                        <AbsPoint x="278" y="28" />
+                        <AbsPoint x="234" y="28" />
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
-                            <AbsPoint x="34" y="2" />
+                            <AbsPoint x="74" y="2" />
                         </Anchor>
                     </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnMouseOver" function="StockPiler3TabWatch.OnMouseOverName" />
+                    </EventHandlers>
                 </Label>
 
                 <Label name="$parentStatus" font="font_chat_text" maxchars="48" textalign="leftcenter" handleinput="true" wordwrap="false">

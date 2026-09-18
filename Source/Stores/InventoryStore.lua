@@ -484,3 +484,196 @@ end
 function Inv.ClearSpecParseCache()
     Inv._specParseCache = {}
 end
+
+--- CreateItemTooltip assumes bag-shaped fields; pad thin shells (DB/learned) so stock UI does not nil-index.
+function Inv.NormalizeItemDataForTooltip(itemData)
+    if type(itemData) ~= "table" then
+        return nil
+    end
+    local data = {}
+    for k, v in pairs(itemData) do
+        data[k] = v
+    end
+    if data.timeLeftBeforeDecay == nil then
+        data.timeLeftBeforeDecay = 0
+    end
+    if data.equipSlot == nil then
+        data.equipSlot = 0
+    end
+    local stacks = tonumber(data.stackCount) or 0
+    if stacks < 1 then
+        data.stackCount = 1
+    end
+    if type(data.bonus) ~= "table" then
+        data.bonus = {}
+    end
+    if type(data.flags) ~= "table" then
+        data.flags = {}
+    end
+    if type(data.craftingBonus) ~= "table" then
+        data.craftingBonus = {}
+    end
+    if data.broken == nil then
+        data.broken = false
+    end
+    if data.sellPrice == nil then
+        data.sellPrice = 0
+    end
+    if data.repairPrice == nil then
+        data.repairPrice = 0
+    end
+    if data.armor == nil then
+        data.armor = 0
+    end
+    if data.maxEquip == nil then
+        data.maxEquip = 0
+    end
+    if tonumber(data.iLevel) == nil then
+        data.iLevel = tonumber(data.level) or 0
+    end
+    if data.name == nil then
+        data.name = L""
+    end
+    if data.iconNum == nil then
+        data.iconNum = 0
+    end
+    if data.type == nil then
+        data.type = tonumber(data.itemType) or 0
+    end
+    return data
+end
+
+local function ItemDataHasUseBonus(itemData)
+    if type(itemData) ~= "table" or type(itemData.bonus) ~= "table" then
+        return false
+    end
+    local useType = 3
+    if GameDefs and GameDefs.ITEMBONUS_USE then
+        useType = GameDefs.ITEMBONUS_USE
+    end
+    for _, bonus in pairs(itemData.bonus) do
+        if type(bonus) == "table" and tonumber(bonus.type) == useType and (tonumber(bonus.reference) or 0) > 0 then
+            return true
+        end
+    end
+    return false
+end
+
+local function PreferRicherItemData(a, b)
+    if a == nil then
+        return b
+    end
+    if b == nil then
+        return a
+    end
+    local aUse = ItemDataHasUseBonus(a)
+    local bUse = ItemDataHasUseBonus(b)
+    if aUse and not bUse then
+        return a
+    end
+    if bUse and not aUse then
+        return b
+    end
+    local aR = tonumber(a.rarity) or 0
+    local bR = tonumber(b.rarity) or 0
+    if bR > aR then
+        return b
+    end
+    return a
+end
+
+--- Overlay iLevel/rarity from Account.items when bag/DB shells omit them.
+local function EnrichFromLearned(uid, item)
+    if type(item) ~= "table" then
+        return item
+    end
+    local Items = StockPiler3.Items
+    local learned = Items and Items.AsItemData and Items.AsItemData(uid) or nil
+    if type(learned) ~= "table" then
+        return item
+    end
+    local lvl = tonumber(item.iLevel) or tonumber(item.level) or 0
+    local learnedLvl = tonumber(learned.iLevel) or tonumber(learned.level) or 0
+    if lvl <= 0 and learnedLvl > 0 then
+        item.iLevel = learnedLvl
+    end
+    if (tonumber(item.rarity) or 0) <= 0 and (tonumber(learned.rarity) or 0) > 0 then
+        item.rarity = learned.rarity
+    end
+    if (item.name == nil or item.name == L"") and learned.name ~= nil then
+        item.name = learned.name
+    end
+    if (tonumber(item.iconNum) or 0) <= 0 and (tonumber(learned.iconNum) or 0) > 0 then
+        item.iconNum = learned.iconNum
+    end
+    return item
+end
+
+function Inv.ItemDataHasUseBonus(itemData)
+    return ItemDataHasUseBonus(itemData)
+end
+
+--- Prefer bag/sample with Use-bonus; enrich rarity/iLevel from learned Items.
+function Inv.ResolvePotionItemData(potionKey, uid, existing)
+    uid = tonumber(uid) or 0
+    if uid <= 0 and type(potionKey) == "string" then
+        local fromKey = string.match(potionKey, "^uid:(%d+)")
+        uid = tonumber(fromKey) or 0
+    end
+    if uid <= 0 then
+        return existing
+    end
+
+    local best = type(existing) == "table" and existing or nil
+    local sample = Inv.GetSample(uid)
+    if type(sample) == "table" then
+        best = PreferRicherItemData(best, sample)
+    end
+    if (not ItemDataHasUseBonus(best)) and type(GetDatabaseItemData) == "function" then
+        local ok, data = pcall(GetDatabaseItemData, uid)
+        if ok and type(data) == "table" then
+            best = PreferRicherItemData(best, data)
+        end
+    end
+    if type(best) ~= "table" and StockPiler3.Items and StockPiler3.Items.AsItemData then
+        best = StockPiler3.Items.AsItemData(uid)
+    end
+    if type(best) == "table" then
+        best = EnrichFromLearned(uid, best)
+        if (tonumber(best.uniqueID) or 0) <= 0 then
+            best.uniqueID = uid
+        end
+    end
+    return best or existing
+end
+
+--- Full stock item tooltip when itemData has Use-bonus. Returns true if shown.
+function Inv.ShowItemTooltip(itemData, anchorWindow)
+    if type(itemData) ~= "table" or type(Tooltips) ~= "table"
+        or type(Tooltips.CreateItemTooltip) ~= "function"
+    then
+        return false
+    end
+    if not ItemDataHasUseBonus(itemData) then
+        return false
+    end
+    local data = Inv.NormalizeItemDataForTooltip(itemData)
+    if type(data) ~= "table" then
+        return false
+    end
+    local win = anchorWindow or (SystemData and SystemData.ActiveWindow and SystemData.ActiveWindow.name)
+    local ok
+    if StockPiler3.Debug and StockPiler3.Debug.TryCallQuiet then
+        ok = StockPiler3.Debug.TryCallQuiet(
+            "Tooltips.CreateItemTooltip",
+            Tooltips.CreateItemTooltip,
+            data,
+            win,
+            Tooltips.ANCHOR_WINDOW_RIGHT,
+            false
+        )
+    else
+        ok = pcall(Tooltips.CreateItemTooltip, data, win, Tooltips.ANCHOR_WINDOW_RIGHT, false)
+    end
+    return ok == true
+end

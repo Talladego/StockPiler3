@@ -17,6 +17,7 @@ Orch._fillBlocked = false
 Orch._fillBlockedWait = 0
 Orch._busTokens = nil
 Orch._seedBufferRefineArmed = false
+Orch._inTick = false
 
 local function TrackBus(token)
     if token == nil then
@@ -119,6 +120,7 @@ local function ClearFillIfBufferOk()
 end
 
 local function EndTick()
+    Orch._inTick = false
     if StockPiler3.Perf and StockPiler3.Perf.End then
         StockPiler3.Perf.End("Orchestrator.Tick")
     end
@@ -243,6 +245,25 @@ function Orch.DispatchCommand(kind, payload)
 end
 
 function Orch.Tick()
+    -- PlantSeed/AddAdditive can re-enter UPDATE_PROCESSED on the same C stack.
+    if Orch._inTick == true then
+        return
+    end
+    Orch._inTick = true
+
+    local ok, err = pcall(Orch._TickBody)
+    if ok ~= true then
+        Orch._inTick = false
+        if StockPiler3.Perf and StockPiler3.Perf.End then
+            StockPiler3.Perf.End("Orchestrator.Tick")
+        end
+        if StockPiler3.Debug and StockPiler3.Debug.ReportProtectedCallFailure then
+            StockPiler3.Debug.ReportProtectedCallFailure("Orchestrator.Tick", err, true)
+        end
+    end
+end
+
+function Orch._TickBody()
     if StockPiler3.Perf and StockPiler3.Perf.Begin then
         StockPiler3.Perf.Begin("Orchestrator.Tick")
     end

@@ -129,14 +129,6 @@ local function CharacterRow()
     return nil
 end
 
-local function RespectGrowReserve()
-    local row = CharacterRow()
-    if type(row) ~= "table" then
-        return true
-    end
-    return row.brewRespectGrowReserve ~= false
-end
-
 local function CanBrewPotionsSkill()
     local Caps = StockPiler3.TradeSkillCaps
     return Caps and Caps.CanBrewPotions and Caps.CanBrewPotions() == true
@@ -145,6 +137,17 @@ end
 local function CanAutoGrowSkill()
     local Caps = StockPiler3.TradeSkillCaps
     return Caps and Caps.CanAutoGrow and Caps.CanAutoGrow() == true
+end
+
+local function RespectGrowReserve()
+    if not CanAutoGrowSkill() then
+        return false
+    end
+    local row = CharacterRow()
+    if type(row) ~= "table" then
+        return true
+    end
+    return row.brewRespectGrowReserve ~= false
 end
 
 local function EmitDefault(line)
@@ -723,6 +726,16 @@ local function WatchWantsAutoGrow(watchKey, watch)
     return watch.autoGrow == true
 end
 
+--- Grow needs master+row AutoGrow; buy acting set needs enabled+row AutoGrow
+--- (master AutoGrow may be off — AutoBuy still runs at vendors).
+local function WatchInActingSet(watchKey, watch, mode)
+    if mode == "buy" then
+        watch = ResolveWatchRow(watchKey, watch)
+        return type(watch) == "table" and watch.enabled == true and watch.autoGrow == true
+    end
+    return WatchWantsAutoGrow(watchKey, watch)
+end
+
 local function ResolveWatchPotion(watchKey)
     local RS = RecipeSpec()
     if RS and RS.ResolveWatchPotion then
@@ -751,7 +764,10 @@ local function BuildBalancedSpecDemand()
     local snapGen = CurrentSnapGen()
     local Watch = StockPiler3.Watch
     local watchGen = Watch and Watch.GetGen and Watch.GetGen() or 0
-    local cacheKey = tostring(snapGen) .. ":" .. tostring(watchGen)
+    local PS = StockPiler3.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get() or nil
+    local planGen = type(plan) == "table" and tonumber(plan.planGen) or 0
+    local cacheKey = tostring(snapGen) .. ":" .. tostring(watchGen) .. ":" .. tostring(planGen)
     if type(Planner._demandCache) == "table" and Planner._demandCacheKey == cacheKey then
         return Planner._demandCache
     end
@@ -1012,12 +1028,7 @@ local function CollectFocus(mode)
             if type(row) == "table" then
                 local watchKey = tostring(row.potionKey or row.potionRecipeKey or row.id or "")
                 local watch = ResolveWatchRow(watchKey, nil)
-                local ok = false
-                if mode == "buy" then
-                    ok = type(watch) == "table" and watch.enabled == true
-                else
-                    ok = WatchWantsAutoGrow(watchKey, watch)
-                end
+                local ok = WatchInActingSet(watchKey, watch, mode)
                 local deficit = tonumber(row.potionDeficit) or 0
                 if ok and deficit > 0 and watchKey ~= "" then
                     local gap = tonumber(row.bottleGap)
@@ -1026,10 +1037,19 @@ local function CollectFocus(mode)
                     end
                     local statusKey = tostring(row.statusKey or "")
                     local still = gap > 0
-                    if mode ~= "buy" and not still then
-                        still = row.craftableShared == true or statusKey == "need_seeds"
+                    if not still then
+                        -- Shared contest (gap=0): Grow and Buy both keep these watches.
+                        -- Buy must purchase contested flasks so AutoBrew can clear the set.
+                        still = row.craftableShared == true
+                        if mode ~= "buy" and not still then
+                            still = statusKey == "need_seeds"
+                        end
                     end
                     if still then
+                        local priorityTier = tonumber(row.priorityTier)
+                        if priorityTier == nil and Watch and Watch.GetPriorityTier then
+                            priorityTier = Watch.GetPriorityTier(watchKey)
+                        end
                         candidates[#candidates + 1] = {
                             potionKey = watchKey,
                             name = row.name or L"",
@@ -1040,6 +1060,7 @@ local function CollectFocus(mode)
                             recipe = row.recipe,
                             statusKey = statusKey,
                             craftableShared = row.craftableShared == true,
+                            priorityTier = tonumber(priorityTier) or 1,
                         }
                         if focus.maxBottleGap == nil or gap > focus.maxBottleGap then
                             focus.maxBottleGap = gap
@@ -1053,13 +1074,7 @@ local function CollectFocus(mode)
         local watches = Watch and Watch.GetWatches and Watch.GetWatches() or {}
         if type(watches) == "table" and RS then
             for watchKey, watch in pairs(watches) do
-                local ok = false
-                if mode == "buy" then
-                    ok = type(watch) == "table" and watch.enabled == true
-                else
-                    ok = WatchWantsAutoGrow(watchKey, watch)
-                end
-                if ok then
+                if WatchInActingSet(watchKey, watch, mode) then
                     local resolved = ResolveWatchPotion(watchKey)
                     local potion = resolved and resolved.potion
                     local recipe = RS.RecipeSpecForPotion and RS.RecipeSpecForPotion(watchKey)
@@ -1071,10 +1086,19 @@ local function CollectFocus(mode)
                             local craftable = CountPotionsCraftable(recipe)
                             local gap = BottleGap(target, stock, craftable)
                             local still = gap > 0
-                            if mode ~= "buy" and not still and RS.WatchStillNeedsGrow then
-                                still = RS.WatchStillNeedsGrow(potion, recipe, target, watchKey) == true
+                            if not still then
+                                -- Plan-backed shared contest / grow still-needed.
+                                if RS.WatchStillNeedsGrow then
+                                    still = RS.WatchStillNeedsGrow(potion, recipe, target, watchKey) == true
+                                end
                             end
                             if still then
+                                local priorityTier = 1
+                                if Watch and Watch.GetPriorityTier then
+                                    priorityTier = Watch.GetPriorityTier(watchKey)
+                                else
+                                    priorityTier = tonumber(watch.priorityTier) or 1
+                                end
                                 candidates[#candidates + 1] = {
                                     potionKey = watchKey,
                                     name = potion.name or L"",
@@ -1083,6 +1107,7 @@ local function CollectFocus(mode)
                                     target = target,
                                     bottleGap = gap,
                                     recipe = recipe,
+                                    priorityTier = tonumber(priorityTier) or 1,
                                 }
                                 if focus.maxBottleGap == nil or gap > focus.maxBottleGap then
                                     focus.maxBottleGap = gap
@@ -1095,12 +1120,39 @@ local function CollectFocus(mode)
         end
     end
 
-    local maxGap = tonumber(focus.maxBottleGap) or 0
-    local atMax = {}
+    -- Best priority tier among armed candidates that still need work, then
+    -- bottle-gap water-fill within that band.
+    local bestTier = nil
     for i = 1, #candidates do
-        if (tonumber(candidates[i].bottleGap) or 0) == maxGap then
-            atMax[#atMax + 1] = candidates[i]
-            local c = tonumber(candidates[i].craftable) or 0
+        local t = tonumber(candidates[i].priorityTier) or 1
+        if bestTier == nil or t < bestTier then
+            bestTier = t
+        end
+    end
+    bestTier = tonumber(bestTier) or 1
+
+    local tierBand = {}
+    for i = 1, #candidates do
+        if (tonumber(candidates[i].priorityTier) or 1) == bestTier then
+            tierBand[#tierBand + 1] = candidates[i]
+        end
+    end
+
+    local maxGap = 0
+    for i = 1, #tierBand do
+        local gap = tonumber(tierBand[i].bottleGap) or 0
+        if gap > maxGap then
+            maxGap = gap
+        end
+    end
+    focus.maxBottleGap = maxGap
+    focus.bestPriorityTier = bestTier
+
+    local atMax = {}
+    for i = 1, #tierBand do
+        if (tonumber(tierBand[i].bottleGap) or 0) == maxGap then
+            atMax[#atMax + 1] = tierBand[i]
+            local c = tonumber(tierBand[i].craftable) or 0
             if focus.minCraftable == nil or c < focus.minCraftable then
                 focus.minCraftable = c
             end
@@ -1121,8 +1173,14 @@ local function CollectFocus(mode)
         return ToNarrow(a and a.name) < ToNarrow(b and b.name)
     end)
     -- Buy: keep all short watches for focus→fallback; Grow uses max-gap only.
+    -- Sort full list by tier then gap so fallback respects priority too.
     if mode == "buy" then
         table.sort(candidates, function(a, b)
+            local ta = tonumber(a and a.priorityTier) or 1
+            local tb = tonumber(b and b.priorityTier) or 1
+            if ta ~= tb then
+                return ta < tb
+            end
             local ga = tonumber(a and a.bottleGap) or 0
             local gb = tonumber(b and b.bottleGap) or 0
             if ga ~= gb then
@@ -1455,7 +1513,71 @@ local function ApplyDeficitCraftableShared(rows)
     end
 end
 
---- Ready ↔ Shared flip from craftableShared (armed watches only).
+--- Contested specs that are all non-growable → "flasks" | "materials" | nil (growable contest).
+local function ContestedBuyOnlyKind(row)
+    if type(row) ~= "table" or row.craftableShared ~= true then
+        return nil
+    end
+    local contested = row.contestedSpecKeys
+    if type(contested) ~= "table" then
+        return nil
+    end
+    local slots = row.recipe and row.recipe.slots
+    if type(slots) ~= "table" then
+        return nil
+    end
+    local anyContested = false
+    local anyGrowable = false
+    local anyContainer = false
+    for i = 1, #slots do
+        local slot = slots[i]
+        local spec = ResolveSlotSpec(slot)
+        local sk = SpecKey(spec)
+        if type(sk) == "string" and contested[sk] == true then
+            anyContested = true
+            local role = slot.role or (type(spec) == "table" and spec.role) or nil
+            if SpecIsHarvestByproduct(spec) ~= true and SpecIsGrowable(spec, role) == true then
+                anyGrowable = true
+            elseif tostring(role or "") == "container" then
+                anyContainer = true
+            end
+        end
+    end
+    if not anyContested or anyGrowable then
+        return nil
+    end
+    if anyContainer then
+        return "flasks"
+    end
+    return "materials"
+end
+
+local function PaintBuyOnlySharedStatus(row, kind)
+    row.statusKey = "buy_ingredients"
+    if kind == "flasks" then
+        row.statusText = T("watch.note.buy_flasks")
+        row.statusLines = { T("watch.note.shared_buy_flasks") }
+    else
+        row.statusText = T("plan.status.buy_ingredients")
+        row.statusLines = { T("watch.note.shared_buy") }
+    end
+end
+
+local function PaintSharedMaterialsStatus(row)
+    row.statusKey = "ready_to_craft_shared"
+    row.statusText = T("plan.status.ready_to_craft_shared")
+    row.statusLines = { T("watch.note.shared") }
+end
+
+local function RowCoveredForReady(row)
+    local have = tonumber(row.potionHave) or 0
+    local craftable = tonumber(row.craftable) or 0
+    local target = tonumber(row.potionMin) or tonumber(row.target) or 0
+    return target > 0 and (have + craftable) >= target
+end
+
+--- Ready ↔ Shared / buy-only-shared paint from craftableShared (armed watches only).
+--- Buy-only contests paint Buy flasks/materials (craftableShared stays true → AutoBrew blocked).
 --- Returns true when any row's shared flag or statusKey changed.
 local function ApplySharedStatusFlip(rows)
     if type(rows) ~= "table" then
@@ -1470,23 +1592,37 @@ local function ApplySharedStatusFlip(rows)
             local key = prevKey
             local pk = tostring(row.potionKey or row.potionRecipeKey or row.id or "")
             local armed = WatchWantsAutoGrow(pk, nil)
-            if key == "ready_to_craft" and row.craftableShared == true then
-                if armed then
-                    row.statusKey = "ready_to_craft_shared"
-                    row.statusText = T("plan.status.ready_to_craft_shared")
-                    row.statusLines = { T("watch.note.shared") }
+            local sharedPaintKeys = key == "ready_to_craft"
+                or key == "ready_to_craft_shared"
+                or (key == "buy_ingredients" and RowCoveredForReady(row))
+            if row.craftableShared == true and armed and sharedPaintKeys then
+                local buyKind = ContestedBuyOnlyKind(row)
+                if buyKind ~= nil then
+                    PaintBuyOnlySharedStatus(row, buyKind)
                 else
-                    row.craftableShared = false
-                    row.contestedSpecKeys = nil
+                    PaintSharedMaterialsStatus(row)
                 end
-            elseif key == "ready_to_craft_shared" then
-                if row.craftableShared ~= true or not armed then
-                    row.craftableShared = false
-                    row.contestedSpecKeys = nil
-                    row.statusKey = "ready_to_craft"
-                    row.statusText = T("plan.status.ready_to_craft")
-                    row.statusLines = { T("brew.ready", { name = row.name or T("brew.potion_fallback") }) }
-                end
+            elseif key == "ready_to_craft" and row.craftableShared == true and not armed then
+                row.craftableShared = false
+                row.contestedSpecKeys = nil
+            elseif key == "ready_to_craft_shared"
+                and (row.craftableShared ~= true or not armed)
+            then
+                row.craftableShared = false
+                row.contestedSpecKeys = nil
+                row.statusKey = "ready_to_craft"
+                row.statusText = T("plan.status.ready_to_craft")
+                row.statusLines = { T("brew.ready", { name = row.name or T("brew.potion_fallback") }) }
+            elseif key == "buy_ingredients"
+                and row.craftableShared ~= true
+                and armed
+                and RowCoveredForReady(row)
+            then
+                -- Shared buy paint cleared after vendor fill → Ready (AutoBrew can run).
+                row.contestedSpecKeys = nil
+                row.statusKey = "ready_to_craft"
+                row.statusText = T("plan.status.ready_to_craft")
+                row.statusLines = { T("brew.ready", { name = row.name or T("brew.potion_fallback") }) }
             end
             if tostring(row.statusKey or "") ~= prevKey or (row.craftableShared == true) ~= prevShared then
                 changed = true
@@ -1518,6 +1654,10 @@ local function InvalidateFocusCaches()
     Planner._autoGrowFocusKey = nil
     Planner._autoBuyFocusCache = nil
     Planner._autoBuyFocusKey = nil
+    -- Demand was keyed only on snap/watch gen; empty demand cached while gap=0 then
+    -- plan craftable/gap moved (same snap) left AutoGrow with plantJob=nil no-demand-short.
+    Planner._demandCache = nil
+    Planner._demandCacheKey = nil
 end
 
 ----------------------------------------------------------------
@@ -1610,7 +1750,59 @@ local function ApplySeedBufferStatus(row)
     row.craftableShared = false
 end
 
-local function SeedBufferShort(recipe, potionKey)
+--- All growable seed UIDs for this watch (recipe slots + tip). Shared mats across
+--- watches must appear here so a short cushion demotes every sharing row.
+local function StampRowSeedBufferUids(row)
+    if type(row) ~= "table" then
+        return
+    end
+    local uids = {}
+    local seen = {}
+    local function add(uid)
+        uid = tonumber(uid) or 0
+        if uid > 0 and seen[uid] ~= true then
+            seen[uid] = true
+            uids[#uids + 1] = uid
+        end
+    end
+    local RS = RecipeSpec()
+    local SM = StockPiler3.SeedMap
+    local recipe = row.recipe or row.specRecipe
+    if type(recipe) == "table" and SM and SM.IsGrowableSpec then
+        if RS and RS.HydrateRecipeSlots then
+            RS.HydrateRecipeSlots(recipe)
+        end
+        local slots = recipe.slots or {}
+        for i = 1, #slots do
+            local slot = slots[i]
+            local spec = ResolveSlotSpec(slot)
+            if type(spec) == "table" and SM.IsGrowableSpec(spec) == true then
+                if not (SM.IsOneWayHarvestSpec and SM.IsOneWayHarvestSpec(spec) == true) then
+                    local seedUid = 0
+                    if SM.ResolveSeedForSpec then
+                        local seed = SM.ResolveSeedForSpec(spec)
+                        if type(seed) == "table" then
+                            seedUid = tonumber(seed.uniqueID or seed.uid) or 0
+                        end
+                    end
+                    add(seedUid)
+                end
+            end
+        end
+    end
+    local tips = row.statusTipSlots
+    if type(tips) == "table" then
+        for i = 1, #tips do
+            local tip = tips[i]
+            if type(tip) == "table" then
+                add(tip.seedUid)
+            end
+        end
+    end
+    row.seedBufferSeedUids = uids
+end
+
+local function SeedBufferShort(recipe, potionKey, row)
     local RS = RecipeSpec()
     if type(recipe) ~= "table" then
         return false
@@ -1624,9 +1816,97 @@ local function SeedBufferShort(recipe, potionKey)
     end
     -- Stocked watches still enforce buffer (protect seed lines from exhaustion).
     if RS and RS.WatchHasSeedBufferShort then
-        return RS.WatchHasSeedBufferShort(recipe) == true
+        if type(row) == "table" then
+            StampRowSeedBufferUids(row)
+        end
+        local seedUids = type(row) == "table" and row.seedBufferSeedUids or nil
+        return RS.WatchHasSeedBufferShort(recipe, { seedUids = seedUids }) == true
     end
     return false
+end
+
+--- If any seed cushion is short, stamp seedBufferShort on every AutoGrow watch that
+--- uses that seed. Only demote Ready / Stocked → Seed buffer — never overwrite Buy
+--- flasks/seeds/materials when bags are the real blocker.
+local function PropagateSharedSeedBufferStatus(rows)
+    if type(rows) ~= "table" or #rows == 0 then
+        return false
+    end
+    local Watch = StockPiler3.Watch
+    if not (Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true) then
+        return false
+    end
+    local buffer = Watch.GetSeedBufferMin and tonumber(Watch.GetSeedBufferMin()) or 5
+    local Refine = StockPiler3.Refine
+    local shortUids = {}
+    local anyShort = false
+    for i = 1, #rows do
+        local row = rows[i]
+        if type(row) == "table" then
+            local pk = row.potionKey or row.potionRecipeKey or row.id
+            if WatchWantsAutoGrow(pk, nil) then
+                StampRowSeedBufferUids(row)
+                local uids = row.seedBufferSeedUids
+                if type(uids) == "table" then
+                    for u = 1, #uids do
+                        local uid = tonumber(uids[u]) or 0
+                        if uid > 0 and shortUids[uid] == nil then
+                            local credit = 0
+                            if Refine and Refine.GetSeedBudget then
+                                local budget = Refine.GetSeedBudget(uid)
+                                credit = tonumber(budget and budget.credit) or 0
+                            else
+                                local Inv = StockPiler3.Inventory
+                                credit = Inv and Inv.CountByUid and tonumber(Inv.CountByUid(uid)) or 0
+                            end
+                            if credit < buffer then
+                                shortUids[uid] = true
+                                anyShort = true
+                            else
+                                shortUids[uid] = false
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    if not anyShort then
+        return false
+    end
+    local changed = false
+    for i = 1, #rows do
+        local row = rows[i]
+        if type(row) == "table" then
+            local pk = row.potionKey or row.potionRecipeKey or row.id
+            if WatchWantsAutoGrow(pk, nil) then
+                local uids = row.seedBufferSeedUids
+                local hit = false
+                if type(uids) == "table" then
+                    for u = 1, #uids do
+                        if shortUids[tonumber(uids[u]) or 0] == true then
+                            hit = true
+                            break
+                        end
+                    end
+                end
+                if hit then
+                    row.seedBufferShort = true
+                    row.craftableSafe = (tonumber(row.craftable) or 0) > 0 and false
+                    local prev = tostring(row.statusKey or "")
+                    -- Ready/stocked only: buffer gates brew, not buy shortages.
+                    if prev == "ready_to_craft"
+                        or prev == "ready_to_craft_shared"
+                        or prev == "potion_stocked"
+                    then
+                        ApplySeedBufferStatus(row)
+                        changed = true
+                    end
+                end
+            end
+        end
+    end
+    return changed
 end
 
 --- Craftable column safety: green only when bags can craft and seed cushion is met.
@@ -1635,7 +1915,7 @@ local function StampCraftableSafety(row)
         return
     end
     local pk = row.potionKey or row.potionRecipeKey or row.id
-    local short = SeedBufferShort(row.recipe or row.specRecipe, pk) == true
+    local short = SeedBufferShort(row.recipe or row.specRecipe, pk, row) == true
     row.seedBufferShort = short
     local craftable = tonumber(row.craftable) or 0
     -- Safe (green): craftable > 0 and buffer not short. Shared mats do not block green.
@@ -1675,8 +1955,9 @@ end
 
 local function ApplyReadyStatus(row)
     local pk = type(row) == "table" and (row.potionKey or row.potionRecipeKey or row.id) or nil
-    -- Covered but AutoGrow off → Enable AutoGrow (not Ready). Manual brew still uses Craftable.
-    if not WatchWantsAutoGrow(pk, nil) then
+    -- With Cultivation: covered but AutoGrow off → Enable AutoGrow (not Ready).
+    -- Apo-only: Ready whenever bags cover the craft (manual + AutoBrew).
+    if CanAutoGrowSkill() and not WatchWantsAutoGrow(pk, nil) then
         row.statusKey = "enable_autogrow"
         row.statusText = T("plan.status.enable_autogrow")
         row.craftableShared = false
@@ -1716,7 +1997,7 @@ local function ApplySpecPlanStatus(row, target, recipe, demand)
     end
     if (tonumber(target.deficit) or 0) <= 0 then
         -- At/above potion target: Seed buffer until cushion is met, else Potions stocked.
-        if SeedBufferShort(recipe, target.potionKey) then
+        if SeedBufferShort(recipe, target.potionKey, row) then
             ApplySeedBufferStatus(row)
         else
             ApplyStockedStatus(row)
@@ -1736,7 +2017,7 @@ local function ApplySpecPlanStatus(row, target, recipe, demand)
         covered = (tonumber(target.have) or 0) + craftable >= (tonumber(target.min) or 0)
     end
     if covered then
-        if SeedBufferShort(recipe, target.potionKey) then
+        if SeedBufferShort(recipe, target.potionKey, row) then
             ApplySeedBufferStatus(row)
             return
         end
@@ -1770,6 +2051,7 @@ local function ApplySpecPlanStatus(row, target, recipe, demand)
         end
     end
     row.statusTipSlots = allEntries
+    StampRowSeedBufferUids(row)
 
     -- Ready only when have+craftable covers target (see covered early-return above).
     -- Partial craftable with bottleGap>0 → Restocking / Buy, so AutoGrow can fill first.
@@ -1777,7 +2059,7 @@ local function ApplySpecPlanStatus(row, target, recipe, demand)
     -- Prefer Refine / Seed buffer over Buy seeds when refinable plants remain.
     -- Seed buffer status only when buffer is actually short for this watch (has seed lines).
     if limiting ~= nil and limiting.needsRefine == true then
-        if SeedBufferShort(recipe, target.potionKey) then
+        if SeedBufferShort(recipe, target.potionKey, row) then
             ApplySeedBufferStatus(row)
         else
             SetMaterialsShortStatus(row, true, T("plan.status.buy_ingredients"))
@@ -1828,7 +2110,7 @@ local function ApplySpecPlanStatus(row, target, recipe, demand)
     end
     -- Tip slots look covered (raw Have) but craftable may still be 0 under grow reserve,
     -- or partial craftable remains with bottleGap>0 (not Ready until covered).
-    if SeedBufferShort(recipe, target.potionKey) then
+    if SeedBufferShort(recipe, target.potionKey, row) then
         ApplySeedBufferStatus(row)
         return
     end
@@ -1867,7 +2149,7 @@ local function ApplyLiveWatchStatus(row, recipe, deficit, have, craftable, targe
     end
 
     local function DemoteToMaterialsShort()
-        if SeedBufferShort(recipe, potionKey) then
+        if SeedBufferShort(recipe, potionKey, row) then
             ApplySeedBufferStatus(row)
             return
         end
@@ -1932,7 +2214,7 @@ local function ApplyLiveWatchStatus(row, recipe, deficit, have, craftable, targe
     end
 
     if deficit <= 0 then
-        if SeedBufferShort(recipe, potionKey) then
+        if SeedBufferShort(recipe, potionKey, row) then
             if key ~= "need_seeds" then
                 ApplySeedBufferStatus(row)
             end
@@ -1944,10 +2226,13 @@ local function ApplyLiveWatchStatus(row, recipe, deficit, have, craftable, targe
 
     local covered = target > 0 and (have + (tonumber(craftable) or 0)) >= target
     if covered then
-        if SeedBufferShort(recipe, potionKey) then
+        if SeedBufferShort(recipe, potionKey, row) then
             if key ~= "need_seeds" then
                 ApplySeedBufferStatus(row)
             end
+        elseif key == "buy_ingredients" and row.craftableShared == true then
+            -- Shared buy-only paint; PolishSharedContest refreshes flasks vs Ready.
+            return
         elseif key ~= "ready_to_craft" and key ~= "ready_to_craft_shared" then
             ApplyReadyStatus(row)
         end
@@ -1960,7 +2245,10 @@ local function ApplyLiveWatchStatus(row, recipe, deficit, have, craftable, targe
         or key == "enable_autogrow"
     then
         -- Uncovered target: never Ready (partial craftable waits for AutoGrow / buy).
-        if SeedBufferShort(recipe, potionKey) then
+        -- Seed buffer only gates Ready/stocked — buy shortages keep Buy flasks/seeds.
+        if SeedBufferShort(recipe, potionKey, row)
+            and (key == "ready_to_craft" or key == "ready_to_craft_shared" or key == "potion_stocked")
+        then
             ApplySeedBufferStatus(row)
         else
             DemoteToMaterialsShort()
@@ -1969,12 +2257,31 @@ local function ApplyLiveWatchStatus(row, recipe, deficit, have, craftable, targe
     end
     -- Seed buffer cleared (or AutoGrow off so SeedBufferShort is false): do not force
     -- Restocking while master AutoGrow is still off — Enable AutoGrow instead.
-    if key == "need_seeds" and not SeedBufferShort(recipe, potionKey) then
+    if key == "need_seeds" and not SeedBufferShort(recipe, potionKey, row) then
         DemoteToMaterialsShort()
         return
     end
-    if key == "restocking" and SeedBufferShort(recipe, potionKey) then
-        ApplySeedBufferStatus(row)
+    -- Restocking + buffer short: only flip to Seed buffer when grow path exists
+    -- (not when tip is Buy seeds / Buy flasks).
+    if key == "restocking" and SeedBufferShort(recipe, potionKey, row) then
+        local tips = row.statusTipSlots
+        local hardBuy = false
+        if type(tips) == "table" then
+            for i = 1, #tips do
+                local e = tips[i]
+                if type(e) == "table" and (tonumber(e.deficit) or 0) > 0 then
+                    if e.kind == "buy"
+                        or (e.kind == "plant" and e.buySeedOrMat == true and e.needsRefine ~= true)
+                    then
+                        hardBuy = true
+                        break
+                    end
+                end
+            end
+        end
+        if not hardBuy then
+            ApplySeedBufferStatus(row)
+        end
     end
 end
 
@@ -2109,11 +2416,19 @@ local function BuildWatchedTargets(ctx)
                     min = min,
                     deficit = math.max(0, min - have),
                     autoGrow = watch.autoGrow == true,
+                    priorityTier = (StockPiler3.Watch and StockPiler3.Watch.GetPriorityTier
+                        and StockPiler3.Watch.GetPriorityTier(watchKey))
+                        or tonumber(watch.priorityTier) or 1,
                 }
             end
         end
     end
     table.sort(targets, function(a, b)
+        local ta = tonumber(a.priorityTier) or 1
+        local tb = tonumber(b.priorityTier) or 1
+        if ta ~= tb then
+            return ta < tb
+        end
         local na, nb = ToNarrow(a.name), ToNarrow(b.name)
         if na ~= nb then
             return na < nb
@@ -2290,7 +2605,7 @@ local function PolishWatchRowsStatus(rows)
             if key == "enable_autogrow" or key == "restocking" then
                 if covered then
                     if (tonumber(row.potionDeficit) or 0) <= 0 then
-                        if SeedBufferShort(row.recipe, row.potionKey or row.potionRecipeKey or row.id) then
+                        if SeedBufferShort(row.recipe, row.potionKey or row.potionRecipeKey or row.id, row) then
                             ApplySeedBufferStatus(row)
                         else
                             ApplyStockedStatus(row)
@@ -2305,8 +2620,11 @@ local function PolishWatchRowsStatus(rows)
                 end
                 key = tostring(row.statusKey or "")
             end
-            -- AutoGrow-off must not stay Ready (manual brew uses Craftable button only).
-            if key == "ready_to_craft" or key == "ready_to_craft_shared" then
+            -- AutoGrow-off must not stay Ready when Cultivation is trained
+            -- (manual brew still uses the Craftable/Load chip). Apo-only keeps Ready.
+            if CanAutoGrowSkill()
+                and (key == "ready_to_craft" or key == "ready_to_craft_shared")
+            then
                 local pk = tostring(row.potionKey or row.potionRecipeKey or row.id or "")
                 if not WatchWantsAutoGrow(pk, nil) then
                     ApplyReadyStatus(row)
@@ -2323,6 +2641,8 @@ local function PolishWatchRowsStatus(rows)
     for i = 1, #rows do
         StampCraftableSafety(rows[i])
     end
+    -- Shared seed cushion: any short seed demotes every AutoGrow watch that uses it.
+    PropagateSharedSeedBufferStatus(rows)
 end
 
 local function FillWatchRowTips(row, demand)
@@ -2330,6 +2650,7 @@ local function FillWatchRowTips(row, demand)
         return
     end
     if type(row.statusTipSlots) == "table" and #row.statusTipSlots > 0 then
+        StampRowSeedBufferUids(row)
         return
     end
     local craftsNeeded = tonumber(row.craftsNeeded) or 0
@@ -2348,6 +2669,7 @@ local function FillWatchRowTips(row, demand)
         end
     end
     row.statusTipSlots = entries
+    StampRowSeedBufferUids(row)
 end
 
 local function BuildWatchRows(ctx)
@@ -2380,6 +2702,8 @@ local function BuildWatchRows(ctx)
             recipeSpecKey = target.recipeSpecKey,
             potionBaseKey = target.potionBaseKey,
             autoGrow = target.autoGrow == true,
+            priorityTier = tonumber(target.priorityTier) or 1,
+            priorityTierText = towstring(tostring(tonumber(target.priorityTier) or 1)),
             hasRecipe = type(recipe) == "table",
         }
         ApplySpecPlanStatus(row, target, recipe, demand)
@@ -2392,6 +2716,8 @@ local function BuildWatchRows(ctx)
     for i = 1, #rows do
         FillWatchRowTips(rows[i], demand)
     end
+    -- Tips can add seed UIDs; re-propagate so shared shorts demote all sharers.
+    PropagateSharedSeedBufferStatus(rows)
     PerfEnd("Build.Tips")
     local prevPlan = StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Get
         and StockPiler3.PlanSnapshot.Get()
@@ -2479,6 +2805,10 @@ local function PatchWatchRowsLiveCounts(rows, opts)
         end
     end
     local recountCraftable = needCraftable and (haveWarm or allowWarmHave)
+    -- Mid-brew Watch catch-up: Stock/Status only (no craftable recount).
+    if opts.recountCraftable == false then
+        recountCraftable = false
+    end
     local selectiveCraftable = false
     local deltaUids, deltaKeys
     if recountCraftable and Inv.GetLastNetUidDelta then
@@ -2534,7 +2864,9 @@ local function PatchWatchRowsLiveCounts(rows, opts)
                 -- ApplyReadyStatus clears craftableShared; re-contest on Ready/Shared transitions.
                 if newKey ~= prevKey
                     and (newKey == "ready_to_craft" or newKey == "ready_to_craft_shared"
-                        or prevKey == "ready_to_craft" or prevKey == "ready_to_craft_shared")
+                        or newKey == "buy_ingredients"
+                        or prevKey == "ready_to_craft" or prevKey == "ready_to_craft_shared"
+                        or prevKey == "buy_ingredients")
                 then
                     contestDirty = true
                 end
@@ -2556,7 +2888,9 @@ local function PatchWatchRowsLiveCounts(rows, opts)
                 if newKey ~= prevKey
                     and (newKey == "restocking" or newKey == "need_seeds"
                         or newKey == "ready_to_craft_shared"
+                        or newKey == "buy_ingredients"
                         or prevKey == "ready_to_craft_shared"
+                        or prevKey == "buy_ingredients"
                         or prevKey == "restocking" or prevKey == "need_seeds")
                 then
                     InvalidateFocusCaches()
@@ -2564,11 +2898,32 @@ local function PatchWatchRowsLiveCounts(rows, opts)
             end
         end
     end
-    -- Shared contest when counts change or Ready paint cleared shared flags.
-    if contestDirty then
+    -- Shared contest: mat buys (flasks) often leave potion deficit/craftable unchanged,
+    -- so contestDirty alone misses clearing craftableShared / Buy-flasks paint.
+    local needSharedPolish = contestDirty
+    if not needSharedPolish then
+        for i = 1, #rows do
+            local row = rows[i]
+            if type(row) == "table"
+                and (row.craftableShared == true
+                    or tostring(row.statusKey or "") == "ready_to_craft_shared"
+                    or tostring(row.statusKey or "") == "buy_ingredients")
+            then
+                needSharedPolish = true
+                break
+            end
+        end
+    end
+    if needSharedPolish then
+        local Brew = StockPiler3.Brew
+        local beforeReady = Brew and Brew.HasReadyToCraft and Brew.HasReadyToCraft() == true
         if PolishSharedContest(rows) then
             InvalidateFocusCaches()
         end
+        if Brew and Brew.InvalidateCanBrewCache then
+            Brew.InvalidateCanBrewCache()
+        end
+        local afterReady = Brew and Brew.HasReadyToCraft and Brew.HasReadyToCraft() == true
         if syncSnapshot then
             for i = 1, #rows do
                 local row = rows[i]
@@ -2577,9 +2932,34 @@ local function PatchWatchRowsLiveCounts(rows, opts)
                 end
             end
         end
+        if beforeReady ~= afterReady then
+            if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
+                StockPiler3Window.RequestFooterRefresh()
+            end
+        end
+        if Brew and Brew.MaybeNotifyBrewReady then
+            Brew.MaybeNotifyBrewReady()
+        end
     end
     for i = 1, #rows do
         StampCraftableSafety(rows[i])
+    end
+    if PropagateSharedSeedBufferStatus(rows) then
+        if syncSnapshot then
+            for i = 1, #rows do
+                local row = rows[i]
+                if type(row) == "table" then
+                    PatchPlanSnapshotLiveStatus(row)
+                end
+            end
+        end
+        local BrewLive = StockPiler3.Brew
+        if BrewLive and BrewLive.InvalidateCanBrewCache then
+            BrewLive.InvalidateCanBrewCache()
+        end
+        if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
+            StockPiler3Window.RequestFooterRefresh()
+        end
     end
 end
 
@@ -3020,6 +3400,24 @@ function Planner.CollectVendorBuyJobs(opts)
     Planner._vendorBuyJobsMeta.focusWatchCount = focusCount
     FillPoolFromFocus(pool, focus, nil)
     jobs = JobsFromPool(pool)
+    -- Covered+shared (gap=0): best-tier focus under-counts combined flask claim across
+    -- lower tiers. Buy across all candidates including containers before the
+    -- growable-only fallback (which skips containers).
+    if #jobs == 0
+        and (tonumber(focus.maxBottleGap) or 0) <= 0
+        and type(focus.allWatches) == "table"
+        and #focus.allWatches > 0
+    then
+        pool = {}
+        FillPoolFromFocus(pool, { watches = focus.allWatches }, nil)
+        jobs = JobsFromPool(pool)
+        if #jobs > 0 then
+            Planner._vendorBuyJobsMeta.source = "shared-all"
+            Planner._vendorBuyJobsMeta.focusWatchCount = #focus.allWatches
+            Planner._vendorBuyJobsMeta.skippedContainers = false
+            return jobs
+        end
+    end
     -- Fair focus empty (e.g. max-gap watch only needs growables): fall back to all
     -- shorts for buyable non-growable bottlenecks — never pooled containers.
     if #jobs == 0 and type(focus.allWatches) == "table" and #focus.allWatches > 0 then
@@ -3105,6 +3503,9 @@ function Planner.SyncLiveStatusClosedWindow()
     local flipped = before ~= after
     if flipped and StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
         StockPiler3Window.RequestFooterRefresh()
+    end
+    if Brew and Brew.MaybeNotifyBrewReady then
+        Brew.MaybeNotifyBrewReady()
     end
     return flipped
 end
@@ -3340,6 +3741,7 @@ function Planner.DumpGrowPlan(emit)
                 local gap = tonumber(w.bottleGap) or 0
                 local okStill = gap > 0 or w.craftableShared == true
                     or tostring(w.statusKey or "") == "need_seeds"
+                    or tostring(w.statusKey or "") == "buy_ingredients"
                 if not okStill then
                     bad = bad + 1
                     emit("      ASSERT fail no-gap/shared/need_seeds key=" .. key)

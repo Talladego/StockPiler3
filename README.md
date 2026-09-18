@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.2.0** — material fingerprint matching; AutoGrow plant pick wired to Planner demand (bottle-gap / craftable water-fill).
+**Version 0.3.86** — Fix Planner load crash: CanAutoGrowSkill before RespectGrowReserve.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -28,7 +28,8 @@ Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macr
 
 - Master **AutoGrow** + per-watch AutoGrow; requires Cultivation.
 - Plants **one seed per tick** into an empty plot (plant-first before refine when a plantable job exists).
-- **Watch water-fill:** prefer watches with the largest bottle gap (`Target − Stock − Craftable`). Among equal gaps, prefer the **lowest craftable**.
+- **Priority tiers:** leftmost Watch **Prio** chip (`1..N`, N = enabled list). Lower tier first among AutoGrow-armed watches that still need work; AutoGrow-off watches stay on the list and keep a tier but are ignored when acting. Empty tiers densify when a watch leaves.
+- **Watch water-fill (within best tier):** prefer largest bottle gap (`Target − Stock − Craftable`). Among equal gaps, prefer the **lowest craftable**.
 - **Material pick:** unique limiting ingredient for those focus recipes first (so one harvest tends to unlock ~one more brew), then highest `craftsShort`, then role/plot fairness.
 - Seed buffer (optional): keep a minimum seed credit (bags + in-ground + outstanding); refine converts surplus plants when buffer is short.
 - Combat pause (default on) defers planting in combat/scenario.

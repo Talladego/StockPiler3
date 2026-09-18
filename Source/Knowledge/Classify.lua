@@ -211,7 +211,8 @@ local function ClassifyFromName(name)
         if string.find(n, "genius", 1, true) then return "hywoumcrit" end
         if string.find(n, "fervor", 1, true) then return "hywourcrit" end
     end
-    if string.find(n, "recovery", 1, true) then return "heal" end
+    -- Do not map potion product names (Recovery / Elixir / Draught) — Effect comes
+    -- from Use: ability or the recipe main's EFFECT id, not the finished name.
     if string.find(n, "brilliance", 1, true) then return "int" end
     if string.find(n, "discipline", 1, true) then return "wp" end
     if string.find(n, "securing", 1, true) then return "armor" end
@@ -276,17 +277,22 @@ function Classify.GetEffectKeyFromPotionUse(itemData)
     return nil
 end
 
+--- Ability id for the potion Use: bonus (ITEMBONUS_USE), or 0.
+function Classify.GetPotionUseAbilityId(itemData)
+    return FirstUseAbilityId(itemData)
+end
+
 function Classify.GetEffectKey(itemData)
     if type(itemData) ~= "table" then
         return nil
     end
-    if itemData.effectKey and tostring(itemData.effectKey) ~= "" then
-        return tostring(itemData.effectKey)
-    end
-    -- Finished potions: Use bonus → ability text (matches stock tooltip).
+    -- Finished potions: Use bonus → ability text (matches stock tooltip). Never name-first.
     local fromUse = Classify.GetEffectKeyFromPotionUse(itemData)
     if fromUse then
         return fromUse
+    end
+    if itemData.effectKey and tostring(itemData.effectKey) ~= "" then
+        return tostring(itemData.effectKey)
     end
     local desc = ToNarrow(itemData.description or itemData.desc or "")
     local key = ClassifyFromDescription(desc)

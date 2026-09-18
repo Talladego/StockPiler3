@@ -202,6 +202,45 @@ local function CountInGroundSeeds(seedUid)
     return n
 end
 
+--- Unique plots for this seed: in-flight pending and/or established garden rows.
+--- Pending alone covers the gap after PlantSeed releases bag commit before Garden updates.
+local function CountSeedPlotCredit(seedUid)
+    seedUid = tonumber(seedUid) or 0
+    if seedUid <= 0 then
+        return 0
+    end
+    local seen = {}
+    local n = 0
+    for plotNum, flag in pairs(Grow._pendingPlant) do
+        plotNum = tonumber(plotNum) or 0
+        if plotNum > 0 and (tonumber(flag) or 0) > 0
+            and (tonumber(Grow._pendingSeedUid[plotNum]) or 0) == seedUid
+        then
+            seen[plotNum] = true
+            n = n + 1
+        end
+    end
+    local plots = StockPiler3.Garden and StockPiler3.Garden.GetPlots and StockPiler3.Garden.GetPlots()
+    if type(plots) == "table" then
+        for key, row in pairs(plots) do
+            if type(row) == "table" and (tonumber(row.seedUid) or 0) == seedUid
+                and not IsPlotEmptyRow(row)
+            then
+                local pn = tonumber(row.plotNum) or tonumber(key) or 0
+                if pn > 0 then
+                    if not seen[pn] then
+                        seen[pn] = true
+                        n = n + 1
+                    end
+                else
+                    n = n + 1
+                end
+            end
+        end
+    end
+    return n
+end
+
 --- Opaque Eternal/Exceptional credit: full unlocked plot wave while owned.
 local function OpaqueSeedCredit(seedUid, bagCount)
     seedUid = tonumber(seedUid) or 0
@@ -589,8 +628,9 @@ local function ClearPendingPlot(plotNum, opts)
     Grow._pendingSeedUid[plotNum] = nil
 end
 
---- After PlantSeed succeeds: bag is truth — drop seed reservation but keep plot reserved
---- until soil confirms so FindNextEmptyPlot cannot double-plant.
+--- After PlantSeed succeeds: bag is truth — drop seed bag reservation but keep plot
+--- reserved until soil confirms so FindNextEmptyPlot cannot double-plant.
+--- Keep _wavePlantedBySeed until rollback/force clear (do not drop it with bag commit).
 local function ReleaseSeedReservation(plotNum)
     plotNum = tonumber(plotNum) or 0
     if plotNum <= 0 or Grow._pendingSeedHeld[plotNum] ~= true then
@@ -600,8 +640,6 @@ local function ReleaseSeedReservation(plotNum)
     if seedUid > 0 then
         local n = (tonumber(Grow._seedCommitted[seedUid]) or 0) - 1
         Grow._seedCommitted[seedUid] = n > 0 and n or nil
-        local w = (tonumber(Grow._wavePlantedBySeed[seedUid]) or 0) - 1
-        Grow._wavePlantedBySeed[seedUid] = w > 0 and w or nil
     end
     Grow._pendingSeedHeld[plotNum] = false
 end
@@ -852,7 +890,7 @@ local function CollectPlantWatchOrder(RS)
     local planRows = type(plan) == "table" and plan.rows or nil
     local BottleGap = StockPiler3.Planner and StockPiler3.Planner.BottleGap
 
-    local function push(potionKey, name, deficit, recipe, have, target, craftable, bottleGap)
+    local function push(potionKey, name, deficit, recipe, have, target, craftable, bottleGap, priorityTier)
         potionKey = tostring(potionKey or "")
         deficit = tonumber(deficit) or 0
         if potionKey == "" or deficit <= 0 or type(recipe) ~= "table" then
@@ -869,6 +907,10 @@ local function CollectPlantWatchOrder(RS)
             gap = BottleGap(target, have, craftable)
         end
         gap = tonumber(gap) or math.max(0, target - have - craftable)
+        local tier = tonumber(priorityTier)
+        if tier == nil and Watch and Watch.GetPriorityTier then
+            tier = Watch.GetPriorityTier(potionKey)
+        end
         list[#list + 1] = {
             potionKey = potionKey,
             name = name,
@@ -878,6 +920,7 @@ local function CollectPlantWatchOrder(RS)
             target = target,
             craftable = craftable,
             bottleGap = gap,
+            priorityTier = tonumber(tier) or 1,
         }
     end
 
@@ -904,7 +947,8 @@ local function CollectPlantWatchOrder(RS)
                     have,
                     target,
                     row.craftable,
-                    row.bottleGap
+                    row.bottleGap,
+                    row.priorityTier
                 )
             end
         end
@@ -936,7 +980,8 @@ local function CollectPlantWatchOrder(RS)
                             have,
                             target,
                             craftable,
-                            nil
+                            nil,
+                            watch.priorityTier
                         )
                     end
                 end
@@ -944,8 +989,13 @@ local function CollectPlantWatchOrder(RS)
         end
     end
 
-    -- Match CollectFocus water-fill: max bottleGap first, then lowest craftable.
+    -- Match CollectFocus: best priority tier first, then max bottleGap, then lowest craftable.
     table.sort(list, function(a, b)
+        local ta = tonumber(a.priorityTier) or 1
+        local tb = tonumber(b.priorityTier) or 1
+        if ta ~= tb then
+            return ta < tb
+        end
         local ga = tonumber(a.bottleGap) or 0
         local gb = tonumber(b.bottleGap) or 0
         if ga ~= gb then
@@ -1054,22 +1104,24 @@ local function PickCraftableLiftJobForWatch(watch, SM, RS, demand)
                 if RS.CountItemsMatchingSpec then
                     bag = tonumber(RS.CountItemsMatchingSpec(spec)) or 0
                 end
-                local ground = CountInGroundSeeds(seedUid)
-                local pending = tonumber(Grow._seedCommitted[seedUid]) or 0
-                local have = bag + ground + pending
+                local ground = CountSeedPlotCredit(seedUid)
+                -- Pending plots are not always in Garden yet; after ReleaseSeedReservation
+                -- _seedCommitted is 0 — still count _pendingPlant or we overfill one role.
+                local have = bag + ground
                 local craftsHave = math.floor(have / perCraft)
                 if craftsHave < 0 then
                     craftsHave = 0
                 end
                 local growable = SM.IsGrowableSpec and SM.IsGrowableSpec(spec) == true
                 local isByproduct = SM.IsHarvestByproduct and SM.IsHarvestByproduct(spec) == true
-                local demandShort = 0
+                -- Remaining item short vs absolute demand, using in-flight credit (not stale
+                -- demandRow.craftsShort alone — that ignores plants just issued).
+                local absNeed = 0
                 if type(demandRow) == "table" then
-                    demandShort = math.max(
-                        tonumber(demandRow.craftsShort) or 0,
-                        tonumber(demandRow.deficit) or 0
-                    )
+                    absNeed = tonumber(demandRow.absolute) or tonumber(demandRow.brewAbsolute) or 0
                 end
+                local itemShort = math.max(0, absNeed - have)
+                local demandShort = itemShort
                 snaps[#snaps + 1] = {
                     spec = spec,
                     specKey = specKey,
@@ -1083,10 +1135,11 @@ local function PickCraftableLiftJobForWatch(watch, SM, RS, demand)
                     growable = growable == true,
                     isByproduct = isByproduct == true,
                     demandShort = demandShort,
+                    itemShort = itemShort,
                     demandRow = demandRow,
                 }
                 -- Only demand-short growables set the lift floor (ignore buy-only and stocked plants).
-                if growable == true and demandShort > 0 then
+                if growable == true and itemShort > 0 then
                     if minCrafts == nil or craftsHave < minCrafts then
                         minCrafts = craftsHave
                     end
@@ -1105,7 +1158,7 @@ local function PickCraftableLiftJobForWatch(watch, SM, RS, demand)
     local Refine = StockPiler3.Refine
     for i = 1, #snaps do
         local s = snaps[i]
-        if s.growable == true and (tonumber(s.demandShort) or 0) > 0 and s.craftsHave <= minCrafts then
+        if s.growable == true and (tonumber(s.itemShort) or 0) > 0 and s.craftsHave <= minCrafts then
             local seedUid = tonumber(s.seedUid) or 0
             local bag = OpaqueSeedCredit(seedUid, LiveSeedBag(seedUid))
             local committed = tonumber(Grow._seedCommitted[seedUid]) or 0
@@ -1131,32 +1184,43 @@ local function PickCraftableLiftJobForWatch(watch, SM, RS, demand)
         return nil, "no-seed"
     end
 
-    -- Among growable bottlenecks: fewest plants to next craft, then role, then diversify seed.
+    -- Among growable bottlenecks: cover remaining item short first (largest remaining),
+    -- then fewest plants to next craft, then role, then diversify seed.
     local best = nil
+    local bestRemain = -1
     local bestNeed = 999
     local bestRole = 99
     for i = 1, #plantable do
         local s = plantable[i]
+        local remain = tonumber(s.itemShort) or 0
         local rem = s.have % s.perCraft
         local needToNext = (rem == 0) and s.perCraft or (s.perCraft - rem)
+        if needToNext > remain then
+            needToNext = remain
+        end
         local role = RoleRank(s.role)
         local better = false
         if best == nil then
             better = true
-        elseif needToNext < bestNeed then
+        elseif remain > bestRemain then
             better = true
-        elseif needToNext == bestNeed then
-            if role < bestRole then
+        elseif remain == bestRemain then
+            if needToNext < bestNeed then
                 better = true
-            elseif role == bestRole
-                and (tonumber(s.seedUid) or 0) ~= (tonumber(Grow._lastPlantedSeedUid) or 0)
-                and (tonumber(best.seedUid) or 0) == (tonumber(Grow._lastPlantedSeedUid) or 0)
-            then
-                better = true
+            elseif needToNext == bestNeed then
+                if role < bestRole then
+                    better = true
+                elseif role == bestRole
+                    and (tonumber(s.seedUid) or 0) ~= (tonumber(Grow._lastPlantedSeedUid) or 0)
+                    and (tonumber(best.seedUid) or 0) == (tonumber(Grow._lastPlantedSeedUid) or 0)
+                then
+                    better = true
+                end
             end
         end
         if better then
             best = s
+            bestRemain = remain
             bestNeed = needToNext
             bestRole = role
         end
@@ -1490,25 +1554,60 @@ end
 -- Additives
 ----------------------------------------------------------------
 
+function Grow.ClearPendingAdditive(plotNum)
+    plotNum = tonumber(plotNum) or 0
+    if plotNum <= 0 then
+        return
+    end
+    Grow._pendingAdditive[plotNum] = nil
+    Grow._pendingAdditiveAt[plotNum] = nil
+end
+
+function Grow.ClearPendingAdditiveIfFilled(plotNum, row)
+    plotNum = tonumber(plotNum) or 0
+    if plotNum <= 0 or (tonumber(Grow._pendingAdditive[plotNum]) or 0) < 1 then
+        return
+    end
+    local AD = StockPiler3.Additives
+    if not AD or not AD.CultTypeForStage or not AD.PlotHasAdditive then
+        return
+    end
+    local stage = NormalizeStage(type(row) == "table" and row.stage or 0)
+    local cultType = AD.CultTypeForStage(stage)
+    if cultType and AD.PlotHasAdditive(row, cultType) then
+        Grow.ClearPendingAdditive(plotNum)
+    end
+end
+
+--- True when a growing plot is missing the additive for its current stage.
 function Grow.NeedsCurrentStageAdditive()
-    local Watch = StockPiler3.Watch
-    if not Watch or not Watch.IsAutoGrowAdditivesEnabled or Watch.IsAutoGrowAdditivesEnabled() ~= true then
+    if Grow.IsEnabled() ~= true then
         return false
     end
-    local Add = StockPiler3.Additives
-    if not Add or not Add.NeedsCurrentStage then
-        return Grow._additiveDirty == true
+    local AD = StockPiler3.Additives
+    if not AD or not AD.IsEnabled or AD.IsEnabled() ~= true then
+        return false
     end
-    return Add.NeedsCurrentStage() == true
+    if AD.NeedsCurrentStage then
+        return AD.NeedsCurrentStage() == true
+    end
+    return Grow._additiveDirty == true
 end
 
 function Grow.TryAdditive(opId)
     if Grow.NeedsCurrentStageAdditive() ~= true then
         return false
     end
-    local Add = StockPiler3.Additives
+    local Sch = StockPiler3.Scheduler
+    if Sch and Sch.ShouldDeferAutoGrowPlant then
+        local deferPlant = Sch.ShouldDeferAutoGrowPlant()
+        if deferPlant == true then
+            return false
+        end
+    end
+    local AD = StockPiler3.Additives
     local CA = StockPiler3.CultivatorAdapter
-    if not (Add and Add.PickNext and CA and CA.AddAdditive) then
+    if not (AD and AD.PickNext and CA and CA.AddAdditive) then
         Grow._additiveDirty = false
         return false
     end
@@ -1516,15 +1615,51 @@ function Grow.TryAdditive(opId)
     if Perf and Perf.Begin then
         Perf.Begin("Grow.TryAdditive")
     end
-    local pick = Add.PickNext()
-    local ok = false
-    if type(pick) == "table" and (tonumber(pick.plotNum) or 0) > 0 and (tonumber(pick.slot) or 0) > 0 then
-        ok = CA.AddAdditive(pick.plotNum, pick.slot, pick.backpackType) == true
-        if ok then
-            LogGrow("additive P" .. tostring(pick.plotNum) .. " opId=" .. tostring(opId or "?"))
+
+    local now = NowSec()
+    local ttl = tonumber(Grow.PENDING_TTL_SEC) or 10
+    for plotNum, at in pairs(Grow._pendingAdditiveAt) do
+        at = tonumber(at) or 0
+        if at > 0 and (now - at) >= ttl then
+            Grow.ClearPendingAdditive(plotNum)
         end
     end
-    Grow._additiveDirty = false
+
+    local pick = AD.PickNext({
+        cursor = Grow._additiveCursor,
+        pendingAdditive = Grow._pendingAdditive,
+    })
+    local ok = false
+    if type(pick) == "table" and (tonumber(pick.plotNum) or 0) > 0 and (tonumber(pick.slot) or 0) > 0 then
+        local plotNum = tonumber(pick.plotNum) or 0
+        if CA.SetCurrentPlot then
+            CA.SetCurrentPlot(plotNum)
+        end
+        Grow._pendingAdditive[plotNum] = (tonumber(Grow._pendingAdditive[plotNum]) or 0) + 1
+        Grow._pendingAdditiveAt[plotNum] = now
+        ok = CA.AddAdditive(plotNum, pick.slot, pick.backpackType) == true
+        if ok then
+            local n = CA.NumPlots and CA.NumPlots() or 4
+            Grow._additiveCursor = (plotNum % n) + 1
+            Grow._additiveDirty = true
+            LogGrow(string.format(
+                "additive P%d role=%s uid=%s slot=%s opId=%s",
+                plotNum,
+                tostring(pick.role or "?"),
+                tostring(pick.uniqueID or 0),
+                tostring(pick.slot),
+                tostring(opId or "?")
+            ))
+            if Sch and Sch.WakeAutoGrow then
+                Sch.WakeAutoGrow()
+            end
+        else
+            Grow.ClearPendingAdditive(plotNum)
+            LogGrow("additive failed P" .. tostring(plotNum) .. " opId=" .. tostring(opId or "?"))
+        end
+    else
+        Grow._additiveDirty = false
+    end
     if Perf and Perf.End then
         Perf.End("Grow.TryAdditive")
     end
@@ -1680,7 +1815,7 @@ function Grow.MaybeNotifyHarvestReady()
         Grow._harvestReadyLatched = true
         if Grow._harvestReadyChatSent ~= true then
             Grow._harvestReadyChatSent = true
-            local msg = L"Harvest: Ready - " .. towstring(tostring(readyN)) .. L" plot(s)."
+            local msg = L"<icon02486> Ready - " .. towstring(tostring(readyN)) .. L" plot(s)."
             if StockPiler3.T then
                 msg = StockPiler3.T("grow.harvest_ready", { count = tostring(readyN) })
             end

@@ -3,7 +3,7 @@
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
-StockPiler3.Version = L"0.3.51"
+StockPiler3.Version = L"0.3.86"
 
 local function T(key, tokens)
     if StockPiler3.T then
@@ -293,6 +293,9 @@ function StockPiler3.Initialize()
     elseif StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.MigrateRecipeFingerprintsV2 then
         StockPiler3.RecipeSpec.MigrateRecipeFingerprintsV2()
     end
+    if StockPiler3.Watch and StockPiler3.Watch.MigratePriorityTiersIfNeeded then
+        StockPiler3.Watch.MigratePriorityTiersIfNeeded()
+    end
     local s = StockPiler3.Settings
     if type(s) == "table" and StockPiler3Window then
         local tab = tonumber(s.selectedTab) or 1
@@ -331,6 +334,9 @@ function StockPiler3.Initialize()
     if StockPiler3.Brew and StockPiler3.Brew.RegisterEventHandlers then
         StockPiler3.Brew.RegisterEventHandlers()
     end
+    if StockPiler3.Debug and StockPiler3.Debug.InstallChatLinkHook then
+        StockPiler3.Debug.InstallChatLinkHook()
+    end
     if LibSlash and LibSlash.RegisterWSlashCmd then
         LibSlash.RegisterWSlashCmd("sp3", StockPiler3.OnSlash)
         LibSlash.RegisterWSlashCmd("stockpiler3", StockPiler3.OnSlash)
@@ -346,6 +352,9 @@ function StockPiler3.Initialize()
 end
 
 function StockPiler3.Shutdown()
+    if StockPiler3.Debug and StockPiler3.Debug.UninstallChatLinkHook then
+        StockPiler3.Debug.UninstallChatLinkHook()
+    end
     if StockPiler3.Macro and StockPiler3.Macro.Shutdown then
         StockPiler3.Macro.Shutdown()
     end

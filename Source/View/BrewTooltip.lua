@@ -13,8 +13,27 @@ local function T(key, tokens)
     return L"[" .. towstring(tostring(key or "")) .. L"]"
 end
 
+local function SessionBrewName(session)
+    if type(session) ~= "table" then
+        return nil
+    end
+    local phase = tostring(session.phase or "idle")
+    if phase ~= "loading" and phase ~= "loaded" then
+        return nil
+    end
+    if session.name ~= nil and session.name ~= L"" then
+        return session.name
+    end
+    return nil
+end
+
 local function ReadyName()
     local Brew = StockPiler3.Brew
+    local session = Brew and Brew.GetSession and Brew.GetSession()
+    local loadedName = SessionBrewName(session)
+    if loadedName ~= nil then
+        return loadedName
+    end
     if Brew and Brew.PickReadyWatch then
         local row = Brew.PickReadyWatch()
         if type(row) == "table" and row.name ~= nil and row.name ~= L"" then
@@ -26,17 +45,20 @@ end
 
 local function BuildTipText()
     local Brew = StockPiler3.Brew
+    local session = Brew and Brew.GetSession and Brew.GetSession()
+    local loadedName = SessionBrewName(session)
     local can = Brew and Brew.CanBrewNow and Brew.CanBrewNow() == true
+
+    -- Loaded board: always name the recipe on the board (not PickReadyWatch).
+    if loadedName ~= nil then
+        if can then
+            return T("brew.ready", { name = loadedName })
+        end
+        return T("brew.load_recipe", { name = loadedName })
+    end
+
     if can then
         return T("brew.ready", { name = ReadyName() })
-    end
-    local session = Brew and Brew.GetSession and Brew.GetSession()
-    if type(session) == "table" then
-        local phase = tostring(session.phase or "idle")
-        if phase == "loading" or phase == "loaded" then
-            local name = session.name or ReadyName()
-            return T("brew.load_recipe", { name = name })
-        end
     end
     local why = Brew and Brew.AutoBrewBlockedReason and Brew.AutoBrewBlockedReason()
     if why == "buffer" then
@@ -60,11 +82,28 @@ local function Fingerprint()
     local session = Brew and Brew.GetSession and Brew.GetSession()
     local phase = "idle"
     local key = ""
+    local nameKey = ""
     if type(session) == "table" then
         phase = tostring(session.phase or "idle")
         key = tostring(session.potionKey or session.rowId or "")
+        local loadedName = SessionBrewName(session)
+        if loadedName ~= nil then
+            if type(loadedName) == "wstring" and type(WStringToString) == "function" then
+                nameKey = WStringToString(loadedName) or ""
+            else
+                nameKey = tostring(loadedName)
+            end
+        end
     end
-    return tostring(can) .. ":" .. phase .. ":" .. key
+    if nameKey == "" then
+        local n = ReadyName()
+        if type(n) == "wstring" and type(WStringToString) == "function" then
+            nameKey = WStringToString(n) or ""
+        else
+            nameKey = tostring(n or "")
+        end
+    end
+    return tostring(can) .. ":" .. phase .. ":" .. key .. ":" .. nameKey
 end
 
 function BrewTooltip.Show(mouseoverWindow, anchor)

@@ -48,6 +48,10 @@ local function LearnVendorRows(list)
         if uid <= 0 then
             return
         end
+        -- Seed Items DB so fingerprint Matches can enrich thin store rows (flasks).
+        if StockPiler3.Items and StockPiler3.Items.StoreItem then
+            StockPiler3.Items.StoreItem(item, "vendor")
+        end
         local key = tostring(uid)
         if type(vendorItems[key]) == "table" then
             return

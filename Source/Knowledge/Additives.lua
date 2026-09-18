@@ -211,6 +211,43 @@ function AD.CultTypeForStage(stageNum)
     return 0
 end
 
+--- True when plot already has this additive slot filled.
+function AD.PlotHasAdditive(plotData, cultType)
+    cultType = tonumber(cultType) or 0
+    if type(plotData) ~= "table" or cultType <= 0 then
+        return false
+    end
+    if type(plotData.additives) == "table" then
+        local slot = plotData.additives[cultType]
+        if type(slot) == "table" then
+            if slot.filled == true then
+                return true
+            end
+            return (tonumber(slot.id) or 0) ~= 0
+                or (tonumber(slot.uniqueID) or 0) ~= 0
+        end
+    end
+    if type(plotData.Additives) == "table" then
+        local slot = plotData.Additives[cultType]
+        if type(slot) == "table" then
+            return (tonumber(slot.id) or 0) ~= 0
+                or (tonumber(slot.uniqueID) or 0) ~= 0
+        end
+    end
+    return false
+end
+
+function AD.PlayerCultivationSkill()
+    local CA = StockPiler3.CultivatorAdapter
+    if CA and CA.GetCultSkill then
+        return tonumber(CA.GetCultSkill()) or 0
+    end
+    if StockPiler3.TradeSkillCaps and StockPiler3.TradeSkillCaps.GetCultSkill then
+        return tonumber(StockPiler3.TradeSkillCaps.GetCultSkill()) or 0
+    end
+    return 0
+end
+
 --- Score for stage preference: prefer higher superCrit, then crit, then shorter grow.
 function AD.Score(info, skillReq, _iLevel)
     if type(info) ~= "table" then
@@ -224,73 +261,161 @@ function AD.Score(info, skillReq, _iLevel)
     return score
 end
 
---- Prefer best matching additive for a cultivation stage from Account.additives + bags.
+--- Prefer best matching additive for a cultivation stage from bags.
+--- @return bestSlot, bestItem, backpackType
 function AD.FindBestForStage(stageNum)
     local cultType = AD.CultTypeForStage(stageNum)
     if cultType <= 0 then
-        return nil
+        return 0, nil, nil
     end
     return AD.FindBestInCraftBag(cultType)
 end
 
+--- Best usable additive of this cultType in the crafting bag.
+--- @return bestSlot, bestItem, backpackType
 function AD.FindBestInCraftBag(cultType)
     cultType = tonumber(cultType) or 0
     if cultType <= 0 then
-        return nil
+        return 0, nil, nil
     end
-    local bestUid, bestScore, bestItem = 0, -999999, nil
-    local store = AdditivesTable() or {}
-
-    local function consider(item)
-        if type(item) ~= "table" then
-            return
-        end
-        local info = AD.Classify(item)
-        if info == nil or tonumber(info.cultType) ~= cultType then
-            local uid = tonumber(item.uniqueID) or 0
-            local row = store[tostring(uid)]
-            if type(row) ~= "table" or tonumber(row.cultType) ~= cultType then
-                return
-            end
-            info = row
-        end
-        local score = AD.Score(info, item.craftingSkillRequirement or info.skillReq)
-        local uid = tonumber(item.uniqueID) or 0
-        if uid > 0 and score > bestScore then
-            bestScore = score
-            bestUid = uid
-            bestItem = item
-        end
+    local CA = StockPiler3.CultivatorAdapter
+    local backpackType = 4
+    if CA and CA.CraftingBackpackType then
+        backpackType = CA.CraftingBackpackType()
+    elseif EA_Window_Backpack and EA_Window_Backpack.TYPE_CRAFTING then
+        backpackType = EA_Window_Backpack.TYPE_CRAFTING
     end
 
-    if StockPiler3.Inventory and StockPiler3.Inventory.ForEachItem then
-        StockPiler3.Inventory.ForEachItem(consider)
+    local bag = nil
+    local Inv = StockPiler3.Inventory
+    if Inv and Inv._ready == true and type(Inv._itemBySlot) == "table"
+        and type(Inv._itemBySlot.craft) == "table"
+    then
+        bag = Inv._itemBySlot.craft
+    end
+    if type(bag) ~= "table" and DataUtils and DataUtils.GetCraftingItems then
+        local ok, items = pcall(DataUtils.GetCraftingItems)
+        if ok then
+            bag = items
+        end
+    end
+    if type(bag) ~= "table" then
+        return 0, nil, nil
     end
 
-    -- Catalog stubs: prefer known Account.additives when bag sample missing.
-    if bestUid <= 0 then
-        for _, row in pairs(store) do
-            if type(row) == "table" and tonumber(row.cultType) == cultType then
-                local score = AD.Score(row, row.skillReq)
-                local uid = tonumber(row.uniqueID) or 0
-                if uid > 0 and score > bestScore then
-                    bestScore = score
-                    bestUid = uid
-                    bestItem = row
+    local skill = AD.PlayerCultivationSkill()
+    local bestSlot = 0
+    local bestItem = nil
+    local bestScore = nil
+    for slot, item in pairs(bag) do
+        if type(item) == "table" then
+            local info = AD.Classify(item)
+            if info and tonumber(info.cultType) == cultType then
+                local req = tonumber(item.craftingSkillRequirement) or 0
+                local usable = req <= skill
+                if usable and Inv and Inv.CanUseCraftingItem then
+                    usable = Inv.CanUseCraftingItem(item) == true
+                end
+                if usable then
+                    local iLevel = tonumber(item.iLevel) or tonumber(item.level) or 0
+                    local score = AD.Score(info, req, iLevel)
+                    if bestScore == nil or score > bestScore then
+                        bestScore = score
+                        bestSlot = tonumber(slot) or 0
+                        bestItem = item
+                    end
                 end
             end
         end
     end
+    if bestSlot <= 0 then
+        return 0, nil, nil
+    end
+    return bestSlot, bestItem, backpackType
+end
 
-    if bestUid <= 0 then
+--- True when any growing plot needs Soil/Water/Nutrient for its current stage.
+function AD.NeedsCurrentStage()
+    if AD.IsEnabled() ~= true then
+        return false
+    end
+    local Garden = StockPiler3.Garden
+    local plots = Garden and Garden.GetPlots and Garden.GetPlots()
+    if type(plots) ~= "table" then
+        local CA = StockPiler3.CultivatorAdapter
+        plots = CA and CA.GetPlots and CA.GetPlots()
+    end
+    if type(plots) ~= "table" then
+        return false
+    end
+    for plotNum, plot in pairs(plots) do
+        if type(plot) == "table" then
+            local stage = tonumber(plot.stage) or 0
+            local cultType = AD.CultTypeForStage(stage)
+            if cultType > 0 and not AD.PlotHasAdditive(plot, cultType) then
+                -- Only when a seed is present (not empty).
+                if (tonumber(plot.seedUid) or 0) > 0 or stage > 0 then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+--- Pick one plot+bag slot for the next additive apply.
+--- @return { plotNum, slot, backpackType, item, cultType, role } | nil
+function AD.PickNext(opts)
+    opts = type(opts) == "table" and opts or {}
+    if AD.IsEnabled() ~= true then
         return nil
     end
-    return {
-        uniqueID = bestUid,
-        score = bestScore,
-        item = bestItem,
-        cultType = cultType,
-    }
+    local CA = StockPiler3.CultivatorAdapter
+    local Garden = StockPiler3.Garden
+    local plots = Garden and Garden.GetPlots and Garden.GetPlots()
+    if type(plots) ~= "table" then
+        plots = CA and CA.GetPlots and CA.GetPlots()
+    end
+    if type(plots) ~= "table" then
+        return nil
+    end
+    local n = CA and CA.NumPlots and CA.NumPlots() or 4
+    local start = tonumber(opts.cursor) or 1
+    if start < 1 or start > n then
+        start = 1
+    end
+    local pending = opts.pendingAdditive
+    for i = 0, n - 1 do
+        local plotNum = ((start - 1 + i) % n) + 1
+        if type(pending) == "table" and (tonumber(pending[plotNum]) or 0) > 0 then
+            -- Skip plots with an in-flight additive apply.
+        else
+            local plot = plots[plotNum]
+            if type(plot) ~= "table" and Garden and Garden.GetPlot then
+                plot = Garden.GetPlot(plotNum)
+            end
+            if type(plot) == "table" then
+                local stage = tonumber(plot.stage) or 0
+                local cultType = AD.CultTypeForStage(stage)
+                if cultType > 0 and not AD.PlotHasAdditive(plot, cultType) then
+                    local slot, item, backpackType = AD.FindBestInCraftBag(cultType)
+                    if (tonumber(slot) or 0) > 0 and type(item) == "table" then
+                        local info = AD.Classify(item)
+                        return {
+                            plotNum = plotNum,
+                            slot = slot,
+                            backpackType = backpackType,
+                            item = item,
+                            cultType = cultType,
+                            role = info and info.role or "?",
+                            uniqueID = tonumber(item.uniqueID) or 0,
+                        }
+                    end
+                end
+            end
+        end
+    end
+    return nil
 end
 
 function AD.CountKnown()

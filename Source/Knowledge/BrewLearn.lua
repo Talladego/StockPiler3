@@ -268,6 +268,27 @@ local function NowSec()
     return 0
 end
 
+local function LatchSuccessChance()
+    local AA = StockPiler3.ApothecaryAdapter
+    if AA and AA.SuccessChance then
+        return tonumber(AA.SuccessChance()) or -1
+    end
+    return -1
+end
+
+--- Engine truth: only HIGH/MEDIUM boards can succeed (LOW = definite fail, INVALID = incomplete).
+local function SuccessChanceAllowsLearn(chance)
+    local CSC = GameData and GameData.CraftingSuccessChance
+    if type(CSC) ~= "table" then
+        return true
+    end
+    chance = tonumber(chance)
+    if chance == nil or chance < 0 then
+        return true
+    end
+    return chance == CSC.HIGH or chance == CSC.MEDIUM
+end
+
 --- Keep a soft board snapshot while the apo recipe is loaded (VALID), so instant
 --- SUCCESS / bag-update / "You created" can still learn after the board clears.
 function BL.RefreshBoardSnapshot()
@@ -288,6 +309,7 @@ function BL.RefreshBoardSnapshot()
     end
     BL._lastBoardMaterials = materials
     BL._lastBoardPotionCounts = SnapshotPotionCounts()
+    BL._lastBoardSuccessChance = LatchSuccessChance()
     BL._lastBoardAt = NowSec()
     return true
 end
@@ -313,6 +335,7 @@ function BL.ArmPendingFromLastBoard()
         materials = materials,
         recipeKey = recipeKey,
         potionCountsBefore = BL._lastBoardPotionCounts or {},
+        successChance = tonumber(BL._lastBoardSuccessChance) or LatchSuccessChance(),
     }
     return true
 end
@@ -340,13 +363,16 @@ function BL.BeginPendingCraft()
         recipeKey = StockPiler3.RecipeSpec.RecipeSpecKey(materials) or ""
     end
     local potionCounts = SnapshotPotionCounts()
+    local successChance = LatchSuccessChance()
     BL._lastBoardMaterials = materials
     BL._lastBoardPotionCounts = potionCounts
+    BL._lastBoardSuccessChance = successChance
     BL._lastBoardAt = NowSec()
     BL._pendingCraft = {
         materials = materials,
         recipeKey = recipeKey,
         potionCountsBefore = potionCounts,
+        successChance = successChance,
     }
     return true
 end
@@ -358,11 +384,42 @@ function BL.CompletePendingCraftLearn(opts)
         BL._pendingCraft = nil
         return false
     end
+
+    local after = SnapshotPotionCounts()
     local outputs = {}
     if opts.failed ~= true then
-        local after = SnapshotPotionCounts()
         outputs = DiffPotionOutputs(pending.potionCountsBefore, after)
     end
+    -- Keep pending when bag has not updated yet (SUCCESS can beat inventory).
+    if #outputs == 0 and opts.failed ~= true then
+        -- Drop stale re-arms whose before-counts already match the bag (blocks next brew).
+        local before = pending.potionCountsBefore or {}
+        local stale = true
+        for uid, count in pairs(after) do
+            if (tonumber(count) or 0) ~= (tonumber(before[uid]) or 0) then
+                stale = false
+                break
+            end
+        end
+        if stale then
+            for uid, count in pairs(before) do
+                if (tonumber(after[uid]) or 0) ~= (tonumber(count) or 0) then
+                    stale = false
+                    break
+                end
+            end
+        end
+        if stale then
+            BL._pendingCraft = nil
+        end
+        return false
+    end
+    -- Claim only once we will notify: chat + SUCCESS used to both print Brewed.
+    BL._pendingCraft = nil
+    -- Advance baseline so ArmPendingFromLastBoard cannot re-diff the same bag gain.
+    BL._lastBoardPotionCounts = after
+    BL._lastBoardAt = NowSec()
+
     local function NotifyBrewOutcome(msg)
         if StockPiler3.Debug and StockPiler3.Debug.Notify then
             StockPiler3.Debug.Notify(msg)
@@ -417,7 +474,17 @@ function BL.CompletePendingCraftLearn(opts)
         if StockPiler3.Debug and StockPiler3.Debug.LogOp then
             StockPiler3.Debug.LogOp("brewlearn", "reject board fingerprint != session recipe")
         end
-        BL._pendingCraft = nil
+        return false
+    end
+    -- Engine SuccessChance is SoT: LOW = will definitely fail, INVALID = incomplete board.
+    -- Do not learn those fingerprints (even if bag noise looks like an outcome).
+    if opts.failed ~= true and not SuccessChanceAllowsLearn(pending.successChance) then
+        if StockPiler3.Debug and StockPiler3.Debug.LogOp then
+            StockPiler3.Debug.LogOp(
+                "brewlearn",
+                "reject learn SuccessChance=" .. tostring(pending.successChance)
+            )
+        end
         return false
     end
     if RS and RS.StoreLearnedRecipeSpec then
@@ -426,7 +493,6 @@ function BL.CompletePendingCraftLearn(opts)
             failed = opts.failed == true,
         }) == true
     end
-    BL._pendingCraft = nil
     return ok
 end
 
@@ -442,9 +508,8 @@ function BL.OnCraftingUpdated()
         BL.RefreshBoardSnapshot()
     end
     if state == States.PERFORMING then
-        if type(BL._pendingCraft) ~= "table" then
-            BL.BeginPendingCraft()
-        end
+        -- Always refresh before-counts for this brew (do not keep a stale re-arm).
+        BL.BeginPendingCraft()
         return false
     end
     if state == States.SUCCESS or state == States.SUCCESS_REPEAT or state == (States.DONE) then
@@ -472,7 +537,10 @@ function BL.DrainInventoryCraftPoll()
     end
     BL._inventoryCraftPollDue = false
     if type(BL._pendingCraft) ~= "table" then
-        BL.ArmPendingFromLastBoard()
+        -- Only arm when a prior Complete has not already advanced the bag baseline.
+        if not BL.ArmPendingFromLastBoard() then
+            return false
+        end
     end
     if type(BL._pendingCraft) ~= "table" then
         return false
@@ -501,10 +569,16 @@ end
 --- Complete only if bag already gained; otherwise arm inventory poll.
 function BL.OnCreatedChat(createdName)
     if type(BL._pendingCraft) ~= "table" then
-        BL.ArmPendingFromLastBoard()
+        -- Instant brew may skip PERFORMING; arm from last board if still fresh.
+        if not BL.ArmPendingFromLastBoard() then
+            return false
+        end
     end
     if type(BL._pendingCraft) ~= "table" then
         return false
+    end
+    if createdName ~= nil and createdName ~= "" then
+        BL._pendingCraft.chatCreatedName = createdName
     end
     local pending = BL._pendingCraft
     local after = SnapshotPotionCounts()

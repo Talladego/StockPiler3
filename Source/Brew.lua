@@ -23,6 +23,7 @@ Brew._loadSettleUntil = 0
 Brew._canBrewCache = nil
 Brew._canBrewCacheKey = nil
 Brew._brewReadyLatched = false
+Brew._readyNotifyKeys = nil -- nil = uninitialized (seed on first observe, no chat)
 Brew._lastHasReady = nil
 Brew._wasBusy = false
 Brew._awaitingBrewComplete = false
@@ -166,18 +167,23 @@ local function RowIsReadyToCraft(row)
     if row.statusKey ~= "ready_to_craft" then
         return false
     end
-    -- Auto brew/macro only for AutoGrow-armed watches.
-    local pk = row.potionKey or row.potionRecipeKey or row.id
-    local Watch = StockPiler3.Watch
-    local RS = StockPiler3.RecipeSpec
-    if RS and RS.ShouldAutoGrowPotion then
-        if RS.ShouldAutoGrowPotion(pk, nil) ~= true then
+    -- Cultivators: AutoBrew only for AutoGrow-armed watches.
+    -- Apo/Butcher-only: Ready status is enough (no Cultivation to arm).
+    local Caps = StockPiler3.TradeSkillCaps
+    local canGrow = Caps and Caps.CanAutoGrow and Caps.CanAutoGrow() == true
+    if canGrow then
+        local pk = row.potionKey or row.potionRecipeKey or row.id
+        local Watch = StockPiler3.Watch
+        local RS = StockPiler3.RecipeSpec
+        if RS and RS.ShouldAutoGrowPotion then
+            if RS.ShouldAutoGrowPotion(pk, nil) ~= true then
+                return false
+            end
+        elseif Watch and Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() ~= true then
+            return false
+        elseif row.autoGrow ~= true then
             return false
         end
-    elseif Watch and Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() ~= true then
-        return false
-    elseif row.autoGrow ~= true then
-        return false
     end
     local craftable = tonumber(row.craftable) or 0
     if craftable <= 0 then
@@ -301,7 +307,22 @@ local function PatchPlanRowTargetMet(session, liveHave)
                         and RS.ShouldAutoGrowPotion
                         and RS.ShouldAutoGrowPotion(row.potionKey or row.potionRecipeKey or row.id, nil) == true
                     then
-                        bufferShort = RS.WatchHasSeedBufferShort(recipe) == true
+                        local seedUids = row.seedBufferSeedUids
+                        if type(seedUids) ~= "table" or #seedUids == 0 then
+                            seedUids = {}
+                            local tips = row.statusTipSlots
+                            if type(tips) == "table" then
+                                local seen = {}
+                                for t = 1, #tips do
+                                    local uid = tonumber(tips[t] and tips[t].seedUid) or 0
+                                    if uid > 0 and seen[uid] ~= true then
+                                        seen[uid] = true
+                                        seedUids[#seedUids + 1] = uid
+                                    end
+                                end
+                            end
+                        end
+                        bufferShort = RS.WatchHasSeedBufferShort(recipe, { seedUids = seedUids }) == true
                     end
                     if bufferShort then
                         row.statusKey = "need_seeds"
@@ -492,6 +513,10 @@ local function BuildLoadSteps(recipe)
 end
 
 local function BrewRespectGrowReserve()
+    local Caps = StockPiler3.TradeSkillCaps
+    if Caps and Caps.CanAutoGrow and Caps.CanAutoGrow() ~= true then
+        return false
+    end
     local P = StockPiler3.Persistence
     if P and P.GetCharacterBucket then
         local row = P.GetCharacterBucket(false)
@@ -696,13 +721,12 @@ local function FindCraftingBagItemBySpec(wantSpec, exemplarUid, reserved)
     return bestSlot, bestItem, bestType, bestUid
 end
 
+--- Auto holds that pause Ready brew (plant/refine/harvest). Seed buffer is per-watch
+--- (Ready already means that watch's cushion is met); unrelated shorts must not block.
 local function AutoBrewBlocked()
     local Grow = StockPiler3.Grow
     if Grow and Grow.HasPendingPlant and Grow.HasPendingPlant() == true then
         return true, "pending-plant"
-    end
-    if Grow and Grow.IsSeedBufferSatisfied and Grow.IsSeedBufferSatisfied() ~= true then
-        return true, "buffer"
     end
     local RP = StockPiler3.RefinePipeline
     if RP and RP.HasOutstanding and RP.HasOutstanding() == true then
@@ -712,19 +736,6 @@ local function AutoBrewBlocked()
         return true, "harvest"
     end
     return false, nil
-end
-
---- Seed buffer protects growable lines; blocks auto brew while short (not manual row).
-local function SeedBufferBlocksBrew()
-    local Watch = StockPiler3.Watch
-    if not (Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true) then
-        return false
-    end
-    local Grow = StockPiler3.Grow
-    if Grow and Grow.IsSeedBufferSatisfied and Grow.IsSeedBufferSatisfied() ~= true then
-        return true
-    end
-    return false
 end
 
 --- Green Craftable: bags can craft and seed buffer is safe (shared mats OK).
@@ -823,6 +834,7 @@ local function ClearSession(opts)
     Brew._loadSource = nil
     Brew._awaitingBrewComplete = false
     Brew._postBrewClearArmed = false
+    Brew._brewHaveBefore = nil
     Brew._loadSettleUntil = 0
     local session = GetSession()
     session.potionKey = nil
@@ -984,10 +996,6 @@ function Brew.CanBrewNow()
     if Brew.IsBusy() then
         return false
     end
-    -- Buffer gate applies to loaded boards too (do not brew while cushion short).
-    if SeedBufferBlocksBrew() then
-        return false
-    end
     local session = GetSession()
     local phase = tostring(session.phase or "idle")
 
@@ -997,70 +1005,110 @@ function Brew.CanBrewNow()
     end
 
     if phase == "loaded" then
-        local deficitOk = (tonumber(session.potionDeficit) or 0) > 0
-            and RowNeedsMorePotions(session)
-        local craftOk = (tonumber(session.craftable) or 0) > 0
-        local row = FindSessionRow()
-        local covered = true
-        local have = tonumber(session.potionHave) or 0
-        local min = tonumber(session.potionMin) or 0
-        if min > 0 then
-            covered = (have + (tonumber(session.craftable) or 0)) >= min
-        end
-        if deficitOk and covered and (RowIsReadyToCraft(row) or craftOk) then
-            return true
-        end
-        -- Target met while still loaded: do not fall through to stale PickReadyWatch.
+        -- Target met while still loaded: do not fall through to another watch.
         if not RowNeedsMorePotions(session) then
             return false
         end
+        -- Auto board: enable only while this session row is uncontested Ready.
+        -- (Drop craftOk loophole — fail/wrong-tier must darken Brew until Ready again.)
+        return RowIsReadyToCraft(FindSessionRow())
     end
 
     local blocked = AutoBrewBlocked()
     if blocked then
-        -- Still allow if a ready watch exists only for latching; gate footer false.
         return false
     end
 
     return type(Brew.PickReadyWatch()) == "table"
 end
 
---- One-shot Brew Ready chat + HELP_TIPS_HIGHTLIGHT_WINDOW; clear when gone.
+--- Chat/sound when a watch newly enters uncontested Ready to brew.
+--- Latches per potionKey — not CanBrewNow (busy mid-craft would re-fire every brew).
 function Brew.MaybeNotifyBrewReady()
-    local can = Brew.CanBrewNow() == true
-    local was = Brew._brewReadyLatched == true
-    if can then
-        Brew._brewReadyLatched = true
-        if was ~= true then
-            local pick = Brew.PickReadyWatch()
-            local name = L"Ready"
-            if type(pick) == "table" and pick.name ~= nil then
-                if type(pick.name) == "wstring" then
-                    name = pick.name
-                else
-                    name = towstring(tostring(pick.name))
+    local plan = CurrentPlan()
+    local rows = plan and plan.rows
+    local nowReady = {}
+    if type(rows) == "table" then
+        for i = 1, #rows do
+            local row = rows[i]
+            if RowIsReadyToCraft(row) then
+                local key = tostring(row.potionKey or row.potionRecipeKey or row.id or "")
+                if key ~= "" then
+                    nowReady[key] = row
                 end
             end
-            local msg = L"Brew: Ready - " .. name .. L"."
-            if StockPiler3.T then
-                msg = StockPiler3.T("brew.ready", { name = name })
-            end
-            if StockPiler3.Debug and StockPiler3.Debug.Print then
-                StockPiler3.Debug.Print(msg)
-            end
-            local soundId = GameData and GameData.Sound and GameData.Sound.HELP_TIPS_HIGHTLIGHT_WINDOW
-            if soundId and Sound and Sound.Play then
-                Sound.Play(soundId)
-            end
-            if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
-                StockPiler3Window.RequestFooterRefresh()
-            end
         end
-    else
-        if was == true and StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
+    end
+
+    local any = next(nowReady) ~= nil
+    local wasLatched = Brew._brewReadyLatched == true
+    Brew._brewReadyLatched = any
+
+    -- First observe after load: seed latches without chat/sound.
+    if Brew._readyNotifyKeys == nil then
+        local seeded = {}
+        for key, _ in pairs(nowReady) do
+            seeded[key] = true
+        end
+        Brew._readyNotifyKeys = seeded
+        if wasLatched ~= any and StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
             StockPiler3Window.RequestFooterRefresh()
         end
-        Brew._brewReadyLatched = false
+        return
+    end
+
+    local prev = Brew._readyNotifyKeys
+    local newly = {}
+    for key, row in pairs(nowReady) do
+        if prev[key] ~= true then
+            newly[#newly + 1] = row
+        end
+    end
+
+    local nextKeys = {}
+    for key, _ in pairs(nowReady) do
+        nextKeys[key] = true
+    end
+    Brew._readyNotifyKeys = nextKeys
+
+    if wasLatched ~= any and StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
+        StockPiler3Window.RequestFooterRefresh()
+    end
+
+    if #newly == 0 then
+        return
+    end
+
+    local best = newly[1]
+    for i = 2, #newly do
+        if CompareReadyWatch(newly[i], best) then
+            best = newly[i]
+        end
+    end
+    local name = best and best.name
+    if name == nil or name == L"" then
+        if StockPiler3.T then
+            name = StockPiler3.T("brew.potion_fallback")
+        else
+            name = L"potion"
+        end
+    elseif type(name) ~= "wstring" then
+        name = towstring(tostring(name))
+    end
+
+    local msg = L"<icon10985> Ready - " .. name .. L"."
+    if StockPiler3.T then
+        msg = StockPiler3.T("brew.ready", { name = name })
+    end
+    if StockPiler3.Debug and StockPiler3.Debug.Print then
+        StockPiler3.Debug.Print(msg)
+    end
+    local soundId = GameData and GameData.Sound and GameData.Sound.HELP_TIPS_HIGHTLIGHT_WINDOW
+    if soundId and Sound and Sound.Play then
+        Sound.Play(soundId)
+    end
+    if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
+        StockPiler3Window.RequestFooterRefresh()
     end
 end
 
@@ -1330,11 +1378,7 @@ end
 function Brew.BeginForRow(row, opts)
     opts = type(opts) == "table" and opts or {}
     local source = opts.manual == true and "manual" or "auto"
-    -- Seed buffer gates auto footer/macro only; manual row uses green Craftable.
-    if source ~= "manual" and SeedBufferBlocksBrew() then
-        LogBrew(tostring(source) .. " load blocked buffer")
-        return false
-    end
+    -- Auto holds: plant/refine/harvest. Seed buffer is per-watch Ready status.
     if source == "auto" then
         local blocked, why = AutoBrewBlocked()
         if blocked then
@@ -1342,7 +1386,7 @@ function Brew.BeginForRow(row, opts)
             return false
         end
     end
-    -- Manual skips AutoGrow holds (plant/harvest/refine/buffer).
+    -- Manual skips AutoGrow holds (plant/harvest/refine).
     if BeginLoadJob(row, source) then
         KickLoadJob()
         return true
@@ -1468,16 +1512,7 @@ end
 function Brew.TryPerform(opId)
     local a = AA()
     Brew._lastPerformBlockWhy = nil
-    -- Buffer gates auto perform only; manual row Brew may run while buffer fills.
-    if Brew._loadSource ~= "manual" and SeedBufferBlocksBrew() then
-        Brew._lastPerformBlockWhy = "buffer"
-        LogBrew("perform blocked buffer")
-        if GetSession().phase == "loaded" then
-            Brew.ClearLoadedSession({ reason = "seed-buffer" })
-            ForceBrewUiRefresh()
-        end
-        return false
-    end
+    -- Seed buffer is enforced via Ready status (and shared demotion); not a global perform gate.
     local why = PerformBlockReason()
     if why ~= nil then
         Brew._lastPerformBlockWhy = why
@@ -1501,7 +1536,9 @@ function Brew.TryPerform(opId)
     local ok = a and a.Perform and a.Perform() == true
     if ok then
         Brew._awaitingBrewComplete = true
-        LogBrew("perform opId=" .. tostring(opId or "?"))
+        Brew._brewHaveBefore = LivePotionHave(GetSession())
+        LogBrew("perform opId=" .. tostring(opId or "?")
+            .. " haveBefore=" .. tostring(Brew._brewHaveBefore))
         if StockPiler3.Scheduler and StockPiler3.Scheduler.EnqueueBagFlush then
             StockPiler3.Scheduler.EnqueueBagFlush(true)
         end
@@ -1538,16 +1575,20 @@ function Brew.TryBrewClick()
             return "blocked"
         end
         local deficitOk = (tonumber(session.potionDeficit) or 0) > 0
-        local craftOk = (tonumber(session.craftable) or 0) > 0
         local row = FindSessionRow()
-        local have = tonumber(session.potionHave) or 0
-        local min = tonumber(session.potionMin) or 0
-        local covered = min <= 0 or (have + (tonumber(session.craftable) or 0)) >= min
-        if deficitOk and covered and (RowIsReadyToCraft(row) or craftOk) then
+        if deficitOk and RowNeedsMorePotions(session) and RowIsReadyToCraft(row) then
             if Brew.ValidateApothecaryPerform() == true then
                 return "go"
             end
         end
+        if not RowIsReadyToCraft(row) then
+            Brew.ClearLoadedSession({ reason = "click-not-ready" })
+            ForceBrewUiRefresh()
+            return "blocked"
+        end
+        local have = tonumber(session.potionHave) or 0
+        local min = tonumber(session.potionMin) or 0
+        local covered = min <= 0 or (have + (tonumber(session.craftable) or 0)) >= min
         if not covered then
             Brew.ClearLoadedSession({ reason = "uncovered-wait-grow" })
             ForceBrewUiRefresh()
@@ -1672,17 +1713,21 @@ function Brew.OnCraftingUpdated()
     ForceBrewUiRefresh()
 end
 
---- After a successful brew: sync live stock; unload when target is met.
+--- After a brew completes: sync live stock; unload when target met or no longer Ready.
 function Brew.RefreshSessionAfterBrew()
     local session = GetSession()
     if tostring(session.phase or "") ~= "loaded" then
         Brew._postBrewClearArmed = false
+        Brew._brewHaveBefore = nil
         ForceBrewUiRefresh()
         return
     end
+    local haveBefore = Brew._brewHaveBefore
+    Brew._brewHaveBefore = nil
     -- Prefer live bag count (yield estimates under/over-count crits and lag).
     SyncSessionStockFromBags(session)
-    if LivePotionHave(session) == nil then
+    local haveAfter = LivePotionHave(session)
+    if haveAfter == nil then
         local yieldAdd = math.max(1, tonumber(session.recipeYield) or 2)
         session.potionHave = (tonumber(session.potionHave) or 0) + yieldAdd
         local min = PotionTargetMin(session)
@@ -1695,7 +1740,17 @@ function Brew.RefreshSessionAfterBrew()
     if session.craftable ~= nil then
         session.craftable = math.max(0, (tonumber(session.craftable) or 0) - 1)
     end
-    if StockPiler3.Scheduler and StockPiler3.Scheduler.EnqueuePlanRebuild then
+    -- Live-patch plan so Ready / Shared / Restocking reflects post-brew mats before gate.
+    local PS = StockPiler3.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    if type(plan) == "table" and type(plan.rows) == "table"
+        and StockPiler3.Planner and StockPiler3.Planner.PatchWatchRowsLiveCounts
+    then
+        StockPiler3.Planner.PatchWatchRowsLiveCounts(plan.rows, {
+            syncSnapshot = true,
+            allowWarmHave = true,
+        })
+    elseif StockPiler3.Scheduler and StockPiler3.Scheduler.EnqueuePlanRebuild then
         StockPiler3.Scheduler.EnqueuePlanRebuild()
     end
     local stillValid = Brew.ValidateApothecaryPerform() == true
@@ -1712,14 +1767,20 @@ function Brew.RefreshSessionAfterBrew()
         session.potionDeficit = 0
     end
 
+    local advanced = nil
+    if haveBefore ~= nil and haveAfter ~= nil then
+        advanced = haveAfter > haveBefore
+    end
+
     LogBrew(string.format(
-        "after-brew have=%s/%s deficit=%s craftable=%s phase=%s valid=%s",
+        "after-brew have=%s/%s deficit=%s craftable=%s phase=%s valid=%s advanced=%s",
         tostring(session.potionHave),
         tostring(session.potionMin),
         tostring(deficit),
         tostring(session.craftable),
         tostring(session.phase),
-        tostring(stillValid)
+        tostring(stillValid),
+        tostring(advanced)
     ))
 
     if deficit <= 0 then
@@ -1741,18 +1802,28 @@ function Brew.RefreshSessionAfterBrew()
         Brew.ClearLoadedSession({ reason = "after-brew-board-empty" })
         return
     end
+    -- Auto: leave board when this watch is no longer uncontested Ready (fail / wrong-tier /
+    -- shared / buy / restocking). Footer stays dark until PickReadyWatch again.
+    if Brew._loadSource ~= "manual" then
+        local row = FindSessionRow()
+        if not RowIsReadyToCraft(row) then
+            Brew.ClearLoadedSession({ reason = "after-brew-not-ready" })
+            return
+        end
+    end
     if Brew.MaybeClearLoadedIfCannotContinue("after-brew") then
         return
     end
-    -- Bags often lag one snap behind Perform; re-check clear once inventory catches up.
+    -- Bags often lag one snap behind Perform; re-check Ready / watch-uid advance then.
     Brew._postBrewClearArmed = true
+    Brew._brewHaveBefore = haveBefore
     if StockPiler3.Scheduler and StockPiler3.Scheduler.EnqueueBagFlush then
         StockPiler3.Scheduler.EnqueueBagFlush(true)
     end
     ForceBrewUiRefresh()
 end
 
---- Bag snap after brew: unload if target met or auto cannot continue.
+--- Bag snap after brew: unload if target met, no longer Ready, or watch uid did not advance.
 function Brew.OnInventorySnapshot()
     if Brew._postBrewClearArmed ~= true then
         return
@@ -1760,6 +1831,7 @@ function Brew.OnInventorySnapshot()
     local session = GetSession()
     if tostring(session.phase or "") ~= "loaded" then
         Brew._postBrewClearArmed = false
+        Brew._brewHaveBefore = nil
         return
     end
     SyncSessionStockFromBags(session)
@@ -1770,6 +1842,7 @@ function Brew.OnInventorySnapshot()
         then
             session.potionDeficit = 0
             Brew._postBrewClearArmed = false
+            Brew._brewHaveBefore = nil
             ForceBrewUiRefresh()
             return
         end
@@ -1779,9 +1852,34 @@ function Brew.OnInventorySnapshot()
         Brew.ClearLoadedSession({ reason = "after-brew-bags" })
         return
     end
+    if Brew._loadSource ~= "manual" then
+        local PS = StockPiler3.PlanSnapshot
+        local plan = PS and PS.Get and PS.Get()
+        if type(plan) == "table" and type(plan.rows) == "table"
+            and StockPiler3.Planner and StockPiler3.Planner.PatchWatchRowsLiveCounts
+        then
+            StockPiler3.Planner.PatchWatchRowsLiveCounts(plan.rows, {
+                syncSnapshot = true,
+                allowWarmHave = true,
+            })
+        end
+        local row = FindSessionRow()
+        if not RowIsReadyToCraft(row) then
+            Brew.ClearLoadedSession({ reason = "after-brew-inv-not-ready" })
+            return
+        end
+        local haveBefore = Brew._brewHaveBefore
+        local haveAfter = LivePotionHave(session)
+        if haveBefore ~= nil and haveAfter ~= nil and haveAfter <= haveBefore then
+            Brew.ClearLoadedSession({ reason = "after-brew-no-advance" })
+            return
+        end
+    end
     if Brew.MaybeClearLoadedIfCannotContinue("after-brew-inv") then
         return
     end
+    Brew._postBrewClearArmed = false
+    Brew._brewHaveBefore = nil
 end
 
 function Brew.MaybeClearLoadedIfCannotContinue(reason)
@@ -1794,11 +1892,10 @@ function Brew.MaybeClearLoadedIfCannotContinue(reason)
     end
     SyncSessionStockFromBags(session)
     local deficit = tonumber(session.potionDeficit) or 0
-    local craftable = tonumber(session.craftable) or 0
     local row = FindSessionRow()
-    if deficit <= 0 or not RowNeedsMorePotions(session)
-        or (craftable <= 0 and not RowIsReadyToCraft(row))
-    then
+    -- Unload when target met, or when this watch is no longer uncontested Ready
+    -- (mats short / shared / buy / restocking — AutoGrow/AutoBuy must refill first).
+    if deficit <= 0 or not RowNeedsMorePotions(session) or not RowIsReadyToCraft(row) then
         if deficit <= 0 or not RowNeedsMorePotions(session) then
             PatchPlanRowTargetMet(session, session.potionHave)
         end
@@ -1838,6 +1935,13 @@ function Brew.RegisterEventHandlers()
             Brew._busTokens[#Brew._busTokens + 1] = B.Subscribe(E.PLAN_UPDATED, function()
                 Brew.InvalidateCanBrewCache()
                 Brew.MaybeClearLoadedIfCannotContinue("plan-updated")
+            end)
+        end
+        if E.SESSION_LOADED then
+            Brew._busTokens[#Brew._busTokens + 1] = B.Subscribe(E.SESSION_LOADED, function()
+                Brew._readyNotifyKeys = nil
+                Brew._brewReadyLatched = false
+                Brew.InvalidateCanBrewCache()
             end)
         end
         if E.INVENTORY_SNAPSHOT then

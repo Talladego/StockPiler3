@@ -14,8 +14,10 @@ local function T(key, tokens)
 end
 
 Ui.WATCH_UI_MIN_INTERVAL_SEC = 5.0
+Ui.BREW_WATCH_CATCHUP_SEC = 1.0
 Ui._watchUiDirty = false
 Ui._watchUiFlushedAt = 0
+Ui._watchUiBrewCatchupAt = 0
 Ui._watchUiLastKey = nil
 Ui._watchUiLastKnowledgeGen = 0
 Ui._watchUiLastPlanGen = 0
@@ -137,8 +139,9 @@ local function ShouldDeferWatchFlush()
     if RP and RP.HasOutstanding and RP.HasOutstanding() == true then
         return true
     end
-    local Grow = StockPiler3.Grow
-    if Grow and Grow.HasPendingBufferRefine and Grow.HasPendingBufferRefine() == true then
+    -- Peek only: HasPendingBufferRefine rebuilds BufferFlags after every snap invalidate.
+    local Refine = StockPiler3.Refine
+    if Refine and Refine.PeekCachedBufferPending and Refine.PeekCachedBufferPending() == true then
         return true
     end
     local Buy = StockPiler3.Buy
@@ -189,29 +192,78 @@ function Ui.FlushWatchUiIfDirty()
     end
     local windowOpen = DoesWindowExist("StockPiler3Window")
         and WindowGetShowing("StockPiler3Window") == true
-    if not windowOpen then
-        if ShouldDeferWatchFlush() then
-            return
-        end
-        -- Closed-window Ready wake: live Status patch; keep dirty for open paint.
+    -- Ready wake must run even while AutoBuy visit defers full Watch paint
+    -- (flask fills clear Shared/Buy-flasks without a potion craftable delta).
+    local function WakeReadyFromLiveStatus()
         if StockPiler3.Planner and StockPiler3.Planner.SyncLiveStatusClosedWindow then
             StockPiler3.Planner.SyncLiveStatusClosedWindow()
         elseif StockPiler3.Brew and StockPiler3.Brew.SyncLiveStatusClosedWindow then
             StockPiler3.Brew.SyncLiveStatusClosedWindow()
         end
+        if StockPiler3.Brew and StockPiler3.Brew.MaybeNotifyBrewReady then
+            StockPiler3.Brew.MaybeNotifyBrewReady()
+        end
+    end
+    if not windowOpen then
+        WakeReadyFromLiveStatus()
+        if ShouldDeferWatchFlush() then
+            return
+        end
+        -- Closed-window: Ready wake done; keep dirty for next open paint.
         return
     end
     if ShouldDeferWatchFlush() then
+        WakeReadyFromLiveStatus()
         return
     end
 
     local Orch = StockPiler3.Orchestrator
-    local brewSessionHold = false
-    if Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true then
-        local brewKeyHold = BrewChromeKey()
-        if brewKeyHold == tostring(Ui._watchUiLastBrewKey or "") then
-            brewSessionHold = true
+    local brewSessionActive = Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true
+    -- Mid-brew: hold full RefreshWatch; chrome via ForceBrewUiRefresh; ~1s Stock/Status catch-up.
+    if brewSessionActive then
+        local brewKey = BrewChromeKey()
+        local brewChanged = brewKey ~= tostring(Ui._watchUiLastBrewKey or "")
+        local now = 0
+        if type(GetGameTime) == "function" then
+            now = tonumber(GetGameTime()) or 0
         end
+        if brewChanged then
+            Ui._watchUiLastBrewKey = brewKey
+            if StockPiler3TabWatch and StockPiler3TabWatch.UpdateRows then
+                StockPiler3TabWatch.UpdateRows()
+            end
+            -- Keep dirty so a full flush runs when the session ends.
+            return
+        end
+        local catchupSec = tonumber(Ui.BREW_WATCH_CATCHUP_SEC) or 1.0
+        local lastCatchup = tonumber(Ui._watchUiBrewCatchupAt) or 0
+        if lastCatchup > 0 and (now - lastCatchup) < catchupSec then
+            return
+        end
+        Ui._watchUiBrewCatchupAt = now
+        local listData = StockPiler3TabWatch and StockPiler3TabWatch.listData
+        if type(listData) == "table"
+            and #listData > 0
+            and StockPiler3.Planner
+            and StockPiler3.Planner.PatchWatchRowsLiveCounts
+        then
+            if StockPiler3.Perf and StockPiler3.Perf.Begin then
+                StockPiler3.Perf.Begin("UiFlush.BrewCatchup")
+            end
+            StockPiler3.Planner.PatchWatchRowsLiveCounts(listData, {
+                allowWarmHave = false,
+                syncSnapshot = false,
+                recountCraftable = false,
+            })
+            if StockPiler3TabWatch.UpdateRows then
+                StockPiler3TabWatch.UpdateRows()
+            end
+            if StockPiler3.Perf and StockPiler3.Perf.End then
+                StockPiler3.Perf.End("UiFlush.BrewCatchup")
+            end
+        end
+        -- Keep dirty for post-session full Watch refresh.
+        return
     end
 
     local knowledgeGen = 0
@@ -235,16 +287,10 @@ function Ui.FlushWatchUiIfDirty()
     local knowledgeChanged = knowledgeGen ~= (tonumber(Ui._watchUiLastKnowledgeGen) or 0)
     local brewChanged = brewKey ~= tostring(Ui._watchUiLastBrewKey or "")
     local interval = Ui.WATCH_UI_MIN_INTERVAL_SEC
-    if brewSessionHold
-        or (not knowledgeChanged and not planChanged and not brewChanged and IsWatchPlanStale())
-    then
+    if not knowledgeChanged and not planChanged and not brewChanged and IsWatchPlanStale() then
         interval = math.min(interval, 1.0)
     end
-    if brewSessionHold and not brewChanged then
-        if last > 0 and (now - last) < interval then
-            return
-        end
-    elseif not knowledgeChanged
+    if not knowledgeChanged
         and not planChanged
         and not brewChanged
         and last > 0
@@ -258,6 +304,7 @@ function Ui.FlushWatchUiIfDirty()
     end
     Ui._watchUiDirty = false
     Ui._watchUiFlushedAt = now
+    Ui._watchUiBrewCatchupAt = 0
     Ui._watchUiLastKey = contentKey
     Ui._watchUiLastKnowledgeGen = knowledgeGen
     Ui._watchUiLastPlanGen = planGen

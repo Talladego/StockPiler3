@@ -236,57 +236,67 @@ function Bridge.OnCombatFlagUpdated()
 end
 
 function Bridge.OnUpdateProcessed(timeElapsed)
-    StockPiler3.FrameCounter = (tonumber(StockPiler3.FrameCounter) or 0) + 1
-
-    -- Perf.OnFrame first when in-addon hitch logger (LibPerf sets Available=true).
-    local Perf = StockPiler3.Perf
-    if Perf and Perf.OnFrame and Perf.Available ~= true then
-        Perf.OnFrame(timeElapsed)
+    if Bridge._inUpdate == true then
+        return
     end
+    Bridge._inUpdate = true
+    local ok, err = pcall(function()
+        StockPiler3.FrameCounter = (tonumber(StockPiler3.FrameCounter) or 0) + 1
 
-    if StockPiler3.Garden and StockPiler3.Garden.FlushPendingSyncAll then
-        StockPiler3.Garden.FlushPendingSyncAll()
-    end
+        -- Perf.OnFrame first when in-addon hitch logger (LibPerf sets Available=true).
+        local Perf = StockPiler3.Perf
+        if Perf and Perf.OnFrame and Perf.Available ~= true then
+            Perf.OnFrame(timeElapsed)
+        end
 
-    -- Coalesced Inv.ApplySlots (main + craft)
-    Bridge.FlushPendingMainSlots()
-    Bridge.FlushPendingCraftSlots()
+        if StockPiler3.Garden and StockPiler3.Garden.FlushPendingSyncAll then
+            StockPiler3.Garden.FlushPendingSyncAll()
+        end
 
-    -- Flush pending snapGen
-    if StockPiler3.Inventory and StockPiler3.Inventory.FlushPendingSnapGen then
-        StockPiler3.Inventory.FlushPendingSnapGen()
-    end
+        -- Coalesced Inv.ApplySlots (main + craft)
+        Bridge.FlushPendingMainSlots()
+        Bridge.FlushPendingCraftSlots()
 
-    -- LearnBridge drain
-    if StockPiler3.LearnBridge and StockPiler3.LearnBridge.OnUpdateProcessed then
-        StockPiler3.LearnBridge.OnUpdateProcessed()
-    end
+        -- Flush pending snapGen
+        if StockPiler3.Inventory and StockPiler3.Inventory.FlushPendingSnapGen then
+            StockPiler3.Inventory.FlushPendingSnapGen()
+        end
 
-    -- Refine OnUpdate
-    if StockPiler3.Refine and StockPiler3.Refine.OnUpdateProcessed then
-        StockPiler3.Refine.OnUpdateProcessed(timeElapsed)
-    elseif StockPiler3.Refine and StockPiler3.Refine.OnUpdate then
-        StockPiler3.Refine.OnUpdate(timeElapsed)
-    end
+        -- LearnBridge drain
+        if StockPiler3.LearnBridge and StockPiler3.LearnBridge.OnUpdateProcessed then
+            StockPiler3.LearnBridge.OnUpdateProcessed()
+        end
 
-    -- Scheduler pump (bag -> FrameWork -> Plan -> Watch UI; Orch tick due)
-    if StockPiler3.Scheduler and StockPiler3.Scheduler.OnUpdate then
-        StockPiler3.Scheduler.OnUpdate(timeElapsed)
-    end
+        -- Refine OnUpdate
+        if StockPiler3.Refine and StockPiler3.Refine.OnUpdateProcessed then
+            StockPiler3.Refine.OnUpdateProcessed(timeElapsed)
+        elseif StockPiler3.Refine and StockPiler3.Refine.OnUpdate then
+            StockPiler3.Refine.OnUpdate(timeElapsed)
+        end
 
-    -- Coalesced macro enable sync (footer/cultivation storms).
-    if StockPiler3.Macro and StockPiler3.Macro.DrainEnabledSync then
-        StockPiler3.Macro.DrainEnabledSync()
-    end
+        -- Scheduler pump (bag -> FrameWork -> Plan -> Watch UI; Orch tick due)
+        if StockPiler3.Scheduler and StockPiler3.Scheduler.OnUpdate then
+            StockPiler3.Scheduler.OnUpdate(timeElapsed)
+        end
 
-    -- Footer after Scheduler so SkipUiHoldFooter can hold this frame.
-    local Sch = StockPiler3.Scheduler
-    local holdFooter = Sch and Sch.SkipUiHoldFooter and Sch.SkipUiHoldFooter() == true
-    if not holdFooter and StockPiler3Window and StockPiler3Window.FlushPendingFooterRefresh then
-        StockPiler3Window.FlushPendingFooterRefresh()
-    end
-    if Sch and Sch.ClearSkipUiHoldFooter then
-        Sch.ClearSkipUiHoldFooter()
+        -- Coalesced macro enable sync (footer/cultivation storms).
+        if StockPiler3.Macro and StockPiler3.Macro.DrainEnabledSync then
+            StockPiler3.Macro.DrainEnabledSync()
+        end
+
+        -- Footer after Scheduler so SkipUiHoldFooter can hold this frame.
+        local Sch = StockPiler3.Scheduler
+        local holdFooter = Sch and Sch.SkipUiHoldFooter and Sch.SkipUiHoldFooter() == true
+        if not holdFooter and StockPiler3Window and StockPiler3Window.FlushPendingFooterRefresh then
+            StockPiler3Window.FlushPendingFooterRefresh()
+        end
+        if Sch and Sch.ClearSkipUiHoldFooter then
+            Sch.ClearSkipUiHoldFooter()
+        end
+    end)
+    Bridge._inUpdate = false
+    if ok ~= true and StockPiler3.Debug and StockPiler3.Debug.ReportProtectedCallFailure then
+        StockPiler3.Debug.ReportProtectedCallFailure("Bridge.OnUpdateProcessed", err, true)
     end
 end
 

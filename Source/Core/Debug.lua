@@ -161,12 +161,16 @@ function D.DumpEventRing(emit)
 end
 
 -- WarTriage / SP2 style: colored [StockPiler3] LINK prefix before chat body.
+-- data=SP3: so a hyperlink hook can open the addon window (stock data="0" is inert).
 local CHAT_PREFIX_TEXT = "StockPiler3"
 local CHAT_PREFIX_COLOR = { 170, 220, 170 }
+local CHAT_LINK_DATA = "SP3:"
+local CHAT_LINK_TAG = L"SP3:"
 
 local function ChatPrefix(includeSpace)
     local coloredPartRaw = string.format(
-        "<LINK data=\"0\" color=\"%d,%d,%d\" text=\"%s\">",
+        "<LINK data=\"%s\" color=\"%d,%d,%d\" text=\"%s\">",
+        CHAT_LINK_DATA,
         CHAT_PREFIX_COLOR[1],
         CHAT_PREFIX_COLOR[2],
         CHAT_PREFIX_COLOR[3],
@@ -201,6 +205,57 @@ end
 --- User-facing ops chat (alias of Print).
 function D.Notify(msg)
     D.Print(msg)
+end
+
+local _prevOnHyperLinkLButtonUp = nil
+local _chatLinkHooked = false
+
+local function IsSp3ChatLink(linkData)
+    if linkData == nil or type(wstring) ~= "table" or type(wstring.gsub) ~= "function" then
+        return false
+    end
+    local data = linkData
+    if type(data) ~= "wstring" then
+        data = towstring(tostring(data))
+    end
+    local _, findCount = wstring.gsub(data, CHAT_LINK_TAG, L"")
+    return (tonumber(findCount) or 0) > 0
+end
+
+local function OnSp3HyperLinkLButtonUp(linkData, flags, x, y)
+    if IsSp3ChatLink(linkData) then
+        if StockPiler3.Ui and StockPiler3.Ui.ToggleWindow then
+            StockPiler3.Ui.ToggleWindow()
+        end
+        return
+    end
+    if _prevOnHyperLinkLButtonUp then
+        _prevOnHyperLinkLButtonUp(linkData, flags, x, y)
+    end
+end
+
+--- Hook chat hyperlinks so clicking [StockPiler3] toggles the window (/sp3).
+function D.InstallChatLinkHook()
+    if _chatLinkHooked then
+        return
+    end
+    if type(EA_ChatWindow) ~= "table" or type(EA_ChatWindow.OnHyperLinkLButtonUp) ~= "function" then
+        return
+    end
+    _prevOnHyperLinkLButtonUp = EA_ChatWindow.OnHyperLinkLButtonUp
+    EA_ChatWindow.OnHyperLinkLButtonUp = OnSp3HyperLinkLButtonUp
+    _chatLinkHooked = true
+end
+
+function D.UninstallChatLinkHook()
+    if not _chatLinkHooked then
+        return
+    end
+    if type(EA_ChatWindow) == "table" and _prevOnHyperLinkLButtonUp ~= nil then
+        EA_ChatWindow.OnHyperLinkLButtonUp = _prevOnHyperLinkLButtonUp
+    end
+    _prevOnHyperLinkLButtonUp = nil
+    _chatLinkHooked = false
 end
 
 local _notifyOnce = {}

@@ -47,7 +47,7 @@ function Watch.GetWatches()
 end
 
 local function DefaultWatch()
-    return { enabled = false, targetStock = 40, autoGrow = false }
+    return { enabled = false, targetStock = 40, autoGrow = false, priorityTier = nil }
 end
 
 --- Read-only watch peek (does not create SV stubs).
@@ -67,7 +67,7 @@ function Watch.GetWatch(recipeKey)
     return watch
 end
 
---- Count watches with enabled==true (Clear watches / footer).
+--- Count watches with enabled==true (Clear watches / footer / priority N).
 function Watch.CountEnabled()
     local watches = Watch.GetWatches()
     local n = 0
@@ -80,6 +80,198 @@ function Watch.CountEnabled()
         end
     end
     return n
+end
+
+local function MaxPriorityTier(excludeKey)
+    excludeKey = excludeKey and tostring(excludeKey) or nil
+    local watches = Watch.GetWatches()
+    local maxTier = 0
+    if type(watches) ~= "table" then
+        return 0
+    end
+    for key, watch in pairs(watches) do
+        if type(watch) == "table" and watch.enabled == true and tostring(key) ~= excludeKey then
+            local t = tonumber(watch.priorityTier) or 0
+            if t > maxTier then
+                maxTier = t
+            end
+        end
+    end
+    return maxTier
+end
+
+--- Next unique tier for a newly enabled watch (add order).
+function Watch.NextPriorityTier(excludeKey)
+    return MaxPriorityTier(excludeKey) + 1
+end
+
+function Watch.GetPriorityTier(recipeKey)
+    local watch = Watch.GetWatch(recipeKey)
+    local n = Watch.CountEnabled()
+    if n < 1 then
+        n = 1
+    end
+    local t = tonumber(watch and watch.priorityTier)
+    if t == nil or t < 1 then
+        return 1
+    end
+    if t > n then
+        return n
+    end
+    return math.floor(t)
+end
+
+function Watch.ClampAllPriorityTiers()
+    local watches = Watch.GetWatches()
+    local n = Watch.CountEnabled()
+    if type(watches) ~= "table" then
+        return
+    end
+    if n < 1 then
+        n = 1
+    end
+    for _, watch in pairs(watches) do
+        if type(watch) == "table" and watch.enabled == true then
+            local t = tonumber(watch.priorityTier)
+            if t == nil or t < 1 then
+                watch.priorityTier = 1
+            elseif t > n then
+                watch.priorityTier = n
+            else
+                watch.priorityTier = math.floor(t)
+            end
+        end
+    end
+end
+
+--- Remap enabled tiers to dense 1..K preserving shared groups and relative order.
+function Watch.DensifyPriorityTiers()
+    local watches = Watch.GetWatches()
+    if type(watches) ~= "table" then
+        return
+    end
+    local used = {}
+    for _, watch in pairs(watches) do
+        if type(watch) == "table" and watch.enabled == true then
+            local t = tonumber(watch.priorityTier)
+            if t ~= nil and t >= 1 then
+                used[math.floor(t)] = true
+            end
+        end
+    end
+    local sorted = {}
+    for t in pairs(used) do
+        sorted[#sorted + 1] = t
+    end
+    table.sort(sorted)
+    if #sorted == 0 then
+        return
+    end
+    local map = {}
+    for i = 1, #sorted do
+        map[sorted[i]] = i
+    end
+    local changed = false
+    for _, watch in pairs(watches) do
+        if type(watch) == "table" and watch.enabled == true then
+            local t = tonumber(watch.priorityTier)
+            if t ~= nil and map[math.floor(t)] ~= nil then
+                local neu = map[math.floor(t)]
+                if watch.priorityTier ~= neu then
+                    watch.priorityTier = neu
+                    changed = true
+                end
+            end
+        end
+    end
+    Watch.ClampAllPriorityTiers()
+    if changed then
+        Watch.BumpGen()
+    end
+end
+
+local function WatchDisplayName(key, watch)
+    local RS = StockPiler3.RecipeSpec
+    if RS and RS.ResolveWatchPotion then
+        local resolved = RS.ResolveWatchPotion(key)
+        local potion = resolved and resolved.potion
+        if type(potion) == "table" and potion.name ~= nil then
+            if StockPiler3.Persistence and StockPiler3.Persistence.ToNarrow then
+                return StockPiler3.Persistence.ToNarrow(potion.name)
+            end
+            return tostring(potion.name)
+        end
+    end
+    return tostring(key or "")
+end
+
+--- One-shot: assign unique 1..N by name/key for legacy saves without tiers.
+function Watch.MigratePriorityTiersIfNeeded()
+    local row = CharacterRow(true)
+    if type(row) ~= "table" then
+        return false
+    end
+    if row.watchPriorityTiersMigrated == true then
+        return false
+    end
+    local watches = row.watches
+    if type(watches) ~= "table" then
+        row.watchPriorityTiersMigrated = true
+        return false
+    end
+    local list = {}
+    for key, watch in pairs(watches) do
+        if type(watch) == "table" and watch.enabled == true then
+            list[#list + 1] = { key = tostring(key), watch = watch }
+        end
+    end
+    table.sort(list, function(a, b)
+        local na = WatchDisplayName(a.key, a.watch)
+        local nb = WatchDisplayName(b.key, b.watch)
+        if na ~= nb then
+            return na < nb
+        end
+        return a.key < b.key
+    end)
+    for i = 1, #list do
+        list[i].watch.priorityTier = i
+    end
+    row.watchPriorityTiersMigrated = true
+    Watch.BumpGen()
+    return true
+end
+
+function Watch.SetPriorityTier(recipeKey, tier)
+    local watch = Watch.EnsureWatch(recipeKey)
+    if type(watch) ~= "table" or watch.enabled ~= true then
+        return watch
+    end
+    local n = Watch.CountEnabled()
+    if n < 1 then
+        n = 1
+    end
+    tier = tonumber(tier)
+    if tier == nil then
+        return watch
+    end
+    tier = math.floor(tier)
+    if tier < 1 then
+        tier = 1
+    elseif tier > n then
+        tier = n
+    end
+    watch.priorityTier = tier
+    Watch.BumpGen()
+    return watch
+end
+
+function Watch.BumpPriorityTier(recipeKey, delta)
+    delta = tonumber(delta) or 0
+    if delta == 0 then
+        return Watch.GetWatch(recipeKey)
+    end
+    local cur = Watch.GetPriorityTier(recipeKey)
+    return Watch.SetPriorityTier(recipeKey, cur + delta)
 end
 
 --- Remove disabled watch rows that still look like EnsureWatch defaults
@@ -194,9 +386,21 @@ function Watch.SetEnabled(recipeKey, enabled, opts)
         opts.autoGrow = true
     end
     local watch = Watch.EnsureWatch(recipeKey, opts)
+    local wasEnabled = watch.enabled == true
     watch.enabled = enabled == true
     if enabled == true and opts.fromPotionsToggle == true then
         watch.autoGrow = true
+    end
+    if enabled == true then
+        if not wasEnabled or tonumber(watch.priorityTier) == nil then
+            watch.priorityTier = Watch.NextPriorityTier(recipeKey)
+        end
+        Watch.ClampAllPriorityTiers()
+    else
+        if wasEnabled then
+            Watch.DensifyPriorityTiers()
+            Watch.ClampAllPriorityTiers()
+        end
     end
     Watch.BumpGen()
     return watch
@@ -222,6 +426,10 @@ function Watch.ClearAll()
 end
 
 function Watch.IsAutoGrowEnabled()
+    local Caps = StockPiler3.TradeSkillCaps
+    if Caps and Caps.CanAutoGrow and Caps.CanAutoGrow() ~= true then
+        return false
+    end
     local row = CharacterRow(false)
     return type(row) == "table" and row.autoGrowEnabled == true
 end
@@ -253,6 +461,10 @@ function Watch.IsAutoGrowAdditivesEnabled()
 end
 
 function Watch.IsSeedBufferEnabled()
+    local Caps = StockPiler3.TradeSkillCaps
+    if not (Caps and Caps.CanAutoGrow and Caps.CanAutoGrow() == true) then
+        return false
+    end
     local row = CharacterRow(false)
     if type(row) ~= "table" then
         return true

@@ -332,6 +332,7 @@ Treat named SP2 helpers (`HasAnyBufferShort`, `WarmHave`, `FrameWork`, …) as *
 23. **WarmHave skip while refine outstanding (0.4.173)** — Watch live-count patch uses `allowWarmHave=false` while RefinePipeline has outstanding.
 24. **Settings soft paths** — Reserve/Budget chips: no BumpWatch/PlanRebuild. Additives/AutoBuy toggles: skip plan invalidate where safe. Seed buffer + AutoGrow: Bump + prewarm + coalesced PlanRebuild (no sync Refresh). Target chip stocked↔stocked noop: optimistic paint only (§9.1).
 25. **Tooltip hover cost** — Status / seed-buffer tips are plan-snapshot + live Have overlays only; `cacheOnly` GrowingNotes / CountItemsMatchingSpec; never ResolveSeed bag-walks or mutate plan tip payloads on hover; PeekCachedIntents only (no CollectIntents in Build or hover).
+26. **Live Watch seed-buffer short** — `PatchWatchRowsLiveCounts` / Status flip must not pay `ResolveSeedForSpec` / `FindPlantUidForSpec`. Prefer plan tip `seedUid`s / `row.seedBufferSeedUids` + `GetSeedBudget(seedUid)`; ResolveSeed only on cold miss (GitHub #2).
 26. **MaterialSpec parse cache** — Key by uid (not item table identity); clear on inventory snap; expose `/sp3 mem` for safe counts — never `d(Addon)` (EA debug walks full bag tables and can freeze/disconnect).
 
 **Minimal Perf/Debug surface:** hitch logger + trail (LibPerf or in-addon); plan/state/grow/brew/buy/stats/mem dumps; debug uilog. Persist hitch threshold (≥250ms recommended).
@@ -351,7 +352,7 @@ Treat named SP2 helpers (`HasAnyBufferShort`, `WarmHave`, `FrameWork`, …) as *
 ### 7.2 Window and tabs
 
 - **Potions** — learned catalog; name search; effect filter; sort columns; rarity-colored names; one row per recipe fingerprint; live refresh on knowledge gen; watch; forget; recipe/icon tooltips. Columns (§8): Watch, Name, Lvl, Effect, Pwr, Stab, Mult, SCrit, Yield, Stock, Recipe, Forget.
-- **Watch** — master AutoGrow, additives, Combat pause, seed buffer enable + min chip, AutoBuy + reserve/budget; per-row target, AutoGrow, Status / Stock / Craftable; row Load/Brew. Column for per-row AutoGrow labeled AutoGrow (not “Priority”). Name column uses same rarity colors as Potions (`DataUtils.GetItemRarityColor`).
+- **Watch** — master AutoGrow, additives, Combat pause, seed buffer enable + min chip, AutoBuy + reserve/budget; leftmost **Prio** chip (shared tiers `1..N`, N = enabled Watch-list rows; AutoGrow-off still counts/editable), Name (rarity colors via `DataUtils.GetItemRarityColor`), Status / Stock / Craftable / Target / AutoGrow / Brew. AutoGrow column header reads AutoGrow (not “Priority”).
 - **Footer** — Clear watches (Potions tab); Harvest + Brew (Watch tab); live tooltips that update while hovered when readiness changes.
 - **Skill gates** — AutoGrow / additives / seed buffer / Combat pause / row AutoGrow → Cultivation; Brew → Apothecary; AutoBuy → Cultivation **or** Apothecary. Tooltips explain gated state. Re-apply after SESSION_LOADED / window show (tradeSkills often missing at CreateWindow Initialize).
 
@@ -421,8 +422,8 @@ StockPiler3Window (movable, savesettings)
 │  ├─ Enable AutoGrow, Additives, Combat pause
 │  ├─ SeedBufferEnable, SeedBufferChip (min 4–20)
 │  ├─ AutoBuy, ReserveChip (1–99), BudgetChip (1–999)
-│  ├─ Column headers (Potion, Status, Stock, Craftable, Target, AutoGrow, Brew)
-│  └─ List → WatchRow { Icon, Name, Status, Stock, Craftable, TargetChip, AutoGrow, Load }
+│  ├─ Column headers (Prio, Name, Status, Stock, Craftable, Target, AutoGrow, Brew)
+│  └─ List → WatchRow { PrioChip, Icon, Name, Status, Stock, Craftable, TargetChip, AutoGrow, Load }
 └─ ClearWatches (Potions), Harvest (gameactionbutton), Brew (Watch)
 ```
 
@@ -458,6 +459,7 @@ StockPiler3Window (movable, savesettings)
 | Stock | Traffic light vs target; live-patched |
 | Craftable | Green = buffer-safe brew (`craftable > 0`, seed cushion met); yellow = craftable but buffer short; red = zero. Shared mats do not force yellow (Status may still be Ready-shared). |
 | Target | Chip ±1 (Shift ±10), max 200; L enables watch |
+| Prio | Leftmost click-chip; L+/R− (Shift ±10); range 1..N (N = enabled list) |
 | AutoGrow | Per-row checkbox; Cultivation-gated |
 | Brew | Idle → Load → Brew; R-click unload |
 
@@ -503,7 +505,7 @@ StockPiler3Window (movable, savesettings)
 | Sort / Search / Effect | Filter/sort; persist. Effect cycle ~27 short keys |
 | Known-recipe filter | SP2 persists `potionKnownRecipeOnly` but hides the checkbox and does not apply it — **either implement fully or omit** |
 | Watch Enable / Additives / Combat pause / Seed buffer / AutoBuy | Toggles + chips; skill-gated; chat on settings change. Soft invalidate paths per §6.24 |
-| Row Target / AutoGrow / Load | Target L/R; AutoGrow flag; Load Idle→Load→Brew, R clears (1.5s board adopt block after R-clear) |
+| Row Prio / Target / AutoGrow / Load | Prio L/R; Target L/R; AutoGrow flag; Load Idle→Load→Brew, R clears (1.5s board adopt block after R-clear) |
 | Target stocked↔stocked | Optimistic row + PlanSnapshot patch only — no BumpGen/PlanRebuild |
 | Footer Brew / Harvest | §9.4–9.5; live tooltip ticks while hovered |
 | Clear watches | Clear all character watches (confirm) |
@@ -522,11 +524,12 @@ StockPiler3Window (movable, savesettings)
 ### 9.1 Watch / shared materials
 
 - Deficit = `max(0, targetStock − bag stock)` per enabled watch.
+- **Priority tiers:** each enabled Watch-list row has `priorityTier` in `1..N` where **N = enabled list count** (AutoGrow-off still on the list, still has a Prio chip, still counts in N). Defaults unique by enable/add order; legacy saves migrate once to unique `1..N` by name. Shared tiers allowed after manual chip edits. When a watch leaves the list and its tier becomes empty, densify higher tiers down (holes collapse). List sorts tier asc, then name.
 - Stocked watches do not join shared-mat contention.
 - Contested craftable uses crafts **needed for deficit**, not max bag crafts.
 - Green Ready vs yellow Ready-shared as in §8.4–8.6 (Status only). Craftable **color** ignores shared: both watches may show green counts over the same bags; brewing one recounts both.
 - AutoGrow keeps filling contested shared plants until Status can leave Ready-shared.
-- **Water-fill of Craftable/Stock (watch layer):** bottle gap = `max(0, Target − Stock − Craftable)`. Prefer watches with the **largest** bottle gap (starve-first / raise the emptiest glasses). Same idea for AutoBuy fair focus. Fallback to pooled shorts when focus has nothing actionable (buyable non-growables only; skip shared containers).
+- **Water-fill of Craftable/Stock (watch layer):** among AutoGrow-armed watches that still need work, take the **best (min) priority tier**, then bottle gap = `max(0, Target − Stock − Craftable)` within that band — prefer largest gap (starve-first). Same focus rule for AutoBuy. Fallback to pooled shorts when focus has nothing actionable (buyable non-growables only; skip shared containers).
 - Live Status overlays must work without `/sp3 watchplan` (§5.8).
 
 ### 9.2 AutoGrow
@@ -534,13 +537,13 @@ StockPiler3Window (movable, savesettings)
 - Master on + Cultivation; one seed per tick; plant-first before refine when a plantable job exists.
 - **Plant pick (accepted fairness rule — not classic min-deficit round-robin):**
   1. Build pooled growable demand across AutoGrow watches (`craftsShort` per spec).
-  2. **Focus** = watches at `maxBottleGap` (§9.1 water-fill). Restrict candidates to those recipes’ specs when plantable.
-  3. **Plant watch order** matches focus: max `bottleGap`, then lowest craftable, then deficit (not deficit-only uid sort).
+  2. **Focus** = AutoGrow-armed watches needing work at the **min priority tier**, then at `maxBottleGap` within that band (§9.1). Restrict candidates to those recipes’ specs when plantable.
+  3. **Plant watch order** matches focus: priority tier asc, then max `bottleGap`, then lowest craftable, then deficit (not deficit-only uid sort).
   4. Among focus candidates, score: **unique limiting bottlenecks first** (spec is a limiting slot for a focus recipe; prefer low share across focus watches so shared Goldweed/Gobswort does not starve unique recipes), then **maximize** `craftsShort`, then plot fairness / role order (main → stabilizer/goldweed → extender → multiplier/stimulant → …), then avoid last-planted seedUid.
-  5. If a higher-gap watch returns `no-seed`, **fall back** to the next watch (lower gap may plant). Do **not** idle empty plots when another watch has plantable seeds.
+  5. If a higher-priority (lower tier / larger gap) watch returns `no-seed`, **fall back** to the next watch. Do **not** idle empty plots when another watch has plantable seeds.
   6. `refine-first` still blocks lower watches (plants exist to convert for that watch — wait for refine).
   7. Else seed-buffer grow, then surplus grow (buffer on).
-- SP2 does **not** water-fill every pooled material evenly (it does not always plant the globally shortest material deficit). SP3 must keep **watch water-fill + shared-mat uniqueness fairness**; scoring may be simplified if hitch contracts hold.
+- SP2 does **not** water-fill every pooled material evenly (it does not always plant the globally shortest material deficit). SP3 must keep **watch priority + water-fill + shared-mat uniqueness fairness**; scoring may be simplified if hitch contracts hold.
 - **SHORT surplus block:** when buffer is SHORT for a seed, do not surplus-grow that seed. Also block surplus while buffer refine pending.
 - **Must not** buffer-grow while refinable plants for that seed remain.
 - **PotionStockNeedsRefineFirst:** when deficit exists, zero plantable seeds, but refinable plants remain → defer buffer/surplus plant so refine unblocks Shared/yellow watches.
@@ -766,7 +769,7 @@ Craft-cycle stats: plantAttempts, specialMomentHits, refineAttempts+seedOut, har
 2. Watch toggle → Watch tab; target 40; status updates.
 3. Shared contention — yellow Shared; footer skips; AutoGrow toward green.
 4. Shared tooltip — (Shared) not (Stocked); (Pooled) for pooled grow demand.
-5. AutoGrow plants one seed/tick by water-fill focus (max bottle gap) then unique-bottleneck / craftsShort demand.
+5. AutoGrow / AutoBuy focus best priority tier among armed watches needing work, then water-fill (max bottle gap) within that band; plant order matches.
 6. Seed buffer — bag+in-ground+outstanding; refine shortfall; batch when plots full; SHORT/partial/OK tooltip.
 7. SHORT surplus block — no surplus grow while SHORT or buffer refine pending.
 8. No buffer-grow while refinable plants remain; PotionStockNeedsRefineFirst defers buffer/surplus.

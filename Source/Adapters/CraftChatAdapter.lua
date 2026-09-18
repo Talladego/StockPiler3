@@ -228,7 +228,7 @@ local function EmitPlantedChat(plotNum, meta)
         })
     end
     if msg == nil then
-        msg = L"Harvest: Plot " .. towstring(tostring(plotNum))
+        msg = L"<icon02486> Plot " .. towstring(tostring(plotNum))
             .. L" planted " .. ToWString(namePart)
             .. L" (" .. towstring(reason) .. L")."
     end

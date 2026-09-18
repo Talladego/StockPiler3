@@ -300,7 +300,12 @@ local function OnInventorySnapshot()
     Sch.MarkWatchUiDirty()
 end
 
-local function OnGardenDirty()
+local function OnGardenDirty(payload)
+    -- Soft (stage-only) pulses: refresh Watch UI, do not wake AutoGrow / plan rebuild.
+    if type(payload) == "table" and payload.soft == true then
+        Sch.MarkWatchUiDirty()
+        return
+    end
     if Sch.ShouldWakeAutoGrow and Sch.ShouldWakeAutoGrow() == true then
         if Sch._planDue == true then
             Sch._autoGrowFast = true

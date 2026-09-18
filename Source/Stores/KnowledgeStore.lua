@@ -61,14 +61,21 @@ function Know.MigrateFingerprints()
     if StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.MigrateRecipeFingerprintsV2 then
         StockPiler3.RecipeSpec.MigrateRecipeFingerprintsV2()
     end
+    if StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.MigrateRecipeFingerprintsV3 then
+        StockPiler3.RecipeSpec.MigrateRecipeFingerprintsV3()
+    end
     if StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.MigratePotionEffectKeys then
         StockPiler3.RecipeSpec.MigratePotionEffectKeys()
     end
+    local scrubbed = 0
     if StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.ScrubSubsetPotionRecipeKeys then
-        local n = tonumber(StockPiler3.RecipeSpec.ScrubSubsetPotionRecipeKeys()) or 0
-        if n > 0 and StockPiler3.Knowledge and StockPiler3.Knowledge.Touch then
-            StockPiler3.Knowledge.Touch("recipe-subset-scrub")
-        end
+        scrubbed = scrubbed + (tonumber(StockPiler3.RecipeSpec.ScrubSubsetPotionRecipeKeys()) or 0)
+    end
+    if StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.ScrubOrphanSubsetRecipes then
+        scrubbed = scrubbed + (tonumber(StockPiler3.RecipeSpec.ScrubOrphanSubsetRecipes()) or 0)
+    end
+    if scrubbed > 0 and StockPiler3.Knowledge and StockPiler3.Knowledge.Touch then
+        StockPiler3.Knowledge.Touch("recipe-subset-scrub")
     end
 end
 

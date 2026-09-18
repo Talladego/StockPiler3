@@ -12,6 +12,7 @@ Garden._plots = {}
 Garden._syncAllDue = false
 Garden._syncAllFrame = 0
 Garden._lastFiredGen = 0
+Garden._syncDepth = 0
 
 local function IsPlotEmptyStage(stage)
     if GameData and GameData.CultivationStage then
@@ -57,13 +58,16 @@ end
 
 local function ApplyPlotRow(plotNum, row)
     local prev = Garden._plots[plotNum]
+    -- Match SP2: plant/empty/lock/additive fill — not stageTimer pulses (those storm DIRTY).
     local anyChange = type(prev) ~= "table" or prev.stage ~= row.stage
         or prev.seedUid ~= row.seedUid or prev.plantUid ~= row.plantUid
         or (prev.locked == true) ~= (row.locked == true)
         or AdditiveFillKey(prev) ~= AdditiveFillKey(row)
-        or (tonumber(prev.stageTimer) or 0) ~= (tonumber(row.stageTimer) or 0)
     local planChange = ActionablePlotChange(prev, row)
     Garden._plots[plotNum] = row
+    if StockPiler3.Grow and StockPiler3.Grow.ClearPendingAdditiveIfFilled then
+        StockPiler3.Grow.ClearPendingAdditiveIfFilled(plotNum, row)
+    end
     return anyChange, planChange
 end
 
@@ -103,11 +107,20 @@ function Garden.GetPlanGen()
 end
 
 function Garden.GetPlots()
+    local src = Garden._plots
+    if type(src) ~= "table" then
+        return {}
+    end
     local out = {}
-    for k, v in pairs(Garden._plots) do
+    for k, v in pairs(src) do
         out[k] = v
     end
     return out
+end
+
+--- Alias for LearnBridge / SP2 call sites.
+function Garden.GetPlotsCopy()
+    return Garden.GetPlots()
 end
 
 function Garden.GetPlot(plotNum)
@@ -119,6 +132,10 @@ function Garden.GetPlot(plotNum)
 end
 
 function Garden.SyncAll()
+    if (tonumber(Garden._syncDepth) or 0) > 0 then
+        Garden._syncAllDue = true
+        return
+    end
     local frame = tonumber(StockPiler3.FrameCounter) or 0
     if frame > 0 and Garden._syncAllFrame == frame then
         return
@@ -129,29 +146,36 @@ function Garden.SyncAll()
     if not CA then
         return
     end
-    local n = CA.MaxPlotSlots and CA.MaxPlotSlots() or CA.NumPlots()
+    Garden._syncDepth = (tonumber(Garden._syncDepth) or 0) + 1
     local changed = false
     local planChanged = false
-    for plotNum = 1, n do
-        local row = CA.GetPlotInfo and CA.GetPlotInfo(plotNum) or CA.ReadPlot(plotNum)
-        local anyChange, plotPlanChange = ApplyPlotRow(plotNum, row)
-        if anyChange then
-            changed = true
+    local ok, err = pcall(function()
+        local n = CA.MaxPlotSlots and CA.MaxPlotSlots() or CA.NumPlots()
+        for plotNum = 1, n do
+            local row = CA.GetPlotInfo and CA.GetPlotInfo(plotNum) or CA.ReadPlot(plotNum)
+            local anyChange, plotPlanChange = ApplyPlotRow(plotNum, row)
+            if anyChange then
+                changed = true
+            end
+            if plotPlanChange then
+                planChanged = true
+            end
+            if StockPiler3.CraftChatAdapter and StockPiler3.CraftChatAdapter.TryConfirmFromPlot then
+                StockPiler3.CraftChatAdapter.TryConfirmFromPlot(plotNum, row)
+            end
         end
-        if plotPlanChange then
-            planChanged = true
+        if changed then
+            Garden._gen = (tonumber(Garden._gen) or 0) + 1
+            if planChanged then
+                Garden._planGen = (tonumber(Garden._planGen) or 0) + 1
+            end
+            -- Soft dirty: stage-only pulse still bumps gardenGen but planGen may stay.
+            FireGardenChanged(Garden._gen, 0, planChanged ~= true)
         end
-        if StockPiler3.CraftChatAdapter and StockPiler3.CraftChatAdapter.TryConfirmFromPlot then
-            StockPiler3.CraftChatAdapter.TryConfirmFromPlot(plotNum, row)
-        end
-    end
-    if changed then
-        Garden._gen = (tonumber(Garden._gen) or 0) + 1
-        if planChanged then
-            Garden._planGen = (tonumber(Garden._planGen) or 0) + 1
-        end
-        -- Soft dirty: stage-only pulse still bumps gardenGen but planGen may stay.
-        FireGardenChanged(Garden._gen, 0, planChanged ~= true)
+    end)
+    Garden._syncDepth = math.max(0, (tonumber(Garden._syncDepth) or 1) - 1)
+    if ok ~= true and StockPiler3.Debug and StockPiler3.Debug.ReportProtectedCallFailure then
+        StockPiler3.Debug.ReportProtectedCallFailure("Garden.SyncAll", err, true)
     end
 end
 
@@ -161,21 +185,32 @@ function Garden.SyncPlot(plotNum)
     if plotNum <= 0 or not CA then
         return
     end
-    local genBefore = tonumber(Garden._gen) or 0
-    local planGenBefore = tonumber(Garden._planGen) or 0
-    local row = CA.GetPlotInfo and CA.GetPlotInfo(plotNum) or CA.ReadPlot(plotNum)
-    local anyChange, planChange = ApplyPlotRow(plotNum, row)
-    if StockPiler3.CraftChatAdapter and StockPiler3.CraftChatAdapter.TryConfirmFromPlot then
-        StockPiler3.CraftChatAdapter.TryConfirmFromPlot(plotNum, row)
+    if (tonumber(Garden._syncDepth) or 0) > 0 then
+        Garden._syncAllDue = true
+        return
     end
-    if anyChange then
-        Garden._gen = genBefore + 1
-    end
-    if planChange then
-        Garden._planGen = planGenBefore + 1
-    end
-    if (tonumber(Garden._gen) or 0) > genBefore then
-        FireGardenChanged(Garden._gen, plotNum, planChange ~= true)
+    Garden._syncDepth = (tonumber(Garden._syncDepth) or 0) + 1
+    local ok, err = pcall(function()
+        local genBefore = tonumber(Garden._gen) or 0
+        local planGenBefore = tonumber(Garden._planGen) or 0
+        local row = CA.GetPlotInfo and CA.GetPlotInfo(plotNum) or CA.ReadPlot(plotNum)
+        local anyChange, planChange = ApplyPlotRow(plotNum, row)
+        if StockPiler3.CraftChatAdapter and StockPiler3.CraftChatAdapter.TryConfirmFromPlot then
+            StockPiler3.CraftChatAdapter.TryConfirmFromPlot(plotNum, row)
+        end
+        if anyChange then
+            Garden._gen = genBefore + 1
+        end
+        if planChange then
+            Garden._planGen = planGenBefore + 1
+        end
+        if (tonumber(Garden._gen) or 0) > genBefore then
+            FireGardenChanged(Garden._gen, plotNum, planChange ~= true)
+        end
+    end)
+    Garden._syncDepth = math.max(0, (tonumber(Garden._syncDepth) or 1) - 1)
+    if ok ~= true and StockPiler3.Debug and StockPiler3.Debug.ReportProtectedCallFailure then
+        StockPiler3.Debug.ReportProtectedCallFailure("Garden.SyncPlot", err, true)
     end
 end
 
