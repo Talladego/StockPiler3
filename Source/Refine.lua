@@ -324,7 +324,19 @@ local function DemandRowSurplus(row)
     if brew == nil then
         brew = tonumber(row.absolute) or 0
     end
-    local surplus = have - brew
+    -- Do not refine plant stock below an enabled plant-watch floor.
+    local floor = 0
+    local Watch = StockPiler3.Watch
+    local plantUid = tonumber(row.plantUid) or 0
+    if plantUid > 0 and Watch and Watch.PlantKeyFromUid and Watch.GetPlantWatch then
+        local plantKey = Watch.PlantKeyFromUid(plantUid)
+        local pw = Watch.GetPlantWatch(plantKey)
+        if type(pw) == "table" and pw.enabled == true then
+            floor = tonumber(pw.targetStock) or 0
+        end
+    end
+    local reserved = math.max(brew, floor)
+    local surplus = have - reserved
     if surplus < 0 then
         return 0
     end

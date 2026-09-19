@@ -180,6 +180,13 @@ function Items.StoreItem(itemData, kindHint)
     local isNew = type(existing) ~= "table"
     local row = isNew and { uniqueID = uid } or existing
     row.uniqueID = uid
+    local priorEffectId = 0
+    if type(existing) == "table" then
+        priorEffectId = tonumber(existing.effectId) or 0
+        if priorEffectId <= 0 and type(existing.bonuses) == "table" then
+            priorEffectId = tonumber(existing.bonuses[6]) or 0
+        end
+    end
 
     local bonuses = BonusesFromCrafting(itemData)
     local hasBonuses = next(bonuses) ~= nil
@@ -249,7 +256,13 @@ function Items.StoreItem(itemData, kindHint)
         row.power = bonuses[2]
         row.stability = bonuses[1]
         row.duration = bonuses[3]
-        row.effectId = bonuses[6]
+        local fx = tonumber(bonuses[6]) or 0
+        -- Bag plant samples often omit EFFECT; keep seed-stamped effectId.
+        if fx <= 0 and priorEffectId > 0 then
+            fx = priorEffectId
+            bonuses[6] = priorEffectId
+        end
+        row.effectId = fx > 0 and fx or nil
         row.slotType = bonuses[8]
         if bonuses[9] ~= nil then
             row.skillReq = tonumber(bonuses[9]) or row.skillReq
@@ -259,16 +272,79 @@ function Items.StoreItem(itemData, kindHint)
             row.tradeSkill = tonumber(bonuses[5]) or row.tradeSkill
         end
         row.incomplete = false
-        if row.role == "main" and (bonuses[6] == nil or tonumber(bonuses[6]) <= 0) then
+        if row.role == "main" and (fx <= 0) then
             row.incomplete = true
         end
     elseif type(row.bonuses) ~= "table" then
         row.incomplete = true
         row.role = RoleFromItem(itemData, nil)
+        if priorEffectId > 0 then
+            row.effectId = priorEffectId
+            row.bonuses = { [6] = priorEffectId }
+        end
+    elseif priorEffectId > 0 and (tonumber(row.effectId) or 0) <= 0 then
+        row.effectId = priorEffectId
+        row.bonuses[6] = priorEffectId
     end
 
     store[key] = row
     return row, isNew
+end
+
+--- Stamp EFFECT onto a learned plant from its seed (harvest/refine / migrate).
+--- Does not overwrite a different existing non-zero effectId. Clears incomplete
+--- only when the row already has a usable main fingerprint (pwr/stab/slot).
+function Items.StampPlantEffectFromSeed(plantUid, effectId, plantSample)
+    plantUid = tonumber(plantUid) or 0
+    effectId = tonumber(effectId) or 0
+    if plantUid <= 0 or effectId <= 0 then
+        return false
+    end
+    if type(plantSample) == "table" then
+        Items.StoreItem(plantSample, "plant")
+    end
+    local store = ItemsTable()
+    if type(store) ~= "table" then
+        return false
+    end
+    local key = tostring(plantUid)
+    local row = store[key]
+    if type(row) ~= "table" then
+        row = { uniqueID = plantUid, kind = "plant", incomplete = true }
+        store[key] = row
+    end
+    local existing = tonumber(row.effectId) or 0
+    if existing <= 0 and type(row.bonuses) == "table" then
+        existing = tonumber(row.bonuses[6]) or 0
+    end
+    if existing > 0 and existing ~= effectId then
+        return false
+    end
+    local changed = existing ~= effectId
+    row.effectId = effectId
+    if type(row.bonuses) ~= "table" then
+        row.bonuses = {}
+        changed = true
+    end
+    if tonumber(row.bonuses[6]) ~= effectId then
+        row.bonuses[6] = effectId
+        changed = true
+    end
+    if row.kind == nil or row.kind == "" or row.kind == "mat" then
+        row.kind = "plant"
+        changed = true
+    end
+    local power = tonumber(row.power) or tonumber(row.bonuses[2]) or 0
+    local stab = tonumber(row.stability) or tonumber(row.bonuses[1]) or 0
+    local slot = tonumber(row.slotType) or tonumber(row.bonuses[8]) or 0
+    local role = tostring(row.role or "")
+    if role == "main" and (power ~= 0 or stab ~= 0 or slot > 0) then
+        if row.incomplete ~= false then
+            row.incomplete = false
+            changed = true
+        end
+    end
+    return changed or existing == effectId
 end
 
 --- Learned plant/mat fingerprint (bag AsItemData often lacks craftingBonus).

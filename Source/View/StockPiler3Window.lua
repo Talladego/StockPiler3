@@ -12,8 +12,9 @@ local function T(key, tokens)
 end
 
 StockPiler3Window.TABS_POTIONS = 1
-StockPiler3Window.TABS_WATCH = 2
-StockPiler3Window.TABS_MAX = 2
+StockPiler3Window.TABS_PLANTS = 2
+StockPiler3Window.TABS_WATCH = 3
+StockPiler3Window.TABS_MAX = 3
 StockPiler3Window.SelectedTab = StockPiler3Window.TABS_POTIONS
 
 local CLEAR_WATCHES_WIN = "StockPiler3WindowClearWatches"
@@ -32,6 +33,16 @@ StockPiler3Window.Tabs = {
         end,
     },
     [2] = {
+        window = "SP3TabPlants",
+        name = "StockPiler3WindowTabButtonsPlants",
+        labelKey = "ui.tab_plants",
+        refresh = function()
+            if StockPiler3TabPlants and StockPiler3TabPlants.Refresh then
+                StockPiler3TabPlants.Refresh()
+            end
+        end,
+    },
+    [3] = {
         window = "SP3TabWatch",
         name = "StockPiler3WindowTabButtonsWatch",
         labelKey = "ui.tab_watch",

@@ -396,11 +396,12 @@ local function ToNarrow(text)
 end
 
 -- Infer EFFECT when craftingBonus omits ref 6 (common on heal/stat mains).
+-- Order matters: "willpower potions" contains the substring "power potion".
 local DESC_EFFECT_PATTERNS = {
     { "intelligence", "int" },
+    { "willpower", "wil" },
     { "strength", "str" },
     { "power potion", "str" },
-    { "willpower", "wil" },
     { "toughness", "tou" },
     { "ballistic skill", "rskill" },
     { "ballistic", "rskill" },

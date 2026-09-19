@@ -3,7 +3,7 @@
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
-StockPiler3.Version = L"0.3.88"
+StockPiler3.Version = L"0.3.89"
 
 local function T(key, tokens)
     if StockPiler3.T then
@@ -124,9 +124,15 @@ function StockPiler3.OnSlash(input)
         end
         return
     end
-    if lower == "watch" then
+    if lower == "plants" then
         if StockPiler3.Ui and StockPiler3.Ui.ShowWindow then
             StockPiler3.Ui.ShowWindow(2)
+        end
+        return
+    end
+    if lower == "watch" then
+        if StockPiler3.Ui and StockPiler3.Ui.ShowWindow then
+            StockPiler3.Ui.ShowWindow(3)
         end
         return
     end
@@ -298,8 +304,15 @@ function StockPiler3.Initialize()
     end
     local s = StockPiler3.Settings
     if type(s) == "table" and StockPiler3Window then
+        -- 0.3.89 inserted Plants as tab 2; bump old Watch (2) → 3 once.
+        if s._sp389WatchTabBump ~= true then
+            if tonumber(s.selectedTab) == 2 then
+                s.selectedTab = 3
+            end
+            s._sp389WatchTabBump = true
+        end
         local tab = tonumber(s.selectedTab) or 1
-        if tab < 1 or tab > 2 then
+        if tab < 1 or tab > 3 then
             tab = 1
         end
         StockPiler3Window.SelectedTab = tab

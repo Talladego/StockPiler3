@@ -1027,6 +1027,9 @@ local function CollectFocus(mode)
             local row = planRows[i]
             if type(row) == "table" then
                 local watchKey = tostring(row.potionKey or row.potionRecipeKey or row.id or "")
+                if row.kind == "plant" or row.isPlantWatch == true then
+                    -- Plant stock rows never enter potion grow/buy focus.
+                else
                 local watch = ResolveWatchRow(watchKey, nil)
                 local ok = WatchInActingSet(watchKey, watch, mode)
                 local deficit = tonumber(row.potionDeficit) or 0
@@ -1066,6 +1069,7 @@ local function CollectFocus(mode)
                             focus.maxBottleGap = gap
                         end
                     end
+                end
                 end
             end
         end
@@ -1397,6 +1401,54 @@ local function CollectAutoGrowSeedLines()
             end
         end
     end
+    -- Plant watches: same seed-buffer lines so plant_stock planting respects cushion.
+    local plantWatches = Watch and Watch.GetPlantWatches and Watch.GetPlantWatches() or {}
+    if type(plantWatches) == "table" then
+        for plantKey, watch in pairs(plantWatches) do
+            if type(watch) == "table" and watch.enabled == true
+                and (Watch.ShouldAutoGrowPlant == nil or Watch.ShouldAutoGrowPlant(plantKey) == true)
+            then
+                local plantUid = Watch.ParsePlantKey and Watch.ParsePlantKey(plantKey) or 0
+                plantUid = tonumber(plantUid) or 0
+                if plantUid > 0 then
+                    local Items = StockPiler3.Items
+                    local spec = Items and Items.ToSpec and Items.ToSpec(plantUid) or nil
+                    if type(spec) ~= "table" and MS and MS.FromUid then
+                        spec = MS.FromUid(plantUid)
+                    end
+                    if type(spec) == "table" and SM.IsGrowableSpec(spec) == true then
+                        if not (SM.IsOneWayHarvestSpec and SM.IsOneWayHarvestSpec(spec) == true) then
+                            local productKey = SpecKey(spec)
+                                or (MS and MS.ProductKey and MS.ProductKey(spec))
+                                or ("plant:" .. tostring(plantUid))
+                            if productKey ~= "" and seen[productKey] ~= true then
+                                local seed = SM.ResolveSeedForSpec and SM.ResolveSeedForSpec(spec)
+                                local seedUid = 0
+                                if type(seed) == "table" then
+                                    seedUid = tonumber(seed.uniqueID) or 0
+                                end
+                                if seedUid <= 0 and SM.GetSeedUidsForPlant then
+                                    local seeds = SM.GetSeedUidsForPlant(plantUid)
+                                    if type(seeds) == "table" and #seeds > 0 then
+                                        seedUid = tonumber(seeds[1]) or 0
+                                    end
+                                end
+                                seen[productKey] = true
+                                lines[#lines + 1] = {
+                                    spec = spec,
+                                    specKey = productKey,
+                                    seedUid = seedUid,
+                                    plantUid = plantUid,
+                                    seed = seed,
+                                    plantStock = true,
+                                }
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
     Planner._seedLinesCache = lines
     Planner._seedLinesCacheKey = cacheKey
     local Refine = StockPiler3.Refine
@@ -1414,6 +1466,15 @@ local function ApplyDeficitCraftableShared(rows)
     local RS = RecipeSpec()
     if RS and RS.ApplyDeficitCraftableShared then
         RS.ApplyDeficitCraftableShared(rows)
+        if type(rows) == "table" then
+            for i = 1, #rows do
+                local row = rows[i]
+                if type(row) == "table" and (row.kind == "plant" or row.isPlantWatch == true) then
+                    row.craftableShared = false
+                    row.contestedSpecKeys = nil
+                end
+            end
+        end
         return
     end
     if type(rows) ~= "table" then
@@ -1423,6 +1484,10 @@ local function ApplyDeficitCraftableShared(rows)
     for i = 1, #rows do
         local row = rows[i]
         if type(row) == "table" then
+            if row.kind == "plant" or row.isPlantWatch == true then
+                row.craftableShared = false
+                row.contestedSpecKeys = nil
+            else
             row.craftableShared = false
             row.contestedSpecKeys = nil
             local deficit = tonumber(row.potionDeficit) or 0
@@ -1462,6 +1527,7 @@ local function ApplyDeficitCraftableShared(rows)
                     end
                 end
             end
+            end
         end
     end
     for i = 1, #rows do
@@ -1469,6 +1535,7 @@ local function ApplyDeficitCraftableShared(rows)
         local potionKey = type(row) == "table"
             and tostring(row.potionKey or row.potionRecipeKey or row.id or "") or ""
         if type(row) == "table"
+            and row.kind ~= "plant" and row.isPlantWatch ~= true
             and WatchWantsAutoGrow(potionKey, nil)
             and (tonumber(row.potionDeficit) or 0) > 0
             and (tonumber(row.craftable) or 0) > 0
@@ -1694,6 +1761,9 @@ end
 --- Also demotes Seed buffer → Enable AutoGrow when master/per-watch AutoGrow turns off.
 local function ReconcileAutoGrowStatus(row)
     if type(row) ~= "table" then
+        return false
+    end
+    if row.kind == "plant" or row.isPlantWatch == true then
         return false
     end
     local key = tostring(row.statusKey or "")
@@ -2117,6 +2187,12 @@ local function ApplySpecPlanStatus(row, target, recipe, demand)
         row.specDeficit = byproductShort
         return
     end
+    -- Seed buffer before container/vendor buy paint (matches DemoteToMaterialsShort).
+    -- Otherwise Publish paints Buy flasks then live patch flips to Seed buffer — stall chat lies.
+    if SeedBufferShort(recipe, target.potionKey, row) then
+        ApplySeedBufferStatus(row)
+        return
+    end
     -- Container-only short (craftable==0) → Buy flasks, not Restocking.
     if containerShort ~= nil then
         row.statusKey = "buy_ingredients"
@@ -2131,10 +2207,6 @@ local function ApplySpecPlanStatus(row, target, recipe, demand)
     end
     -- Tip slots look covered (raw Have) but craftable may still be 0 under grow reserve,
     -- or partial craftable remains with bottleGap>0 (not Ready until covered).
-    if SeedBufferShort(recipe, target.potionKey, row) then
-        ApplySeedBufferStatus(row)
-        return
-    end
     -- Growable short / partial craftable: gate on skill only; master toggle picks Enable vs Restocking.
     if CanAutoGrowSkill() then
         SetMaterialsShortStatus(row, true, nil)
@@ -2693,6 +2765,204 @@ local function FillWatchRowTips(row, demand)
     StampRowSeedBufferUids(row)
 end
 
+local function PlantSeedBufferShort(seedUid, plantUid, spec)
+    local Watch = StockPiler3.Watch
+    if not (Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true) then
+        return false
+    end
+    seedUid = tonumber(seedUid) or 0
+    if seedUid <= 0 then
+        return false
+    end
+    local buffer = Watch.GetSeedBufferMin and tonumber(Watch.GetSeedBufferMin()) or 5
+    local Refine = StockPiler3.Refine
+    if Refine and Refine.GetSeedBudget then
+        local b = Refine.GetSeedBudget(seedUid)
+        if type(b) == "table" then
+            local credit = tonumber(b.credit)
+            if credit == nil then
+                credit = tonumber(b.live) or 0
+            end
+            return credit < buffer
+        end
+    end
+    local Inv = StockPiler3.Inventory
+    local have = Inv and Inv.CountByUid and tonumber(Inv.CountByUid(seedUid)) or 0
+    return have < buffer
+end
+
+local function ApplyPlantWatchStatus(row)
+    if type(row) ~= "table" then
+        return
+    end
+    local deficit = tonumber(row.potionDeficit) or 0
+    local Watch = StockPiler3.Watch
+    local armed = Watch and Watch.ShouldAutoGrowPlant
+        and Watch.ShouldAutoGrowPlant(row.plantKey or row.id) == true
+    row.craftableShared = false
+    row.craftable = 0
+    row.craftableText = L""
+    row.hideBrew = true
+    row.hideCraftable = true
+    row.priorityTierText = L"-"
+    row.plantPrioSentinel = true
+    if deficit <= 0 then
+        row.statusKey = "plant_stocked"
+        row.statusText = T("plan.status.plant_stocked")
+        row.statusLines = nil
+        row.seedBufferShort = false
+        return
+    end
+    if not armed then
+        row.statusKey = "enable_autogrow"
+        row.statusText = T("plan.status.enable_autogrow")
+        row.statusLines = nil
+        row.seedBufferShort = false
+        return
+    end
+    if PlantSeedBufferShort(row.seedUid, row.plantUid, row.spec) then
+        ApplySeedBufferStatus(row)
+        row.seedBufferShort = true
+        return
+    end
+    row.seedBufferShort = false
+    row.statusKey = "restocking"
+    row.statusText = T("plan.status.restocking")
+    row.statusLines = nil
+end
+
+local function BuildPlantWatchRows()
+    local rows = {}
+    local Watch = StockPiler3.Watch
+    local plantWatches = Watch and Watch.GetPlantWatches and Watch.GetPlantWatches() or {}
+    if type(plantWatches) ~= "table" then
+        return rows
+    end
+    local Catalog = StockPiler3.Catalog
+    local Items = StockPiler3.Items
+    local SM = StockPiler3.SeedMap
+    local MS = MaterialSpec()
+    local list = {}
+    for plantKey, watch in pairs(plantWatches) do
+        if type(watch) == "table" and watch.enabled == true then
+            list[#list + 1] = { plantKey = tostring(plantKey), watch = watch }
+        end
+    end
+    table.sort(list, function(a, b)
+        return tostring(a.plantKey) < tostring(b.plantKey)
+    end)
+    for i = 1, #list do
+        local plantKey = list[i].plantKey
+        local watch = list[i].watch
+        local plantUid = Watch.ParsePlantKey and Watch.ParsePlantKey(plantKey) or 0
+        plantUid = tonumber(plantUid) or 0
+        if plantUid > 0 then
+            local item = Items and Items.GetByUid and Items.GetByUid(plantUid) or nil
+            local itemData = item
+            if type(item) == "table" and type(item.itemData) == "table" then
+                itemData = item.itemData
+            end
+            local spec = Items and Items.ToSpec and Items.ToSpec(plantUid) or nil
+            if type(spec) ~= "table" and MS and MS.FromItemData and type(itemData) == "table" then
+                spec = MS.FromItemData(itemData)
+            end
+            local seedUid = 0
+            if SM and SM.GetSeedUidsForPlant then
+                local seeds = SM.GetSeedUidsForPlant(plantUid)
+                if type(seeds) == "table" and #seeds > 0 then
+                    seedUid = tonumber(seeds[1]) or 0
+                end
+            end
+            if seedUid <= 0 and type(spec) == "table" and SM and SM.ResolveSeedForSpec then
+                local seed = SM.ResolveSeedForSpec(spec)
+                if type(seed) == "table" then
+                    seedUid = tonumber(seed.uniqueID or seed.uid) or 0
+                end
+            end
+            local have = 0
+            if Catalog and Catalog.PlantHave then
+                have = tonumber(Catalog.PlantHave(plantUid)) or 0
+            elseif StockPiler3.Inventory and StockPiler3.Inventory.CountByUid then
+                have = tonumber(StockPiler3.Inventory.CountByUid(plantUid)) or 0
+            end
+            local target = tonumber(watch.targetStock) or 40
+            local deficit = math.max(0, target - have)
+            local name = (item and item.name) or (itemData and itemData.name)
+                or (spec and spec.name) or towstring(tostring(plantUid))
+            local iconNum = tonumber(item and item.iconNum) or tonumber(itemData and itemData.iconNum) or 0
+            if StockPiler3.Inventory and StockPiler3.Inventory.GetSample then
+                local sample = StockPiler3.Inventory.GetSample(plantUid)
+                if type(sample) == "table" then
+                    itemData = sample
+                    iconNum = tonumber(sample.iconNum) or iconNum
+                    if sample.name ~= nil then
+                        name = sample.name
+                    end
+                end
+            end
+            if type(itemData) ~= "table" and Items and Items.AsItemData then
+                itemData = Items.AsItemData(plantUid)
+            end
+            if StockPiler3.Inventory and StockPiler3.Inventory.ResolvePotionItemData then
+                itemData = StockPiler3.Inventory.ResolvePotionItemData(nil, plantUid, itemData) or itemData
+            end
+            if type(itemData) == "table" and (tonumber(itemData.uniqueID) or 0) <= 0 then
+                itemData.uniqueID = plantUid
+            end
+            local nameR, nameG, nameB = 255, 255, 255
+            if type(itemData) == "table" and DataUtils and DataUtils.GetItemRarityColor then
+                local ok, color = pcall(DataUtils.GetItemRarityColor, itemData)
+                if ok and type(color) == "table" then
+                    nameR = tonumber(color.r) or 255
+                    nameG = tonumber(color.g) or 255
+                    nameB = tonumber(color.b) or 255
+                end
+            end
+            iconNum = tonumber(itemData and itemData.iconNum) or iconNum
+            local row = {
+                kind = "plant",
+                isPlantWatch = true,
+                id = plantKey,
+                plantKey = plantKey,
+                potionKey = plantKey,
+                potionRecipeKey = plantKey,
+                plantUid = plantUid,
+                seedUid = seedUid,
+                uniqueID = plantUid,
+                name = name,
+                iconNum = iconNum,
+                itemData = itemData or item,
+                nameR = nameR,
+                nameG = nameG,
+                nameB = nameB,
+                spec = spec,
+                potionHave = have,
+                stockText = towstring(tostring(have)),
+                potionMin = target,
+                target = target,
+                targetText = towstring(tostring(target)),
+                potionDeficit = deficit,
+                craftable = 0,
+                craftableText = L"",
+                craftableShared = false,
+                autoGrow = watch.autoGrow == true,
+                priorityTierText = L"-",
+                plantPrioSentinel = true,
+                hideBrew = true,
+                hideCraftable = true,
+                hasRecipe = false,
+                recipe = nil,
+            }
+            ApplyPlantWatchStatus(row)
+            rows[#rows + 1] = row
+        end
+    end
+    table.sort(rows, function(a, b)
+        return string.lower(ToNarrow(a.name)) < string.lower(ToNarrow(b.name))
+    end)
+    return rows
+end
+
 local function BuildWatchRows(ctx)
     local rows = {}
     local RS = RecipeSpec()
@@ -2732,10 +3002,16 @@ local function BuildWatchRows(ctx)
         rows[#rows + 1] = row
     end
     PolishWatchRowsStatus(rows)
+    local plantRows = BuildPlantWatchRows()
+    for i = 1, #plantRows do
+        rows[#rows + 1] = plantRows[i]
+    end
     PerfEnd("Build.Status")
     PerfBegin("Build.Tips")
     for i = 1, #rows do
-        FillWatchRowTips(rows[i], demand)
+        if rows[i].kind ~= "plant" and rows[i].isPlantWatch ~= true then
+            FillWatchRowTips(rows[i], demand)
+        end
     end
     -- Tips can add seed UIDs; re-propagate so shared shorts demote all sharers.
     PropagateSharedSeedBufferStatus(rows)
@@ -2845,7 +3121,30 @@ local function PatchWatchRowsLiveCounts(rows, opts)
     local contestDirty = false
     for i = 1, #rows do
         local row = rows[i]
-        if type(row) == "table" then
+        if type(row) == "table" and (row.kind == "plant" or row.isPlantWatch == true) then
+            local uid = tonumber(row.uniqueID) or tonumber(row.plantUid) or 0
+            if uid > 0 then
+                local have = tonumber(Inv.CountByUid(uid)) or 0
+                local prevKey = tostring(row.statusKey or "")
+                row.potionHave = have
+                row.stockText = towstring(tostring(have))
+                local min = tonumber(row.potionMin) or tonumber(row.target) or 0
+                local deficit = math.max(0, min - have)
+                row.potionDeficit = deficit
+                row.targetText = towstring(tostring(min))
+                ApplyPlantWatchStatus(row)
+                local newKey = tostring(row.statusKey or "")
+                if syncSnapshot and newKey ~= prevKey then
+                    PatchPlanSnapshotLiveStatus(row)
+                end
+                if newKey ~= prevKey then
+                    local Grow = StockPiler3.Grow
+                    if Grow and Grow.MarkPlantJobDirty then
+                        Grow.MarkPlantJobDirty()
+                    end
+                end
+            end
+        elseif type(row) == "table" then
             local uid = tonumber(row.uniqueID) or 0
             if uid > 0 then
                 local have = tonumber(Inv.CountByUid(uid)) or 0
@@ -2982,6 +3281,9 @@ local function PatchWatchRowsLiveCounts(rows, opts)
             StockPiler3Window.RequestFooterRefresh()
         end
     end
+    if StockPiler3.Grow and StockPiler3.Grow.MaybeNotifyAutoGrowStall then
+        StockPiler3.Grow.MaybeNotifyAutoGrowStall()
+    end
 end
 
 ----------------------------------------------------------------
@@ -2990,6 +3292,9 @@ end
 
 local function RowIsReadyToCraft(row)
     if type(row) ~= "table" then
+        return false
+    end
+    if row.kind == "plant" or row.isPlantWatch == true then
         return false
     end
     if tostring(row.statusKey or "") ~= "ready_to_craft" then
@@ -3054,6 +3359,9 @@ local function PublishPlan(plan, key, meta)
     end
     if StockPiler3.Brew and StockPiler3.Brew.MaybeNotifyBrewReady then
         StockPiler3.Brew.MaybeNotifyBrewReady()
+    end
+    if StockPiler3.Grow and StockPiler3.Grow.MaybeNotifyAutoGrowStall then
+        StockPiler3.Grow.MaybeNotifyAutoGrowStall()
     end
 end
 
@@ -3491,6 +3799,9 @@ function Planner.SyncLiveStatusClosedWindow()
     if Brew and Brew.MaybeNotifyBrewReady then
         Brew.MaybeNotifyBrewReady()
     end
+    if StockPiler3.Grow and StockPiler3.Grow.MaybeNotifyAutoGrowStall then
+        StockPiler3.Grow.MaybeNotifyAutoGrowStall()
+    end
     return flipped
 end
 
@@ -3611,6 +3922,21 @@ local function DumpWatchRows(emit, rows, planMeta)
             ))
             if row.statusText ~= nil then
                 emit("      statusText=" .. ToNarrow(row.statusText))
+            end
+            local seedUids = row.seedBufferSeedUids
+            if type(seedUids) == "table" and #seedUids > 0 then
+                local parts = {}
+                for u = 1, #seedUids do
+                    local uid = tonumber(seedUids[u]) or 0
+                    local credit = 0
+                    local Refine = StockPiler3.Refine
+                    if uid > 0 and Refine and Refine.GetSeedBudget then
+                        local b = Refine.GetSeedBudget(uid)
+                        credit = tonumber(b and b.credit) or 0
+                    end
+                    parts[#parts + 1] = tostring(uid) .. "@" .. tostring(credit)
+                end
+                emit("      seedBufferUids=" .. table.concat(parts, ","))
             end
             local tips = row.statusTipSlots
             if type(tips) == "table" then
@@ -3890,6 +4216,24 @@ function Planner.DumpGrowPlan(emit)
             type(tip.watched) == "table" and #tip.watched or 0,
             type(tip.intents) == "table" and #tip.intents or 0
         ))
+        local watched = tip.watched
+        if type(watched) == "table" then
+            for i = 1, #watched do
+                local rec = watched[i]
+                if type(rec) == "table" then
+                    emit(string.format(
+                        "    seed uid=%s live=%s ground=%s planned=%s total=%s shortBy=%s key=%s",
+                        tostring(rec.seedUid or 0),
+                        tostring(rec.live or 0),
+                        tostring(rec.ground or 0),
+                        tostring(rec.planned or 0),
+                        tostring(rec.total or 0),
+                        tostring(rec.shortBy or 0),
+                        tostring(rec.key or "")
+                    ))
+                end
+            end
+        end
     end
     if Grow and Grow.DumpPlantJob then
         Grow.DumpPlantJob(emit)

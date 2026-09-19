@@ -185,11 +185,16 @@ local function ClassifyFromDescription(description)
     if string.find(descLower, "absorbs", 1, true) or string.find(descLower, "magical barrier", 1, true) then
         return "absorb"
     end
-    if string.find(descLower, "increases", 1, true) then
-        if string.find(descLower, "strength", 1, true) then return "str" end
+    if string.find(descLower, "increases", 1, true)
+        or string.find(descLower, "create", 1, true)
+        or string.find(descLower, "used to", 1, true)
+    then
+        -- Willpower before strength/"power": "willpower potions" contains "power potion".
+        if string.find(descLower, "willpower", 1, true) then return "wp" end
         if string.find(descLower, "intelligence", 1, true) then return "int" end
         if string.find(descLower, "ballistic skill", 1, true) then return "bs" end
-        if string.find(descLower, "willpower", 1, true) then return "wp" end
+        if string.find(descLower, "strength", 1, true) then return "str" end
+        if string.find(descLower, "power potion", 1, true) then return "str" end
         if string.find(descLower, "toughness", 1, true) then return "tou" end
         if string.find(descLower, "armor", 1, true) or string.find(descLower, "armour", 1, true) then
             return "armor"

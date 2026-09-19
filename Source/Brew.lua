@@ -13,6 +13,9 @@ Brew.BREW_OP_LOCK_SEC = 1.25
 -- After load-done, engine SuccessChance / GetSlottedItem can lag a few frames.
 -- Unloading immediately loops load→unload while the footer stays lit.
 Brew.LOAD_SETTLE_SEC = 1.25
+-- Probe interval for auto-loaded boards that never get another crafting-updated
+-- (settle hold then silence). Stuck loaded blocks AutoGrow + plan rebuild.
+Brew.STUCK_PROBE_SEC = 0.5
 
 Brew._session = Brew._session or { phase = "idle" }
 Brew._job = nil
@@ -20,6 +23,7 @@ Brew._loadSource = nil -- "auto" | "manual"
 Brew._brewOpLockUntil = 0
 Brew._adoptBlockUntil = 0
 Brew._loadSettleUntil = 0
+Brew._stuckProbeAt = 0
 Brew._canBrewCache = nil
 Brew._canBrewCacheKey = nil
 Brew._brewReadyLatched = false
@@ -155,6 +159,9 @@ end
 
 local function RowIsReadyToCraft(row)
     if type(row) ~= "table" then
+        return false
+    end
+    if row.kind == "plant" or row.isPlantWatch == true then
         return false
     end
     -- Live bags win over stale plan deficit (prevents over-brew after target met).
@@ -1120,6 +1127,17 @@ local function BeginLoadJob(row, source)
     if type(row) ~= "table" then
         return false
     end
+    -- Never stomp an in-flight or already-loaded board (Validate-fail used to
+    -- fall through TryBrewClick into a second BeginLoadJob).
+    if type(Brew._job) == "table" then
+        LogBrew("load skip job-active")
+        return false
+    end
+    local curPhase = tostring(GetSession().phase or "idle")
+    if curPhase == "loading" or curPhase == "loaded" then
+        LogBrew("load skip already-" .. curPhase)
+        return false
+    end
     local recipe = row.recipe
     if type(recipe) ~= "table" then
         local RS = StockPiler3.RecipeSpec
@@ -1420,6 +1438,9 @@ function Brew.OnRowCraftClick(row)
     if type(row) ~= "table" then
         return false
     end
+    if row.kind == "plant" or row.isPlantWatch == true then
+        return false
+    end
     local session = GetSession()
     local rowKey = tostring(row.potionRecipeKey or row.id or row.potionKey or "")
     local sessKey = tostring(session.potionRecipeKey or session.potionKey or session.rowId or "")
@@ -1580,6 +1601,13 @@ function Brew.TryBrewClick()
             if Brew.ValidateApothecaryPerform() == true then
                 return "go"
             end
+            -- Ready on plan but board/engine unsafe — unload so the next click
+            -- can reload. Do not fall through into BeginLoadJob while loaded.
+            local why = PerformBlockReason() or "click-perform-blocked"
+            LogBrew("click unload perform-blocked reason=" .. tostring(why))
+            Brew.ClearLoadedSession({ reason = why })
+            ForceBrewUiRefresh()
+            return "blocked"
         end
         if not RowIsReadyToCraft(row) then
             Brew.ClearLoadedSession({ reason = "click-not-ready" })
@@ -1594,6 +1622,9 @@ function Brew.TryBrewClick()
             ForceBrewUiRefresh()
             return "blocked"
         end
+        -- Still loaded + Ready + covered but didn't return "go" — stay blocked
+        -- without starting another load on top of this board.
+        return "blocked"
     end
 
     if NowSec() < (tonumber(Brew._adoptBlockUntil) or 0) then
@@ -1641,6 +1672,34 @@ function Brew.Tick()
     return false
 end
 
+--- Clear auto-loaded sessions that cannot perform after settle.
+--- Without this, settle-hold + no further crafting-updated parks phase=loaded,
+--- Orchestrator skips grow, and Scheduler skips plan rebuild until watchplan.
+function Brew.ProbeStuckAutoLoaded(reason)
+    local session = GetSession()
+    if tostring(session.phase or "") ~= "loaded" then
+        return false
+    end
+    if Brew._loadSource ~= "auto" then
+        return false
+    end
+    if type(Brew._job) == "table" then
+        return false
+    end
+    if InLoadSettle() then
+        return false
+    end
+    local why = PerformBlockReason()
+    if why ~= nil and ShouldAutoUnloadForEngine(why) then
+        LogBrew("stuck-probe unload reason=" .. tostring(why)
+            .. " via=" .. tostring(reason or "?"))
+        Brew.ClearLoadedSession({ reason = why })
+        ForceBrewUiRefresh()
+        return true
+    end
+    return Brew.MaybeClearLoadedIfCannotContinue(reason or "stuck-probe") == true
+end
+
 function Brew.OnUpdate(timeElapsed)
     if type(Brew._job) == "table" then
         Brew.Tick()
@@ -1660,6 +1719,21 @@ function Brew.OnUpdate(timeElapsed)
         end
     end
     Brew._wasBusy = busy
+
+    if StockPiler3.Macro and StockPiler3.Macro.ExpireBrewFiredGuard then
+        StockPiler3.Macro.ExpireBrewFiredGuard()
+    end
+
+    local now = NowSec()
+    local interval = tonumber(Brew.STUCK_PROBE_SEC) or 0.5
+    if interval < 0.25 then
+        interval = 0.25
+    end
+    local due = (tonumber(Brew._stuckProbeAt) or 0) + interval
+    if now > 0 and now >= due then
+        Brew._stuckProbeAt = now
+        Brew.ProbeStuckAutoLoaded("onupdate")
+    end
 end
 
 --- Closed-window: live-patch Status; RequestFooterRefresh only when HasReadyToCraft flips.
@@ -1888,6 +1962,10 @@ function Brew.MaybeClearLoadedIfCannotContinue(reason)
         return false
     end
     if Brew._loadSource == "manual" then
+        return false
+    end
+    -- Post-load settle: board/chance lag looks like not-Ready; wait before unloading.
+    if InLoadSettle() then
         return false
     end
     SyncSessionStockFromBags(session)

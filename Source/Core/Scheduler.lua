@@ -662,6 +662,9 @@ function Sch.OnUpdate(timeElapsed)
         if StockPiler3.Grow and StockPiler3.Grow.DecayPlantWaitTicks then
             StockPiler3.Grow.DecayPlantWaitTicks()
         end
+        if StockPiler3.Grow and StockPiler3.Grow.DecayHarvestOpLock then
+            StockPiler3.Grow.DecayHarvestOpLock()
+        end
         if StockPiler3.Orchestrator and StockPiler3.Orchestrator.DecayFillBlocked then
             StockPiler3.Orchestrator.DecayFillBlocked()
         end

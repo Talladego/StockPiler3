@@ -305,6 +305,83 @@ local function HasProvenSeedConvert(plantUid)
     return type(uids) == "table" and #uids > 0
 end
 
+--- EFFECT id from a seed item (bag / learned / DB). Seeds parse as non-main unless hinted.
+function SM.ResolveSeedEffectId(seedUid)
+    seedUid = tonumber(seedUid) or 0
+    if seedUid <= 0 then
+        return 0
+    end
+    if SM.IsSeedPacketUid(seedUid) then
+        return 0
+    end
+    local MS = StockPiler3.MaterialSpec
+    local sample = BagSample(seedUid)
+    if type(sample) == "table" and MS and MS.FromItemData then
+        local spec = MS.FromItemData(sample, "main")
+        local eid = type(spec) == "table" and tonumber(spec.effectId) or 0
+        if eid > 0 then
+            return eid
+        end
+    end
+    local Items = StockPiler3.Items
+    if Items and Items.GetByUid then
+        local row = Items.GetByUid(seedUid)
+        if type(row) == "table" then
+            local eid = tonumber(row.effectId) or 0
+            if eid <= 0 and type(row.bonuses) == "table" then
+                eid = tonumber(row.bonuses[6]) or 0
+            end
+            if eid > 0 then
+                return eid
+            end
+        end
+    end
+    if type(GetDatabaseItemData) == "function" and MS and MS.FromItemData then
+        local ok, data = pcall(GetDatabaseItemData, seedUid)
+        if ok and type(data) == "table" then
+            local spec = MS.FromItemData(data, "main")
+            local eid = type(spec) == "table" and tonumber(spec.effectId) or 0
+            if eid > 0 then
+                return eid
+            end
+        end
+    end
+    return 0
+end
+
+local function PlantLooksLikeByproduct(plantUid, plantData)
+    plantUid = tonumber(plantUid) or 0
+    if type(plantData) == "table" and SM.IsHarvestByproduct(plantData) then
+        return true
+    end
+    if plantUid > 0 and StockPiler3.Items and StockPiler3.Items.GetByUid then
+        local learned = StockPiler3.Items.GetByUid(plantUid)
+        if type(learned) == "table" and SM.IsHarvestByproduct(learned) then
+            return true
+        end
+    end
+    return false
+end
+
+local function StampPlantEffectFromSeedLink(seedUid, plantUid, plantData)
+    seedUid = tonumber(seedUid) or 0
+    plantUid = tonumber(plantUid) or 0
+    if seedUid <= 0 or plantUid <= 0 then
+        return 0
+    end
+    if SM.IsSeedPacketUid(seedUid) or PlantLooksLikeByproduct(plantUid, plantData) then
+        return 0
+    end
+    local effectId = SM.ResolveSeedEffectId(seedUid)
+    if effectId <= 0 then
+        return 0
+    end
+    if StockPiler3.Items and StockPiler3.Items.StampPlantEffectFromSeed then
+        StockPiler3.Items.StampPlantEffectFromSeed(plantUid, effectId, plantData)
+    end
+    return effectId
+end
+
 local function RecordHarvestProduct(seedUid, plantUid, qty)
     seedUid = tonumber(seedUid) or 0
     plantUid = tonumber(plantUid) or 0
@@ -343,6 +420,11 @@ local function RecordHarvestProduct(seedUid, plantUid, qty)
     end
     row.samples = (tonumber(row.samples) or 0) + 1
     row.qtySum = (tonumber(row.qtySum) or 0) + (tonumber(qty) or 1)
+    -- Stamp plant EFFECT from seed (harvest + refine share this path).
+    local stampedFx = StampPlantEffectFromSeedLink(seedUid, plantUid, plantData)
+    if stampedFx > 0 then
+        row.effectId = stampedFx
+    end
     -- Infertile / special apo harvest products are never plant→seed refinable.
     local ME = StockPiler3.MaterialExceptions
     local markSpecial = SM.IsInfertileSeed(seedUid, seedData and seedData.name)
@@ -423,6 +505,8 @@ function SM.IsInfertileSeed(seedUid, nameHint)
 end
 
 --- Eternal: full plot wave while owned; Exceptional: same while charges remain (~250).
+--- Also covers the configured seed-buffer floor: with buffer=5 and 4 plots, returning
+--- only `plots` left Eternal owners permanently stuck on Seed buffer (credit 4 < 5).
 function SM.EffectiveSeedCredit(seedUid, bagCount)
     bagCount = tonumber(bagCount) or 0
     if bagCount <= 0 then
@@ -439,10 +523,16 @@ function SM.EffectiveSeedCredit(seedUid, bagCount)
     if plots < 1 then
         plots = 4
     end
-    if bagCount >= plots then
-        return bagCount
+    local buffer = 5
+    local Watch = StockPiler3.Watch
+    if Watch and Watch.GetSeedBufferMin then
+        buffer = tonumber(Watch.GetSeedBufferMin()) or 5
     end
-    return plots
+    if buffer < 1 then
+        buffer = 1
+    end
+    -- Owned opaque seed = infinite replant capacity for cushion math.
+    return math.max(plots, buffer, bagCount)
 end
 
 function SM.GetSeedUidsForPlant(plantUid)
@@ -583,14 +673,17 @@ function SM.PickBestSeedUid(plantUid, seedUids, _spec)
         end)
     end
 
+    -- Prefer seeds actually in bags. Eternal/Exceptional with count 0 used to beat
+    -- owned blue seeds (tier*100000), so buffer math tracked a UID you cannot plant.
     local bestUid, bestScore = 0, -1
     for i = 1, #candidates do
         local uid = candidates[i]
         local count = 0
         if StockPiler3.Inventory and StockPiler3.Inventory.CountByUid then
-            count = StockPiler3.Inventory.CountByUid(uid)
+            count = tonumber(StockPiler3.Inventory.CountByUid(uid)) or 0
         end
-        local score = (SeedReplantTier(uid) * 100000) + count
+        local ownedBoost = count > 0 and 1000000 or 0
+        local score = ownedBoost + (SeedReplantTier(uid) * 100000) + count
         if score > bestScore then
             bestScore = score
             bestUid = uid
@@ -1530,6 +1623,100 @@ function SM.ItemLooksLikeRefinablePlant(itemData)
     end
     local cult = tonumber(itemData.cultivationType) or 0
     return cult == 0 and type(itemData.craftingBonus) == "table"
+end
+
+----------------------------------------------------------------
+-- Migrate: stamp plant effectId from known seed links (one-shot)
+----------------------------------------------------------------
+
+function SM.MigratePlantEffectsFromSeeds()
+    local acct = StockPiler3.Account
+    if type(acct) ~= "table" then
+        return 0
+    end
+    if acct.plantEffectFromSeedMigrateV1 == true then
+        return 0
+    end
+    -- plantUid -> { seedUid, samples }
+    local best = {}
+    local grows = GrowsTable()
+    if type(grows) == "table" then
+        for seedKey, bucket in pairs(grows) do
+            if type(bucket) == "table" and type(bucket.products) == "table" then
+                local seedUid = tonumber(seedKey) or tonumber(bucket.seedUid) or 0
+                if seedUid > 0 and not SM.IsSeedPacketUid(seedUid) then
+                    for plantKey, prod in pairs(bucket.products) do
+                        if type(prod) == "table" then
+                            local plantUid = tonumber(plantKey) or tonumber(prod.uid) or 0
+                            local samples = tonumber(prod.samples) or 0
+                            if plantUid > 0 and samples > 0
+                                and not PlantLooksLikeByproduct(plantUid, BagSample(plantUid))
+                            then
+                                local cur = best[plantUid]
+                                if type(cur) ~= "table" or samples > (tonumber(cur.samples) or 0) then
+                                    best[plantUid] = { seedUid = seedUid, samples = samples }
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    local refines = RefinesTable()
+    if type(refines) == "table" then
+        for plantKey, entry in pairs(refines) do
+            if type(entry) == "table" then
+                local plantUid = tonumber(plantKey) or tonumber(entry.plantUid) or 0
+                local seedUid = tonumber(entry.seedUid) or 0
+                if plantUid > 0 and seedUid > 0 and not SM.IsSeedPacketUid(seedUid)
+                    and not PlantLooksLikeByproduct(plantUid, BagSample(plantUid))
+                then
+                    local samples = 0
+                    if type(entry.seedOut) == "table" then
+                        local so = entry.seedOut[tostring(seedUid)]
+                        samples = type(so) == "table" and (tonumber(so.samples) or 0) or 0
+                    end
+                    local cur = best[plantUid]
+                    if type(cur) ~= "table" or samples > (tonumber(cur.samples) or 0) then
+                        -- Prefer grow-link when samples equal or higher; only fill missing.
+                        if type(cur) ~= "table" then
+                            best[plantUid] = { seedUid = seedUid, samples = samples }
+                        elseif samples > (tonumber(cur.samples) or 0) then
+                            best[plantUid] = { seedUid = seedUid, samples = samples }
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    local changed = 0
+    local Items = StockPiler3.Items
+    for plantUid, info in pairs(best) do
+        if type(info) == "table" then
+            local seedUid = tonumber(info.seedUid) or 0
+            local effectId = seedUid > 0 and SM.ResolveSeedEffectId(seedUid) or 0
+            if effectId > 0 and Items and Items.StampPlantEffectFromSeed then
+                local row = Items.GetByUid and Items.GetByUid(plantUid) or nil
+                local existing = type(row) == "table" and tonumber(row.effectId) or 0
+                if existing <= 0 and type(row) == "table" and type(row.bonuses) == "table" then
+                    existing = tonumber(row.bonuses[6]) or 0
+                end
+                if existing <= 0 then
+                    if Items.StampPlantEffectFromSeed(plantUid, effectId, BagSample(plantUid)) then
+                        changed = changed + 1
+                    end
+                end
+            end
+        end
+    end
+
+    acct.plantEffectFromSeedMigrateV1 = true
+    if changed > 0 and StockPiler3.Knowledge and StockPiler3.Knowledge.Touch then
+        StockPiler3.Knowledge.Touch("plant-effect-seed")
+    end
+    return changed
 end
 
 ----------------------------------------------------------------

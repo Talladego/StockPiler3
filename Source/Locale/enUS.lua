@@ -21,7 +21,7 @@ StockPiler3.Locale.Packs[LANG] = {
     ["boot.help.header"] = L"Commands:",
     ["boot.help.open"] = L"/sp3 - open window",
     ["boot.help.help"] = L"/sp3 help - show this help",
-    ["boot.help.tabs"] = L"/sp3 potions | watch - open on a tab",
+    ["boot.help.tabs"] = L"/sp3 potions | watch | plants - open on a tab",
     ["boot.help.debug"] = L"/sp3 debug [on|off] - uilog debug",
     ["boot.help.dumps"] = L"/sp3 plan | watchplan | state | growplan | brewplan | buyplan | stats - dump to uilog",
     ["boot.help.bags"] = L"/sp3 bags [force] - dump bag snapshot to uilog",
@@ -52,6 +52,7 @@ StockPiler3.Locale.Packs[LANG] = {
     ["ui.title"] = L"StockPiler3",
     ["ui.title_version"] = L"StockPiler3 v{version}",
     ["ui.tab_potions"] = L"Potions",
+    ["ui.tab_plants"] = L"Plants",
     ["ui.tab_watch"] = L"Watch",
     ["ui.close"] = L"Close",
     ["ui.clear_watches"] = L"Clear watches",
@@ -75,7 +76,7 @@ StockPiler3.Locale.Packs[LANG] = {
 
     -- Potions tab
     ["potions.banner_title"] = L"Known potions",
-    ["potions.banner_text"] = L"Watch potions to automate stock targets. Forget unlinks one recipe fingerprint.",
+    ["potions.banner_text"] = L"Your learned Apothecary recipes. Tick Watch on a potion to track it and set a stock target on the Watch tab. Hover the scroll for the recipe; Forget removes that one recipe from this list.",
     ["potions.search"] = L"Search:",
     ["potions.effect"] = L"Effect:",
     ["potions.all_effects"] = L"All effects",
@@ -92,6 +93,25 @@ StockPiler3.Locale.Packs[LANG] = {
     ["potions.sort.forget"] = L"Forget",
     ["potions.forget_confirm"] = L"Forget this learned potion recipe?\n{name}",
     ["potions.forget_tip"] = L"Forget this potion recipe path.",
+
+    -- Plants tab
+    ["plants.banner_title"] = L"Known plants",
+    ["plants.banner_text"] = L"Plants you have harvested and can grow again. Tick Watch to keep a minimum amount in bags. AutoGrow fills plant watches only after all watched potions are stocked. Forget removes a plant from this list.",
+    ["plants.sort.name"] = L"Name",
+    ["plants.sort.level"] = L"Lvl",
+    ["plants.sort.effect"] = L"Effect",
+    ["plants.sort.power"] = L"Pwr",
+    ["plants.sort.stability"] = L"Stab",
+    ["plants.sort.multiplier"] = L"Mult",
+    ["plants.sort.duration"] = L"Dur",
+    ["plants.sort.super_crit"] = L"SCrit",
+    ["plants.sort.stock"] = L"Stock",
+    ["plants.sort.recipes"] = L"Recipes",
+    ["plants.sort.forget"] = L"Forget",
+    ["plants.forget_confirm"] = L"Forget this learned plant?\n{name}",
+    ["plants.recipes_none"] = L"(no learned recipes)",
+    ["plants.recipes_tip_title"] = L"Recipes using this plant",
+    ["tip.plants.forget"] = L"Forget this plant from knowledge (and unwatch).",
 
     -- Effect short labels (Potions column / filter combo)
     ["effect.short.str"] = L"Str",
@@ -157,7 +177,7 @@ StockPiler3.Locale.Packs[LANG] = {
 
     -- Watch tab
     ["watch.banner_title"] = L"Watch",
-    ["watch.banner_text"] = L"AutoGrow, seed buffer, AutoBuy, and brew readiness for watched potions.",
+    ["watch.banner_text"] = L"Stock targets for potions and plants you watched. Enable AutoGrow to plant and buy materials automatically. Potions follow Prio order; plants always run after potions. Status shows what is blocking restock; Brew loads a ready potion.",
     ["watch.enable_autogrow"] = L"Enable AutoGrow",
     ["watch.use_additives"] = L"Use Additives",
     ["watch.combat_pause_label"] = L"Combat pause",
@@ -205,6 +225,7 @@ StockPiler3.Locale.Packs[LANG] = {
     ["plan.status.no_target"] = L"Set target",
     ["plan.status.no_recipe"] = L"Learn recipe",
     ["plan.status.potion_stocked"] = L"Potions stocked",
+    ["plan.status.plant_stocked"] = L"Stocked",
     ["plan.status.ready_to_craft"] = L"Ready to brew",
     ["plan.status.ready_to_craft_shared"] = L"Shared materials",
     ["plan.status.restocking"] = L"Restocking materials",
@@ -216,6 +237,8 @@ StockPiler3.Locale.Packs[LANG] = {
 
     -- Grow / harvest (icon 2486 = Harvest macro mushroom)
     ["grow.harvest_ready"] = L"<icon02486> Ready - {count} plot(s).",
+    ["grow.autogrow_stalled"] = L"<icon02486> AutoGrow stalled - {status} ({name}).",
+    ["grow.autogrow_stalled_more"] = L"<icon02486> AutoGrow stalled - {status} ({name}) +{count} more.",
     ["grow.harvest_outcome"] = L"<icon02486> Plot {plot} harvested {name} x{count}.",
     ["grow.harvest_crit_fail"] = L"<icon02486> Plot {plot} critical failure.",
     ["grow.planted"] = L"<icon02486> Plot {plot} planted {name} ({reason}).",
@@ -317,9 +340,12 @@ StockPiler3.Locale.Packs[LANG] = {
     ["tip.watch.reserve_chip"] = L"Gold reserve for AutoBuy. L-click +1, R-click -1. Hold Shift for +/-10.",
     ["tip.watch.budget_chip"] = L"AutoBuy budget per trip. L-click +1, R-click -1. Hold Shift for +/-10.",
     ["tip.watch.target_chip"] = L"Target stock. L-click +1, R-click -1. Hold Shift for +/-10.",
-    ["tip.watch.prio_chip"] = L"Grow/buy priority tier (1..N, N = watches on this list). Lower runs first among AutoGrow-armed. Shared tiers allowed. Empty tiers densify when a watch leaves the list. AutoGrow-off still editable. L+/R-; Shift +/-10.",
+    ["tip.watch.prio_chip"] = L"Potion grow/buy order: lower number first. Same number = same priority. Plants always run after potions (shown as -). L-click +1, R-click -1; Shift +/-10.",
     ["tip.watch.row_autogrow"] = L"Grow materials for this potion when AutoGrow is enabled.",
     ["tip.watch.have_target"] = L"Have {have} / Target {target}",
+    ["tip.watch.craftable_ready"] = L"Green: bags can craft this many now, and the seed buffer is safe.",
+    ["tip.watch.craftable_seed_buffer"] = L"Yellow: bags can craft this many, but the seed buffer is short.",
+    ["tip.watch.craftable_none"] = L"Red: not craftable from current bags (missing ingredients).",
     ["tip.watch.need_crafts"] = L"Need {crafts} crafts for {deficit} more of this potion.",
     ["tip.watch.yield_best_case"] = L"Recipe yield {yield} is a best case; Potent / other rarities do not count.",
     ["tip.watch.enable_autogrow_row"] = L"Enable AutoGrow for this watch to plant short materials.",

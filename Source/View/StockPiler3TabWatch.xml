@@ -19,7 +19,7 @@
             <Windows>
                 <Window name="$parentBanner">
                     <Size>
-                        <AbsPoint x="500" y="56" />
+                        <AbsPoint x="500" y="88" />
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
@@ -37,17 +37,17 @@
                             </Size>
                             <Anchors>
                                 <Anchor point="topleft" relativePoint="topleft">
-                                    <AbsPoint x="12" y="6" />
+                                    <AbsPoint x="12" y="4" />
                                 </Anchor>
                             </Anchors>
                         </Label>
-                        <Label name="$parentText" font="font_chat_text" maxchars="256" textalign="leftcenter" handleinput="false" wordwrap="true">
+                        <Label name="$parentText" font="font_chat_text" maxchars="320" textalign="left" handleinput="false" wordwrap="true">
                             <Size>
-                                <AbsPoint x="900" y="22" />
+                                <AbsPoint x="960" y="56" />
                             </Size>
                             <Anchors>
                                 <Anchor point="topleft" relativePoint="topleft">
-                                    <AbsPoint x="12" y="28" />
+                                    <AbsPoint x="12" y="26" />
                                 </Anchor>
                             </Anchors>
                         </Label>
@@ -60,7 +60,7 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="0" y="62" />
+                            <AbsPoint x="0" y="94" />
                         </Anchor>
                     </Anchors>
                     <EventHandlers>
@@ -74,7 +74,7 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="24" y="58" />
+                            <AbsPoint x="24" y="90" />
                         </Anchor>
                     </Anchors>
                 </Label>
@@ -85,7 +85,7 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="184" y="62" />
+                            <AbsPoint x="184" y="94" />
                         </Anchor>
                     </Anchors>
                     <EventHandlers>
@@ -99,7 +99,7 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="208" y="58" />
+                            <AbsPoint x="208" y="90" />
                         </Anchor>
                     </Anchors>
                 </Label>
@@ -110,7 +110,7 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="332" y="62" />
+                            <AbsPoint x="332" y="94" />
                         </Anchor>
                     </Anchors>
                     <EventHandlers>
@@ -124,7 +124,7 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="356" y="58" />
+                            <AbsPoint x="356" y="90" />
                         </Anchor>
                     </Anchors>
                 </Label>
@@ -134,7 +134,7 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="458" y="61" />
+                            <AbsPoint x="458" y="93" />
                         </Anchor>
                     </Anchors>
                     <EventHandlers>
@@ -164,7 +164,7 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="0" y="92" />
+                            <AbsPoint x="0" y="124" />
                         </Anchor>
                     </Anchors>
                     <EventHandlers>
@@ -178,7 +178,7 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="24" y="88" />
+                            <AbsPoint x="24" y="120" />
                         </Anchor>
                     </Anchors>
                 </Label>
@@ -189,7 +189,7 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="120" y="88" />
+                            <AbsPoint x="120" y="120" />
                         </Anchor>
                     </Anchors>
                 </Label>
@@ -199,7 +199,7 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="194" y="91" />
+                            <AbsPoint x="194" y="123" />
                         </Anchor>
                     </Anchors>
                     <EventHandlers>
@@ -229,7 +229,7 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="244" y="88" />
+                            <AbsPoint x="244" y="120" />
                         </Anchor>
                     </Anchors>
                 </Label>
@@ -239,7 +239,7 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="318" y="91" />
+                            <AbsPoint x="318" y="123" />
                         </Anchor>
                     </Anchors>
                     <EventHandlers>
@@ -269,7 +269,7 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="380" y="92" />
+                            <AbsPoint x="380" y="124" />
                         </Anchor>
                     </Anchors>
                     <EventHandlers>
@@ -283,7 +283,7 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="404" y="88" />
+                            <AbsPoint x="404" y="120" />
                         </Anchor>
                     </Anchors>
                 </Label>
@@ -291,22 +291,22 @@
                 <!-- Headers: Prio | Name | Status | Stock | Craftable | Target | AutoGrow | Brew (1000px) -->
                 <Button name="$parentColPrio" inherits="StockPiler3_StaticHeader">
                     <Size>
-                        <AbsPoint x="44" y="28" />
+                        <AbsPoint x="56" y="28" />
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="0" y="118" />
+                            <AbsPoint x="0" y="150" />
                         </Anchor>
                     </Anchors>
                 </Button>
                 <Button name="$parentColPotion" inherits="StockPiler3_StaticHeader">
                     <Size>
-                        <AbsPoint x="268" y="28" />
+                        <AbsPoint x="256" y="28" />
                     </Size>
                     <TextOffset x="30" y="4" />
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="44" y="118" />
+                            <AbsPoint x="56" y="150" />
                         </Anchor>
                     </Anchors>
                 </Button>
@@ -316,7 +316,7 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="312" y="118" />
+                            <AbsPoint x="312" y="150" />
                         </Anchor>
                     </Anchors>
                 </Button>
@@ -326,23 +326,19 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="560" y="118" />
+                            <AbsPoint x="560" y="150" />
                         </Anchor>
                     </Anchors>
                 </Button>
-                <Button name="$parentColCraftable" inherits="StockPiler3_StaticHeader" handleinput="true">
+                <Button name="$parentColCraftable" inherits="StockPiler3_StaticHeader" handleinput="false">
                     <Size>
                         <AbsPoint x="96" y="28" />
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="632" y="118" />
+                            <AbsPoint x="632" y="150" />
                         </Anchor>
                     </Anchors>
-                    <EventHandlers>
-                        <EventHandler event="OnMouseOver" function="StockPiler3TabWatch.OnMouseOverCraftableHeader" />
-                        <EventHandler event="OnLButtonUp" function="StockPiler3TabWatch.OnCraftableHeaderClick" />
-                    </EventHandlers>
                 </Button>
                 <Button name="$parentColTarget" inherits="StockPiler3_StaticHeader">
                     <Size>
@@ -350,7 +346,7 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="728" y="118" />
+                            <AbsPoint x="728" y="150" />
                         </Anchor>
                     </Anchors>
                 </Button>
@@ -360,7 +356,7 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="798" y="118" />
+                            <AbsPoint x="798" y="150" />
                         </Anchor>
                     </Anchors>
                 </Button>
@@ -371,7 +367,7 @@
                     <TextOffset x="2" y="4" />
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="898" y="118" />
+                            <AbsPoint x="898" y="150" />
                         </Anchor>
                     </Anchors>
                 </Button>
@@ -379,7 +375,7 @@
                 <ListBox name="$parentList" scrollbar="EA_ScrollBar_DefaultVerticalChain" rowdef="StockPiler3WatchRow" visiblerows="11" rowspacing="2">
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="0" y="148" />
+                            <AbsPoint x="0" y="180" />
                         </Anchor>
                         <Anchor point="bottomright" relativePoint="bottomright">
                             <AbsPoint x="-6" y="-8" />

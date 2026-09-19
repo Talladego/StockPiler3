@@ -444,13 +444,15 @@ function Watch.HasAnyAutoGrow()
         return false
     end
     local watches = Watch.GetWatches()
-    if type(watches) ~= "table" then
-        return false
-    end
-    for _, watch in pairs(watches) do
-        if type(watch) == "table" and watch.enabled == true and watch.autoGrow == true then
-            return true
+    if type(watches) == "table" then
+        for _, watch in pairs(watches) do
+            if type(watch) == "table" and watch.enabled == true and watch.autoGrow == true then
+                return true
+            end
         end
+    end
+    if Watch.CountEnabledPlantWatches and Watch.CountEnabledPlantWatches() > 0 then
+        return true
     end
     return false
 end
@@ -521,4 +523,177 @@ function Watch.GetAutoBuyBudgetGold()
         return 999
     end
     return math.floor(n)
+end
+
+----------------------------------------------------------------
+-- Plant watches (material stock floors; always below potion priority)
+----------------------------------------------------------------
+
+function Watch.PlantKeyFromUid(plantUid)
+    plantUid = tonumber(plantUid) or 0
+    if plantUid <= 0 then
+        return ""
+    end
+    return "plant:" .. tostring(plantUid)
+end
+
+function Watch.ParsePlantKey(key)
+    key = tostring(key or "")
+    local uid = key:match("^plant:(%d+)$")
+    if uid then
+        return tonumber(uid) or 0
+    end
+    return 0
+end
+
+function Watch.GetPlantWatches()
+    local row = CharacterRow(true)
+    if type(row) ~= "table" then
+        return {}
+    end
+    if type(row.plantWatches) ~= "table" then
+        row.plantWatches = {}
+    end
+    return row.plantWatches
+end
+
+local function DefaultPlantWatch()
+    return { enabled = false, targetStock = 40, autoGrow = true }
+end
+
+function Watch.GetPlantWatch(plantKey)
+    local key = tostring(plantKey or "")
+    if key == "" then
+        return DefaultPlantWatch()
+    end
+    local row = CharacterRow(false)
+    if type(row) ~= "table" or type(row.plantWatches) ~= "table" then
+        return DefaultPlantWatch()
+    end
+    local watch = row.plantWatches[key]
+    if type(watch) ~= "table" then
+        return DefaultPlantWatch()
+    end
+    return watch
+end
+
+function Watch.EnsurePlantWatch(plantKey, opts)
+    opts = type(opts) == "table" and opts or {}
+    local key = tostring(plantKey or "")
+    if key == "" then
+        return DefaultPlantWatch()
+    end
+    local row = CharacterRow(true)
+    if type(row) ~= "table" then
+        return DefaultPlantWatch()
+    end
+    if type(row.plantWatches) ~= "table" then
+        row.plantWatches = {}
+    end
+    local watch = row.plantWatches[key]
+    if type(watch) ~= "table" then
+        watch = {
+            enabled = false,
+            targetStock = 40,
+            autoGrow = true,
+        }
+        row.plantWatches[key] = watch
+        Watch.BumpGen()
+    end
+    if watch.targetStock == nil then
+        watch.targetStock = 40
+    end
+    if watch.autoGrow == nil then
+        watch.autoGrow = true
+    end
+    if watch.enabled == nil then
+        watch.enabled = false
+    end
+    if opts.fromPlantsToggle == true then
+        watch.autoGrow = true
+    end
+    return watch
+end
+
+function Watch.SetPlantTarget(plantKey, targetStock)
+    local watch = Watch.EnsurePlantWatch(plantKey)
+    targetStock = tonumber(targetStock)
+    if targetStock == nil then
+        return watch
+    end
+    if targetStock < 0 then
+        targetStock = 0
+    end
+    watch.targetStock = math.floor(targetStock)
+    Watch.BumpGen()
+    return watch
+end
+
+function Watch.SetPlantEnabled(plantKey, enabled, opts)
+    opts = type(opts) == "table" and opts or {}
+    local watch = Watch.EnsurePlantWatch(plantKey, opts)
+    watch.enabled = enabled == true
+    if enabled == true then
+        watch.autoGrow = true
+    end
+    Watch.BumpGen()
+    return watch
+end
+
+function Watch.SetPlantAutoGrow(plantKey, enabled)
+    local watch = Watch.EnsurePlantWatch(plantKey)
+    watch.autoGrow = enabled == true
+    Watch.BumpGen()
+    return watch
+end
+
+function Watch.CountEnabledPlantWatches()
+    local watches = Watch.GetPlantWatches()
+    local n = 0
+    if type(watches) ~= "table" then
+        return 0
+    end
+    for _, watch in pairs(watches) do
+        if type(watch) == "table" and watch.enabled == true then
+            n = n + 1
+        end
+    end
+    return n
+end
+
+--- True when every enabled potion watch has have >= targetStock.
+function Watch.AllEnabledPotionWatchesStocked()
+    local watches = Watch.GetWatches()
+    if type(watches) ~= "table" then
+        return true
+    end
+    local RS = StockPiler3.RecipeSpec
+    local Catalog = StockPiler3.Catalog
+    for key, watch in pairs(watches) do
+        if type(watch) == "table" and watch.enabled == true then
+            local target = tonumber(watch.targetStock) or 40
+            local have = 0
+            if RS and RS.ResolveWatchPotion then
+                local resolved = RS.ResolveWatchPotion(key)
+                local potion = resolved and resolved.potion
+                if type(potion) == "table" and Catalog and Catalog.PotionHaveCombined then
+                    have = tonumber(Catalog.PotionHaveCombined(potion)) or 0
+                elseif resolved and resolved.outputUid and StockPiler3.Inventory and StockPiler3.Inventory.CountByUid then
+                    have = tonumber(StockPiler3.Inventory.CountByUid(resolved.outputUid)) or 0
+                end
+            end
+            if have < target then
+                return false
+            end
+        end
+    end
+    return true
+end
+
+function Watch.ShouldAutoGrowPlant(plantKey)
+    if Watch.IsAutoGrowEnabled() ~= true then
+        return false
+    end
+    local watch = Watch.GetPlantWatch(plantKey)
+    return type(watch) == "table" and watch.enabled == true and watch.autoGrow ~= false
 end

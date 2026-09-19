@@ -285,3 +285,445 @@ function Catalog.ForgetLearnedRecipeSpec(key)
     end
     return false
 end
+
+----------------------------------------------------------------
+-- Plants catalog (harvested refinable apo materials)
+----------------------------------------------------------------
+
+local function PlantBonusValue(bonuses, ref)
+    if type(bonuses) ~= "table" then
+        return 0
+    end
+    local v = bonuses[ref]
+    if type(v) == "table" then
+        return tonumber(v[1] or v.bonusValue) or 0
+    end
+    return tonumber(v) or 0
+end
+
+local function BuildPlantRecipeIndex()
+    local byUid = {}
+    local Know = StockPiler3.Knowledge
+    local RS = StockPiler3.RecipeSpec
+    local SM = StockPiler3.SeedMap
+    local recipes = Know and Know.Recipes and Know.Recipes() or nil
+    local potions = Know and Know.Potions and Know.Potions() or nil
+    if type(recipes) ~= "table" then
+        return byUid
+    end
+    local potionByOutcome = {}
+    if type(potions) == "table" then
+        for _, potion in pairs(potions) do
+            if type(potion) == "table" then
+                local uid = tonumber(potion.outputUid) or 0
+                if uid > 0 then
+                    potionByOutcome[tostring(uid)] = potion
+                end
+            end
+        end
+    end
+    for recipeKey, recipe in pairs(recipes) do
+        if type(recipe) == "table" then
+            if RS and RS.HydrateRecipeSlots then
+                RS.HydrateRecipeSlots(recipe)
+            end
+            local slots = recipe.slots or {}
+            for i = 1, #slots do
+                local slot = slots[i]
+                if type(slot) == "table" and tostring(slot.role or "") ~= "container" then
+                    local spec = slot.spec
+                    if RS and RS.ResolveSlotSpec then
+                        spec = RS.ResolveSlotSpec(slot) or spec
+                    end
+                    if not (SM and SM.IsHarvestByproduct and SM.IsHarvestByproduct(spec) == true) then
+                        local plantUid = tonumber(slot.uid) or tonumber(slot.boundUid) or 0
+                        if plantUid <= 0 and type(spec) == "table" then
+                            plantUid = tonumber(spec.boundUid) or tonumber(spec.uid) or 0
+                        end
+                        if plantUid <= 0 and SM and SM.FindPlantUidForSpec and type(spec) == "table" then
+                            plantUid = tonumber(SM.FindPlantUidForSpec(spec)) or 0
+                        end
+                        if plantUid > 0 then
+                            local list = byUid[plantUid]
+                            if list == nil then
+                                list = {}
+                                byUid[plantUid] = list
+                            end
+                            local potionEntries = {}
+                            local names = {}
+                            if type(recipe.outcomes) == "table" then
+                                for ouid, _ in pairs(recipe.outcomes) do
+                                    local pot = potionByOutcome[tostring(ouid)]
+                                    local outUid = tonumber(ouid) or (type(pot) == "table" and tonumber(pot.outputUid)) or 0
+                                    if type(pot) == "table" then
+                                        local effectKey = pot.effectKey
+                                        if (not effectKey or effectKey == "") and RS and RS.ResolveEffectKeyForPotion then
+                                            effectKey = RS.ResolveEffectKeyForPotion(pot, {
+                                                recipeKey = recipeKey,
+                                                recipe = recipe,
+                                                stamp = false,
+                                            })
+                                        end
+                                        if type(effectKey) == "string" and effectKey ~= ""
+                                            and RS and RS.NormalizeEffectKeyForUi
+                                        then
+                                            effectKey = RS.NormalizeEffectKeyForUi(effectKey) or effectKey
+                                        end
+                                        potionEntries[#potionEntries + 1] = {
+                                            name = pot.name,
+                                            outputUid = outUid,
+                                            iconNum = tonumber(pot.iconNum) or 0,
+                                            rarity = tonumber(pot.rarity) or 0,
+                                            effectKey = effectKey,
+                                            itemData = pot,
+                                        }
+                                        if pot.name ~= nil then
+                                            names[#names + 1] = pot.name
+                                        end
+                                    end
+                                end
+                            end
+                            list[#list + 1] = {
+                                recipeKey = recipeKey,
+                                role = slot.role or (spec and spec.role),
+                                potions = potionEntries,
+                                potionNames = names,
+                            }
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return byUid
+end
+
+--- Harvested plants that refine back to a seed (excludes resin / one-way byproducts).
+function Catalog.ListPlantEntries()
+    local out = {}
+    local seen = {}
+    local Know = StockPiler3.Knowledge
+    local SM = StockPiler3.SeedMap
+    local MS = StockPiler3.MaterialSpec
+    local Items = StockPiler3.Items
+    local Inv = StockPiler3.Inventory
+    local RS = StockPiler3.RecipeSpec
+    local recipeIndex = BuildPlantRecipeIndex()
+
+    local function AddPlant(plantUid)
+        plantUid = tonumber(plantUid) or 0
+        if plantUid <= 0 or seen[plantUid] == true then
+            return
+        end
+        local item = Items and Items.GetByUid and Items.GetByUid(plantUid) or nil
+        local itemData = nil
+        if Items and Items.AsItemData then
+            itemData = Items.AsItemData(plantUid)
+        end
+        if type(itemData) ~= "table" and type(item) == "table" then
+            if type(item.itemData) == "table" then
+                itemData = item.itemData
+            else
+                itemData = item
+            end
+        end
+        if Inv and Inv.GetSample then
+            local sample = Inv.GetSample(plantUid)
+            if type(sample) == "table" then
+                itemData = sample
+            end
+        end
+        if type(itemData) == "table" and Inv and Inv.ResolvePotionItemData then
+            itemData = Inv.ResolvePotionItemData(nil, plantUid, itemData) or itemData
+        end
+        local spec = nil
+        if MS and MS.FromItemData and type(itemData) == "table" then
+            spec = MS.FromItemData(itemData)
+        end
+        if type(spec) ~= "table" and Items and Items.ToSpec then
+            spec = Items.ToSpec(plantUid)
+        end
+        if type(spec) ~= "table" then
+            return
+        end
+        if SM and SM.IsHarvestByproduct and SM.IsHarvestByproduct(spec) == true then
+            return
+        end
+        if SM and SM.IsOneWayHarvestSpec and SM.IsOneWayHarvestSpec(spec) == true then
+            return
+        end
+        -- Must refine to a seed (or look like refinable plant with known seed link).
+        local seedUid = 0
+        if SM and SM.GetSeedUidsForPlant then
+            local seeds = SM.GetSeedUidsForPlant(plantUid)
+            if type(seeds) == "table" and #seeds > 0 then
+                seedUid = tonumber(seeds[1]) or 0
+            end
+        end
+        if seedUid <= 0 and SM and SM.ResolveSeedForSpec then
+            local seed = SM.ResolveSeedForSpec(spec)
+            if type(seed) == "table" then
+                seedUid = tonumber(seed.uniqueID or seed.uid) or 0
+            end
+        end
+        local refinable = true
+        if SM and SM.ResolveIsRefinable then
+            local r = SM.ResolveIsRefinable(spec)
+            if r == false then
+                refinable = false
+            end
+        elseif SM and SM.ItemLooksLikeRefinablePlant and type(itemData) == "table" then
+            refinable = SM.ItemLooksLikeRefinablePlant(itemData) == true
+        end
+        if seedUid <= 0 and refinable ~= true then
+            return
+        end
+        seen[plantUid] = true
+
+        local bonuses = type(spec.bonuses) == "table" and spec.bonuses or {}
+        local B = MS and MS.CraftBonusRefs and MS.CraftBonusRefs() or nil
+        local power = tonumber(spec.power) or 0
+        local stability = tonumber(spec.stability) or 0
+        local duration = tonumber(spec.duration) or 0
+        local multiplier = 0
+        local superCrit = 0
+        if type(bonuses) == "table" then
+            -- bonus refs: STABILITY=1 POWER=2 DURATION=3 MULTIPLIER=4 SPECIAL_CHANCE=14
+            power = power ~= 0 and power or PlantBonusValue(bonuses, 2)
+            stability = stability ~= 0 and stability or PlantBonusValue(bonuses, 1)
+            duration = duration ~= 0 and duration or PlantBonusValue(bonuses, 3)
+            multiplier = PlantBonusValue(bonuses, 4)
+            superCrit = PlantBonusValue(bonuses, 14)
+        end
+        if B then
+            if power == 0 then
+                power = PlantBonusValue(bonuses, B.POWER or 2)
+            end
+            if stability == 0 then
+                stability = PlantBonusValue(bonuses, B.STABILITY or 1)
+            end
+            if duration == 0 then
+                duration = PlantBonusValue(bonuses, B.DURATION or 3)
+            end
+            if multiplier == 0 then
+                multiplier = PlantBonusValue(bonuses, B.MULTIPLIER or 4)
+            end
+            if superCrit == 0 then
+                superCrit = PlantBonusValue(bonuses, B.SPECIAL_CHANCE or 14)
+            end
+        end
+        local apoLevel = tonumber(spec.skillLevel) or tonumber(spec.craftingSkillRequirement)
+            or tonumber(item and item.skillReq) or tonumber(itemData and itemData.craftingSkillRequirement)
+            or tonumber(itemData and itemData.skillLevel) or 0
+        -- Prefer stamped learned effectId (from seed at harvest) over description matching.
+        local effectId = 0
+        if type(item) == "table" then
+            effectId = tonumber(item.effectId) or 0
+            if effectId <= 0 and type(item.bonuses) == "table" then
+                effectId = tonumber(item.bonuses[6]) or 0
+            end
+        end
+        if effectId <= 0 then
+            effectId = tonumber(spec.effectId) or 0
+        end
+        if effectId <= 0 then
+            effectId = PlantBonusValue(bonuses, (B and B.EFFECT) or 6) or 0
+        end
+        local effectKey = nil
+        if effectId > 0 and MS and MS.EffectKeyFromEffectId then
+            effectKey = MS.EffectKeyFromEffectId(effectId)
+        end
+        if type(effectKey) == "string" and effectKey ~= "" and RS and RS.NormalizeEffectKeyForUi then
+            effectKey = RS.NormalizeEffectKeyForUi(effectKey) or effectKey
+        end
+        -- Live fallback: seed map link → seed EFFECT (before recipe / description).
+        if (not effectKey or effectKey == "") and SM and SM.ResolveSeedEffectId then
+            local seedUids = SM.GetSeedUidsForPlant and SM.GetSeedUidsForPlant(plantUid) or nil
+            local bestSeed = 0
+            if SM.PickBestSeedUid and type(seedUids) == "table" then
+                bestSeed = tonumber(SM.PickBestSeedUid(plantUid, seedUids)) or 0
+            end
+            if bestSeed <= 0 and type(seedUids) == "table" and #seedUids > 0 then
+                bestSeed = tonumber(seedUids[1]) or 0
+            end
+            if bestSeed > 0 then
+                local fromSeed = tonumber(SM.ResolveSeedEffectId(bestSeed)) or 0
+                if fromSeed > 0 then
+                    effectId = fromSeed
+                    if MS and MS.EffectKeyFromEffectId then
+                        effectKey = MS.EffectKeyFromEffectId(fromSeed)
+                    end
+                    if type(effectKey) == "string" and effectKey ~= "" and RS and RS.NormalizeEffectKeyForUi then
+                        effectKey = RS.NormalizeEffectKeyForUi(effectKey) or effectKey
+                    end
+                end
+            end
+        end
+        local recipes = recipeIndex[plantUid] or {}
+        if (not effectKey or effectKey == "") and type(recipes) == "table" then
+            for ri = 1, #recipes do
+                local r = recipes[ri]
+                if type(r) == "table" and tostring(r.role or "") == "main" and type(r.potions) == "table" then
+                    for pi = 1, #r.potions do
+                        local p = r.potions[pi]
+                        if type(p) == "table" and type(p.effectKey) == "string" and p.effectKey ~= "" then
+                            effectKey = p.effectKey
+                            break
+                        end
+                    end
+                end
+                if effectKey and effectKey ~= "" then
+                    break
+                end
+            end
+        end
+        if (not effectKey or effectKey == "") and type(itemData) == "table"
+            and StockPiler3.Classify and StockPiler3.Classify.GetEffectKey
+        then
+            effectKey = StockPiler3.Classify.GetEffectKey(itemData)
+            if type(effectKey) == "string" and effectKey ~= "" and RS and RS.NormalizeEffectKeyForUi then
+                effectKey = RS.NormalizeEffectKeyForUi(effectKey) or effectKey
+            end
+        end
+        local have = 0
+        if StockPiler3.Inventory and StockPiler3.Inventory.CountByUid then
+            have = tonumber(StockPiler3.Inventory.CountByUid(plantUid)) or 0
+        end
+        local plantKey = StockPiler3.Watch and StockPiler3.Watch.PlantKeyFromUid
+            and StockPiler3.Watch.PlantKeyFromUid(plantUid)
+            or ("plant:" .. tostring(plantUid))
+        out[#out + 1] = {
+            plantKey = plantKey,
+            plantUid = plantUid,
+            seedUid = seedUid,
+            name = (item and item.name) or (itemData and itemData.name) or (spec and spec.name) or towstring(tostring(plantUid)),
+            iconNum = tonumber(item and item.iconNum) or tonumber(itemData and itemData.iconNum) or 0,
+            apoLevel = apoLevel,
+            effectKey = effectKey,
+            effectId = effectId,
+            power = power,
+            stability = stability,
+            duration = duration,
+            multiplier = multiplier,
+            superCrit = superCrit,
+            have = have,
+            recipes = recipes,
+            recipeCount = #recipes,
+            spec = spec,
+            itemData = itemData or item,
+            role = spec.role,
+            rarity = tonumber(itemData and itemData.rarity) or tonumber(item and item.rarity) or tonumber(spec.rarity) or 0,
+        }
+    end
+
+    local grows = Know and Know.Grows and Know.Grows() or nil
+    if type(grows) == "table" then
+        for _, bucket in pairs(grows) do
+            if type(bucket) == "table" and type(bucket.products) == "table" then
+                for _, prod in pairs(bucket.products) do
+                    if type(prod) == "table" then
+                        AddPlant(prod.uid)
+                    else
+                        AddPlant(prod)
+                    end
+                end
+            end
+        end
+    end
+    local refines = Know and Know.Refines and Know.Refines() or nil
+    if type(refines) == "table" then
+        for plantUidStr, bucket in pairs(refines) do
+            local uid = tonumber(plantUidStr) or (type(bucket) == "table" and tonumber(bucket.plantUid)) or 0
+            if uid > 0 and type(bucket) == "table" then
+                local hasSeed = (tonumber(bucket.seedUid) or 0) > 0
+                if not hasSeed and type(bucket.seedOut) == "table" then
+                    for _ in pairs(bucket.seedOut) do
+                        hasSeed = true
+                        break
+                    end
+                end
+                if hasSeed then
+                    AddPlant(uid)
+                end
+            end
+        end
+    end
+
+    table.sort(out, function(a, b)
+        local na = string.lower(ToNarrow(a.name))
+        local nb = string.lower(ToNarrow(b.name))
+        if na == nb then
+            return (tonumber(a.plantUid) or 0) < (tonumber(b.plantUid) or 0)
+        end
+        return na < nb
+    end)
+    return out
+end
+
+function Catalog.GetPlantWatch(plantKey)
+    if StockPiler3.Watch and StockPiler3.Watch.GetPlantWatch then
+        return StockPiler3.Watch.GetPlantWatch(plantKey)
+    end
+    return { enabled = false, targetStock = 40, autoGrow = true }
+end
+
+function Catalog.EnsurePlantWatch(plantKey)
+    if StockPiler3.Watch and StockPiler3.Watch.EnsurePlantWatch then
+        return StockPiler3.Watch.EnsurePlantWatch(plantKey)
+    end
+    return { enabled = false, targetStock = 40, autoGrow = true }
+end
+
+function Catalog.PlantHave(plantUid)
+    plantUid = tonumber(plantUid) or 0
+    if plantUid <= 0 or not StockPiler3.Inventory or not StockPiler3.Inventory.CountByUid then
+        return 0
+    end
+    return tonumber(StockPiler3.Inventory.CountByUid(plantUid)) or 0
+end
+
+--- Forget a learned plant: drop grows product + refine row + item; scrub plant watch.
+function Catalog.ForgetPlant(plantUid)
+    plantUid = tonumber(plantUid) or 0
+    if plantUid <= 0 then
+        return false
+    end
+    local Know = StockPiler3.Knowledge
+    local grows = Know and Know.Grows and Know.Grows() or nil
+    local refines = Know and Know.Refines and Know.Refines() or nil
+    local items = Know and Know.Items and Know.Items() or nil
+    local removed = false
+    if type(grows) == "table" then
+        for _, bucket in pairs(grows) do
+            if type(bucket) == "table" and type(bucket.products) == "table" then
+                local key = tostring(plantUid)
+                if bucket.products[key] ~= nil then
+                    bucket.products[key] = nil
+                    removed = true
+                end
+            end
+        end
+    end
+    if type(refines) == "table" and refines[tostring(plantUid)] ~= nil then
+        refines[tostring(plantUid)] = nil
+        removed = true
+    end
+    if type(items) == "table" and items[tostring(plantUid)] ~= nil then
+        items[tostring(plantUid)] = nil
+        removed = true
+    end
+    local plantKey = StockPiler3.Watch and StockPiler3.Watch.PlantKeyFromUid
+        and StockPiler3.Watch.PlantKeyFromUid(plantUid) or ("plant:" .. tostring(plantUid))
+    local pw = StockPiler3.Watch and StockPiler3.Watch.GetPlantWatches and StockPiler3.Watch.GetPlantWatches()
+    if type(pw) == "table" and pw[plantKey] ~= nil then
+        pw[plantKey] = nil
+        if StockPiler3.Watch.BumpGen then
+            StockPiler3.Watch.BumpGen()
+        end
+        removed = true
+    end
+    if removed and Know and Know.Touch then
+        Know.Touch("forget-plant")
+    end
+    return removed
+end

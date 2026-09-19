@@ -125,7 +125,7 @@ end
 local function ApplyStatusColor(labelWin, statusKey)
     statusKey = tostring(statusKey or "")
     local c = COLOR_GRAY
-    if statusKey == "potion_stocked" or statusKey == "ready_to_craft" then
+    if statusKey == "potion_stocked" or statusKey == "plant_stocked" or statusKey == "ready_to_craft" then
         c = COLOR_OK
     elseif statusKey == "ready_to_craft_shared"
         or statusKey == "restocking"
@@ -143,26 +143,45 @@ local function ApplyStatusColor(labelWin, statusKey)
     LabelSetTextColor(labelWin, c[1], c[2], c[3])
 end
 
+local function IsPlantWatchRow(data)
+    return type(data) == "table" and (data.kind == "plant" or data.isPlantWatch == true)
+end
+
 local function EnsureWatchNameRarityColors(data)
     if type(data) ~= "table" then
         return 255, 255, 255
     end
     local itemData = data.itemData
+    local uid = tonumber(data.uniqueID) or tonumber(data.plantUid) or 0
+    local isPlant = IsPlantWatchRow(data)
     local needResolve = type(itemData) ~= "table"
         or (tonumber(itemData.rarity) or 0) <= 0
-        or not (StockPiler3.Inventory and StockPiler3.Inventory.ItemDataHasUseBonus
-            and StockPiler3.Inventory.ItemDataHasUseBonus(itemData))
-    if needResolve and StockPiler3.Inventory and StockPiler3.Inventory.ResolvePotionItemData then
-        local uid = tonumber(data.uniqueID) or 0
-        itemData = StockPiler3.Inventory.ResolvePotionItemData(data.potionKey or data.potionBaseKey, uid, itemData)
-        if type(itemData) == "table" then
-            data.itemData = itemData
-        end
+    if not isPlant then
+        needResolve = needResolve
+            or not (StockPiler3.Inventory and StockPiler3.Inventory.ItemDataHasUseBonus
+                and StockPiler3.Inventory.ItemDataHasUseBonus(itemData))
+    elseif StockPiler3.Inventory then
+        -- Plants: always prefer bag/DB sample so rarity tint matches the item tooltip.
+        needResolve = true
     end
-    if data.nameR ~= nil and data.nameG ~= nil and data.nameB ~= nil
-        and type(data.itemData) == "table" and (tonumber(data.itemData.rarity) or 0) > 0
-    then
-        return tonumber(data.nameR) or 255, tonumber(data.nameG) or 255, tonumber(data.nameB) or 255
+    if needResolve and StockPiler3.Inventory then
+        if StockPiler3.Inventory.GetSample and uid > 0 then
+            local sample = StockPiler3.Inventory.GetSample(uid)
+            if type(sample) == "table" then
+                itemData = sample
+                data.itemData = sample
+            end
+        end
+        if StockPiler3.Inventory.ResolvePotionItemData then
+            itemData = StockPiler3.Inventory.ResolvePotionItemData(
+                data.potionKey or data.potionBaseKey or data.plantKey,
+                uid,
+                itemData
+            )
+            if type(itemData) == "table" then
+                data.itemData = itemData
+            end
+        end
     end
     itemData = data.itemData
     if itemData and DataUtils and DataUtils.GetItemRarityColor then
@@ -173,6 +192,9 @@ local function EnsureWatchNameRarityColors(data)
             data.nameB = tonumber(color.b) or 255
             return data.nameR, data.nameG, data.nameB
         end
+    end
+    if data.nameR ~= nil and data.nameG ~= nil and data.nameB ~= nil then
+        return tonumber(data.nameR) or 255, tonumber(data.nameG) or 255, tonumber(data.nameB) or 255
     end
     data.nameR, data.nameG, data.nameB = 255, 255, 255
     return 255, 255, 255
@@ -246,6 +268,11 @@ local function ApplyRowBrewButton(btnWin, data)
     if not DoesWindowExist(btnWin) then
         return
     end
+    if IsPlantWatchRow(data) then
+        WindowSetShowing(btnWin, false)
+        return
+    end
+    WindowSetShowing(btnWin, true)
     local craftableGreen = RowCraftableGreen(data)
     local state = GetRowCraftUiState(data)
     -- This row's apo session is loaded: always show Brew (ready to perform).
@@ -415,11 +442,15 @@ end
 
 local function HasEnabledWatch()
     local watches = StockPiler3.Watch and StockPiler3.Watch.GetWatches and StockPiler3.Watch.GetWatches()
-    if type(watches) ~= "table" then
-        return false
+    if type(watches) == "table" then
+        for _, w in pairs(watches) do
+            if type(w) == "table" and w.enabled == true then
+                return true
+            end
+        end
     end
-    for _, w in pairs(watches) do
-        if type(w) == "table" and w.enabled == true then
+    if StockPiler3.Watch and StockPiler3.Watch.CountEnabledPlantWatches then
+        if (tonumber(StockPiler3.Watch.CountEnabledPlantWatches()) or 0) > 0 then
             return true
         end
     end
@@ -594,6 +625,26 @@ local function AdjustTarget(data, delta)
     if type(data) ~= "table" then
         return
     end
+    if IsPlantWatchRow(data) then
+        local plantKey = data.plantKey or data.id or data.potionKey
+        local oldTarget = tonumber(data.target) or 0
+        local newTarget = Clamp(oldTarget + delta, 0, TARGET_MAX)
+        if newTarget == oldTarget then
+            return
+        end
+        if StockPiler3.Watch and StockPiler3.Watch.SetPlantTarget then
+            StockPiler3.Watch.SetPlantTarget(plantKey, newTarget)
+        end
+        data.target = newTarget
+        data.potionMin = newTarget
+        data.targetText = towstring(tostring(newTarget))
+        local have = tonumber(data.potionHave) or 0
+        data.potionDeficit = math.max(0, newTarget - have)
+        AfterWatchSettingsChanged()
+        StockPiler3TabWatch._rowPaintKey = nil
+        StockPiler3TabWatch.UpdateRows()
+        return
+    end
     local potionKey = data.potionRecipeKey or data.id or data.potionKey
     local oldTarget = tonumber(data.target) or 0
     local newTarget = Clamp(oldTarget + delta, 0, TARGET_MAX)
@@ -613,7 +664,7 @@ local function AdjustTarget(data, delta)
 end
 
 local function AdjustPriority(data, delta)
-    if type(data) ~= "table" then
+    if type(data) ~= "table" or IsPlantWatchRow(data) then
         return
     end
     local potionKey = data.potionRecipeKey or data.id or data.potionKey
@@ -804,14 +855,22 @@ function StockPiler3TabWatch.UpdateRows()
                         SetIconTexture(rowName .. "Icon", data.iconNum)
                     end
                     local prio = tonumber(data.priorityTier) or 1
-                    LabelSetText(rowName .. "Prio", data.priorityTierText or towstring(tostring(prio)))
+                    if IsPlantWatchRow(data) then
+                        LabelSetText(rowName .. "Prio", data.priorityTierText or L"-")
+                    else
+                        LabelSetText(rowName .. "Prio", data.priorityTierText or towstring(tostring(prio)))
+                    end
                     TintStepper(rowName .. "PrioChipBg")
                     LabelSetTextColor(rowName .. "Prio", 255, 255, 255)
                     LabelSetText(rowName .. "Name", data.name or L"")
                     LabelSetTextColor(rowName .. "Name", nameR, nameG, nameB)
                     LabelSetText(rowName .. "Status", data.statusText or L"")
                     LabelSetText(rowName .. "Stock", data.stockText or towstring(tostring(data.potionHave or 0)))
-                    LabelSetText(rowName .. "Craftable", data.craftableText or T("ui.dash"))
+                    if IsPlantWatchRow(data) then
+                        LabelSetText(rowName .. "Craftable", L"")
+                    else
+                        LabelSetText(rowName .. "Craftable", data.craftableText or T("ui.dash"))
+                    end
                     LabelSetText(rowName .. "Target", data.targetText or towstring(tostring(data.target or 0)))
                     TintStepper(rowName .. "TargetChipBg")
                     ApplyStatusColor(rowName .. "Status", data.statusKey)
@@ -838,16 +897,20 @@ function StockPiler3TabWatch.UpdateRows()
                         end
                     end
                     LabelSetTextColor(rowName .. "Stock", stockColor[1], stockColor[2], stockColor[3])
-                    local craftColor = COLOR_BLOCK
-                    if craftable > 0 then
-                        -- Yellow: craftable but seed buffer short. Green: buffer-safe (shared OK).
-                        if data.seedBufferShort == true or data.craftableSafe == false then
-                            craftColor = COLOR_WARN
-                        else
-                            craftColor = COLOR_OK
+                    if IsPlantWatchRow(data) then
+                        LabelSetTextColor(rowName .. "Craftable", COLOR_GRAY[1], COLOR_GRAY[2], COLOR_GRAY[3])
+                    else
+                        local craftColor = COLOR_BLOCK
+                        if craftable > 0 then
+                            -- Yellow: craftable but seed buffer short. Green: buffer-safe (shared OK).
+                            if data.seedBufferShort == true or data.craftableSafe == false then
+                                craftColor = COLOR_WARN
+                            else
+                                craftColor = COLOR_OK
+                            end
                         end
+                        LabelSetTextColor(rowName .. "Craftable", craftColor[1], craftColor[2], craftColor[3])
                     end
-                    LabelSetTextColor(rowName .. "Craftable", craftColor[1], craftColor[2], craftColor[3])
                     ApplyRowBrewButton(rowName .. "Load", data)
                     StockPiler3TabWatch._rowPaintKey[rowIndex] = paintKey
                 end
@@ -1049,6 +1112,18 @@ function StockPiler3TabWatch.OnToggleRowAutoGrow()
     if not data or not CanAutoGrowUi() then
         return
     end
+    if IsPlantWatchRow(data) then
+        local plantKey = data.plantKey or data.id or data.potionKey
+        local enabled = ButtonGetPressedFlag(SystemData.ActiveWindow.name) == true
+        if StockPiler3.Watch and StockPiler3.Watch.SetPlantAutoGrow then
+            StockPiler3.Watch.SetPlantAutoGrow(plantKey, enabled)
+        end
+        data.autoGrow = enabled
+        AfterWatchSettingsChanged()
+        StockPiler3TabWatch._rowPaintKey = nil
+        StockPiler3TabWatch.UpdateRows()
+        return
+    end
     local potionKey = data.potionRecipeKey or data.id or data.potionKey
     local enabled = ButtonGetPressedFlag(SystemData.ActiveWindow.name) == true
     if StockPiler3.Watch and StockPiler3.Watch.SetAutoGrow then
@@ -1083,7 +1158,7 @@ end
 
 function StockPiler3TabWatch.OnLoadRow()
     local data = RowDataFromActiveChild()
-    if not data or not StockPiler3.Brew then
+    if not data or IsPlantWatchRow(data) or not StockPiler3.Brew then
         return
     end
     if StockPiler3.Brew.OnRowCraftClick then
@@ -1136,6 +1211,7 @@ end
 local STATUS_TIP_COLORS = {
     no_recipe = COLOR_BLOCK,
     potion_stocked = COLOR_OK,
+    plant_stocked = COLOR_OK,
     ready_to_craft = COLOR_OK,
     ready_to_craft_shared = COLOR_WARN,
     restocking = COLOR_WARN,
@@ -1364,12 +1440,86 @@ local function BuildStatusTooltipRows(data)
         end
     end
 
+    local liveHave = tonumber(data.potionHave)
+    local liveMin = tonumber(data.potionMin) or tonumber(data.target) or 0
+
+    -- Plant watches: title + color-coded Have/Target (no recipe ingredient slots).
+    if IsPlantWatchRow(data) then
+        if type(data.statusLines) == "table" then
+            for i = 1, #data.statusLines do
+                local line = data.statusLines[i]
+                if line and line ~= L"" then
+                    local narrow = ToNarrow(line)
+                    if string.find(narrow, "buffer=", 1, true) == nil then
+                        rows[#rows + 1] = {
+                            text = line,
+                            kind = "warning",
+                            color = StatusTitleColor(data.statusKey),
+                        }
+                    end
+                end
+            end
+        end
+        if liveHave ~= nil and liveMin > 0 then
+            local stocked = liveHave >= liveMin
+            local statusKey = tostring(data.statusKey or "")
+            local haveColor = RgbDef(COLOR_BLOCK)
+            local noteKind = "block"
+            local statusNote = nil
+            if stocked or statusKey == "plant_stocked" then
+                haveColor = RgbDef(COLOR_OK)
+                noteKind = "stocked"
+                statusNote = T("watch.note.stocked")
+            elseif statusKey == "need_seeds" then
+                haveColor = RgbDef(COLOR_WARN)
+                noteKind = "warning"
+                statusNote = T("watch.note.buy_seeds")
+            elseif statusKey == "restocking" then
+                -- Match potion tip plant-slot warn tint while AutoGrow can progress.
+                haveColor = RgbDef(COLOR_WARN)
+                noteKind = "warning"
+                if data.autoGrow == true then
+                    statusNote = T("watch.note.needs_planting")
+                else
+                    statusNote = T("watch.note.autogrow_off")
+                    haveColor = RgbDef(COLOR_BLOCK)
+                    noteKind = "block"
+                end
+            elseif statusKey == "enable_autogrow" then
+                haveColor = RgbDef(COLOR_BLOCK)
+                noteKind = "block"
+                statusNote = T("watch.note.autogrow_off")
+            else
+                haveColor = RgbDef(COLOR_WARN)
+                noteKind = "warning"
+                statusNote = T("watch.note.needs_planting")
+            end
+            local haveText
+            if statusNote and statusNote ~= L"" then
+                haveText = T("tip.watch.have_need_note", {
+                    have = tostring(liveHave),
+                    need = tostring(liveMin),
+                    note = statusNote,
+                })
+            else
+                haveText = T("tip.watch.have_target", {
+                    have = tostring(liveHave),
+                    target = tostring(liveMin),
+                })
+            end
+            rows[#rows + 1] = {
+                text = haveText,
+                kind = noteKind,
+                color = haveColor,
+            }
+        end
+        return rows
+    end
+
     local slots = data.statusTipSlots
     local recipe = data.recipe or data.specRecipe
     local craftsNeeded = tonumber(data.craftsNeeded) or 0
     local deficit = tonumber(data.potionDeficit) or 0
-    local liveHave = tonumber(data.potionHave)
-    local liveMin = tonumber(data.potionMin) or tonumber(data.target) or 0
     if liveHave ~= nil and liveMin > 0 then
         deficit = math.max(0, liveMin - liveHave)
         if deficit <= 0 then
@@ -1725,27 +1875,37 @@ function StockPiler3TabWatch.OnMouseOverIcon()
     if not data then
         return
     end
-    local uid = tonumber(data.uniqueID) or 0
+    local uid = tonumber(data.uniqueID) or tonumber(data.plantUid) or 0
     local itemData = data.itemData
-    if StockPiler3.Inventory and StockPiler3.Inventory.ResolvePotionItemData then
-        itemData = StockPiler3.Inventory.ResolvePotionItemData(
-            data.potionKey or data.potionBaseKey,
-            uid,
-            itemData
-        )
-        if type(itemData) == "table" then
-            data.itemData = itemData
-            -- Refresh rarity tint if we just got a richer sample.
-            data.nameR, data.nameG, data.nameB = nil, nil, nil
-            EnsureWatchNameRarityColors(data)
+    local isPlant = IsPlantWatchRow(data)
+    if StockPiler3.Inventory then
+        if StockPiler3.Inventory.GetSample and uid > 0 and isPlant then
+            local sample = StockPiler3.Inventory.GetSample(uid)
+            if type(sample) == "table" then
+                itemData = sample
+            end
+        end
+        if StockPiler3.Inventory.ResolvePotionItemData then
+            itemData = StockPiler3.Inventory.ResolvePotionItemData(
+                data.potionKey or data.potionBaseKey or data.plantKey,
+                uid,
+                itemData
+            )
+            if type(itemData) == "table" then
+                data.itemData = itemData
+                -- Refresh rarity tint if we just got a richer sample.
+                data.nameR, data.nameG, data.nameB = nil, nil, nil
+                EnsureWatchNameRarityColors(data)
+            end
         end
     end
+    local tipOpts = isPlant and { allowWithoutUse = true } or nil
     if StockPiler3.Inventory and StockPiler3.Inventory.ShowItemTooltip
-        and StockPiler3.Inventory.ShowItemTooltip(itemData, SystemData.ActiveWindow.name)
+        and StockPiler3.Inventory.ShowItemTooltip(itemData, SystemData.ActiveWindow.name, tipOpts)
     then
         return
     end
-    Tip(data.name or T("ui.potion_fallback"))
+    Tip(data.name or (isPlant and T("ui.item_fallback") or T("ui.potion_fallback")))
 end
 
 function StockPiler3TabWatch.OnMouseOverName()
@@ -1805,10 +1965,19 @@ end
 
 function StockPiler3TabWatch.OnMouseOverCraftable()
     local data = RowDataFromActiveChild()
-    if not data then
+    if not data or IsPlantWatchRow(data) then
         return
     end
-    Tip(data.craftableText or T("ui.dash"))
+    local craftable = tonumber(data.craftable) or 0
+    if craftable <= 0 then
+        Tip(T("tip.watch.craftable_none"))
+        return
+    end
+    if data.seedBufferShort == true or data.craftableSafe == false then
+        Tip(T("tip.watch.craftable_seed_buffer"))
+        return
+    end
+    Tip(T("tip.watch.craftable_ready"))
 end
 
 function StockPiler3TabWatch.OnMouseOverTarget()
@@ -1830,11 +1999,4 @@ function StockPiler3TabWatch.OnMouseOverLoad()
         return
     end
     Tip(T("watch.col.brew"))
-end
-
-function StockPiler3TabWatch.OnMouseOverCraftableHeader()
-    Tip(T("watch.col.craftable"))
-end
-
-function StockPiler3TabWatch.OnCraftableHeaderClick()
 end

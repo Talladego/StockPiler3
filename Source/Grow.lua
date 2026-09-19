@@ -37,6 +37,7 @@ Grow._plantQuietUntil = 0
 Grow._lastHarvestForceAt = 0
 Grow._harvestOpLockUntil = 0
 Grow._lastPreparedHarvestPlot = 0
+Grow._autoGrowStallKeys = Grow._autoGrowStallKeys or {}
 Grow._skillSkipByUid = Grow._skillSkipByUid or {}
 Grow._skillSkipSnapGen = -1
 Grow._lastSkipKey = nil
@@ -607,6 +608,110 @@ local function PickSurplusCandidate(lines)
     return best
 end
 
+--- After all enabled potion watches are stocked: grow raw plant floors.
+local function PickPlantStockCandidate(SM)
+    local Watch = StockPiler3.Watch
+    if not (Watch and Watch.AllEnabledPotionWatchesStocked
+        and Watch.AllEnabledPotionWatchesStocked() == true)
+    then
+        return nil
+    end
+    if Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() ~= true then
+        return nil
+    end
+    local plantWatches = Watch.GetPlantWatches and Watch.GetPlantWatches() or nil
+    if type(plantWatches) ~= "table" or type(SM) ~= "table" then
+        return nil
+    end
+    local Catalog = StockPiler3.Catalog
+    local Items = StockPiler3.Items
+    local MS = StockPiler3.MaterialSpec
+    local Refine = StockPiler3.Refine
+    local bufferOn = Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true
+    local buffer = Watch.GetSeedBufferMin and tonumber(Watch.GetSeedBufferMin()) or 5
+    local best, bestNeed = nil, -1
+    for plantKey, watch in pairs(plantWatches) do
+        if type(watch) == "table" and watch.enabled == true
+            and (Watch.ShouldAutoGrowPlant == nil or Watch.ShouldAutoGrowPlant(plantKey) == true)
+        then
+            local plantUid = Watch.ParsePlantKey and Watch.ParsePlantKey(plantKey) or 0
+            plantUid = tonumber(plantUid) or 0
+            if plantUid > 0 then
+                local have = 0
+                if Catalog and Catalog.PlantHave then
+                    have = tonumber(Catalog.PlantHave(plantUid)) or 0
+                elseif StockPiler3.Inventory and StockPiler3.Inventory.CountByUid then
+                    have = tonumber(StockPiler3.Inventory.CountByUid(plantUid)) or 0
+                end
+                local target = tonumber(watch.targetStock) or 40
+                local need = target - have
+                if need > 0 then
+                    local spec = Items and Items.ToSpec and Items.ToSpec(plantUid) or nil
+                    if type(spec) ~= "table" and MS and MS.FromUid then
+                        spec = MS.FromUid(plantUid)
+                    end
+                    if type(spec) == "table" and SM.IsGrowableSpec and SM.IsGrowableSpec(spec) == true then
+                        local seed = SM.ResolveSeedForSpec and SM.ResolveSeedForSpec(spec)
+                        local seedUid = type(seed) == "table" and (tonumber(seed.uniqueID) or 0) or 0
+                        if seedUid <= 0 and SM.GetSeedUidsForPlant then
+                            local seeds = SM.GetSeedUidsForPlant(plantUid)
+                            if type(seeds) == "table" and #seeds > 0 then
+                                seedUid = tonumber(seeds[1]) or 0
+                                seed = seed or { uniqueID = seedUid }
+                            end
+                        end
+                        if seedUid > 0 and CanUseSeedUid(seedUid) then
+                            local bufferOk = true
+                            if bufferOn then
+                                local credit = BufferCredit(seedUid)
+                                if credit < buffer then
+                                    bufferOk = false
+                                end
+                            end
+                            if bufferOk then
+                                local bag = OpaqueSeedCredit(seedUid, LiveSeedBag(seedUid))
+                                local committed = tonumber(Grow._seedCommitted[seedUid]) or 0
+                                local avail = bag - committed
+                                if avail < 1 then
+                                    local refinable = 0
+                                    if Refine and Refine.CountRefinablePlants then
+                                        -- Prefer not refining below plant floor — CountRefinable is bag plants.
+                                        refinable = tonumber(Refine.CountRefinablePlants(plantUid, spec)) or 0
+                                    end
+                                    if refinable > 0 then
+                                        -- Seeds pending refine; skip this line for plant_stock.
+                                        avail = 0
+                                    end
+                                end
+                                if avail >= 1 and need > bestNeed then
+                                    bestNeed = need
+                                    best = {
+                                        spec = spec,
+                                        specKey = (MS and MS.ProductKey and MS.ProductKey(spec))
+                                            or ("plant:" .. tostring(plantUid)),
+                                        seed = seed or { uniqueID = seedUid },
+                                        seedUid = seedUid,
+                                        plantUid = plantUid,
+                                        seedHave = bag,
+                                        plantable = math.min(avail, need),
+                                        deficit = need,
+                                        craftsShort = need,
+                                        role = SpecRole(spec),
+                                        plantReason = "plant_stock",
+                                        watchKey = tostring(plantKey),
+                                        pickMode = "plant_stock",
+                                    }
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return best
+end
+
 local function ClearPendingPlot(plotNum, opts)
     plotNum = tonumber(plotNum) or 0
     opts = type(opts) == "table" and opts or {}
@@ -927,7 +1032,7 @@ local function CollectPlantWatchOrder(RS)
     if type(planRows) == "table" and #planRows > 0 then
         for i = 1, #planRows do
             local row = planRows[i]
-            if type(row) == "table" then
+            if type(row) == "table" and row.kind ~= "plant" and row.isPlantWatch ~= true then
                 local key = tostring(row.potionKey or row.potionRecipeKey or row.id or "")
                 local target = tonumber(row.potionMin) or tonumber(row.target) or 0
                 local have = tonumber(row.potionHave) or 0
@@ -1353,6 +1458,12 @@ function Grow.PickPlantCandidate()
     if focusGap > 0 then
         return done(nil)
     end
+    best = PickPlantStockCandidate(SM)
+    if best ~= nil then
+        best.pickMode = "plant_stock"
+        LogPlantPick(best)
+        return done(best)
+    end
     best = PickSurplusCandidate(lines)
     if best ~= nil then
         best.pickMode = "surplus"
@@ -1689,13 +1800,39 @@ function Grow.ShouldHoldPlantForReadyHarvest()
     return true
 end
 
+local function NudgeHarvestReadiness()
+    if StockPiler3Window and StockPiler3Window.SyncActionReadiness then
+        StockPiler3Window.SyncActionReadiness({ immediate = true })
+    elseif StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
+        StockPiler3Window.RequestFooterRefresh()
+    end
+end
+
 function Grow.ArmHarvestOpLock(seconds)
     seconds = tonumber(seconds) or Grow.HARVEST_OP_LOCK_SEC
     local untilT = NowSec() + seconds
     local cur = tonumber(Grow._harvestOpLockUntil) or 0
+    local wasActive = cur > 0 and NowSec() < cur
     if untilT > cur then
         Grow._harvestOpLockUntil = untilT
     end
+    -- Grey Harvest macro while op-lock is active (CanHarvestNow → false).
+    if not wasActive then
+        NudgeHarvestReadiness()
+    end
+end
+
+--- Clear expired op-lock and re-lit Harvest (Scheduler tick; avoid CanHarvestNow recursion).
+function Grow.DecayHarvestOpLock()
+    local untilT = tonumber(Grow._harvestOpLockUntil) or 0
+    if untilT <= 0 then
+        return
+    end
+    if NowSec() < untilT then
+        return
+    end
+    Grow._harvestOpLockUntil = 0
+    NudgeHarvestReadiness()
 end
 
 function Grow.IsHarvestOpActive()
@@ -1711,6 +1848,10 @@ function Grow.IsHarvestOpActive()
 end
 
 function Grow.CanHarvestNow()
+    -- Op-lock: button must grey; PrepareHarvest alone returned false while lit.
+    if Grow.IsHarvestOpActive() then
+        return false
+    end
     if StockPiler3.Brew and StockPiler3.Brew.BlocksHarvest and StockPiler3.Brew.BlocksHarvest() == true then
         return false
     end
@@ -1833,6 +1974,155 @@ function Grow.MaybeNotifyHarvestReady()
         end
         Grow._harvestReadyLatched = false
         Grow._harvestReadyChatSent = false
+    end
+end
+
+--- Red Status column keys that AutoGrow cannot clear without the player.
+local AUTOGROW_STALL_STATUS = {
+    buy_ingredients = true,
+    no_recipe = true,
+    need_skill = true,
+}
+
+local function AutoGrowStallBuyInProgress()
+    local Buy = StockPiler3.Buy
+    if not (Buy and Buy.IsEnabled and Buy.IsEnabled() == true) then
+        return false
+    end
+    local VA = StockPiler3.VendorAdapter
+    return VA and VA.IsStoreOpen and VA.IsStoreOpen() == true
+end
+
+local function RowArmedForAutoGrow(row)
+    if type(row) ~= "table" then
+        return false
+    end
+    local Watch = StockPiler3.Watch
+    if not Watch then
+        return false
+    end
+    if row.kind == "plant" or row.isPlantWatch == true then
+        return Watch.ShouldAutoGrowPlant
+            and Watch.ShouldAutoGrowPlant(row.plantKey or row.id) == true
+    end
+    local pk = tostring(row.potionKey or row.potionRecipeKey or row.id or "")
+    if pk == "" then
+        return false
+    end
+    local RS = StockPiler3.RecipeSpec
+    if RS and RS.ShouldAutoGrowPotion then
+        return RS.ShouldAutoGrowPotion(pk, nil) == true
+    end
+    local w = Watch.GetWatch and Watch.GetWatch(pk)
+    return type(w) == "table" and w.enabled == true and w.autoGrow == true
+end
+
+--- One-shot chat when AutoGrow is on but a watch is red (buy / learn / skill).
+--- Latches per watch; first observe seeds silently (same pattern as brew-ready).
+function Grow.MaybeNotifyAutoGrowStall()
+    local Watch = StockPiler3.Watch
+    if not (Watch and Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() == true) then
+        Grow._autoGrowStallKeys = nil
+        return
+    end
+    local PS = StockPiler3.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    local rows = plan and plan.rows
+    local nowKeys = {}
+    local newly = {}
+    local skipBuy = AutoGrowStallBuyInProgress()
+    local prev = Grow._autoGrowStallKeys
+    if type(rows) == "table" then
+        for i = 1, #rows do
+            local row = rows[i]
+            if type(row) == "table" and RowArmedForAutoGrow(row) then
+                local sk = tostring(row.statusKey or "")
+                if AUTOGROW_STALL_STATUS[sk] == true then
+                    local id = tostring(row.potionKey or row.plantKey or row.id or i)
+                    if sk == "buy_ingredients" and skipBuy then
+                        -- Vendor buying: keep an existing latch, do not arm a new silent one.
+                        if type(prev) == "table" and prev[id] == true then
+                            nowKeys[id] = true
+                        end
+                    else
+                        nowKeys[id] = row
+                    end
+                end
+            end
+        end
+    end
+
+    -- First observe after load / AutoGrow on: seed without chat.
+    if prev == nil then
+        local seeded = {}
+        for id, _ in pairs(nowKeys) do
+            seeded[id] = true
+        end
+        Grow._autoGrowStallKeys = seeded
+        return
+    end
+
+    for id, row in pairs(nowKeys) do
+        if prev[id] ~= true and type(row) == "table" then
+            newly[#newly + 1] = row
+        end
+    end
+    local nextKeys = {}
+    for id, _ in pairs(nowKeys) do
+        nextKeys[id] = true
+    end
+    Grow._autoGrowStallKeys = nextKeys
+    if #newly == 0 then
+        return
+    end
+    local row = newly[1]
+    local status = row.statusText
+    if status == nil or status == L"" then
+        local key = "plan.status." .. tostring(row.statusKey or "buy_ingredients")
+        if StockPiler3.T then
+            status = StockPiler3.T(key)
+        else
+            status = towstring(tostring(row.statusKey or "buy"))
+        end
+    elseif type(status) ~= "wstring" then
+        status = towstring(tostring(status))
+    end
+    local name = row.name
+    if name == nil or name == L"" then
+        name = L"watch"
+        if StockPiler3.T then
+            name = StockPiler3.T("watch.fallback")
+        end
+    elseif type(name) ~= "wstring" then
+        name = towstring(tostring(name))
+    end
+    local extra = #newly - 1
+    local msg
+    if StockPiler3.T then
+        if extra > 0 then
+            msg = StockPiler3.T("grow.autogrow_stalled_more", {
+                status = status,
+                name = name,
+                count = tostring(extra),
+            })
+        else
+            msg = StockPiler3.T("grow.autogrow_stalled", {
+                status = status,
+                name = name,
+            })
+        end
+    else
+        msg = L"<icon02486> AutoGrow stalled - " .. status .. L" (" .. name .. L")."
+    end
+    if StockPiler3.Debug and StockPiler3.Debug.Print then
+        StockPiler3.Debug.Print(msg)
+    end
+    local soundId = GameData and GameData.Sound and GameData.Sound.RESPAWN
+    if soundId == nil then
+        soundId = 216
+    end
+    if soundId and Sound and Sound.Play then
+        Sound.Play(soundId)
     end
 end
 

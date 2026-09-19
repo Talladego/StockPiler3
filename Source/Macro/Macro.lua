@@ -434,11 +434,14 @@ local function bindHarvestGameAction(button)
     return ok == true
 end
 
-local function bindHarvestGameActionForButton(button)
+local function bindHarvestGameActionForButton(button, opts)
+    opts = type(opts) == "table" and opts or {}
     if not button then
         return false
     end
-    if GameActionAlreadyBound(button, "harvest") then
+    -- force=true on click: engine may have cleared the Action bind while our
+    -- cache still says "harvest", which made WindowGameAction a no-op.
+    if opts.force ~= true and GameActionAlreadyBound(button, "harvest") then
         return true
     end
     if button.m_Name and bindHarvestGameAction(button) then
@@ -520,11 +523,12 @@ local function bindBrewGameAction(button)
     return ok == true
 end
 
-local function bindBrewGameActionForButton(button)
+local function bindBrewGameActionForButton(button, opts)
+    opts = type(opts) == "table" and opts or {}
     if not button then
         return false
     end
-    if GameActionAlreadyBound(button, "brew") then
+    if opts.force ~= true and GameActionAlreadyBound(button, "brew") then
         return true
     end
     if button.m_Name and bindBrewGameAction(button) then
@@ -579,7 +583,7 @@ function Macro.FireHarvestGameAction()
         if not DoesWindowExist(actionName) then
             return false
         end
-        if not bindHarvestGameActionForButton(button) then
+        if not bindHarvestGameActionForButton(button, { force = true }) then
             return false
         end
         local ok = TryCall("WindowGameAction", WindowGameAction, actionName)
@@ -952,7 +956,7 @@ local function installActionButtonHooks()
                 clearPickupIfMouse(flags)
                 return
             end
-            bindHarvestGameActionForButton(self)
+            bindHarvestGameActionForButton(self, { force = true })
             local result = handleMacroHarvestActivation(flags)
             if result == "cursor" or result == "go" then
                 if orgOnLButtonUp then
@@ -972,7 +976,9 @@ local function installActionButtonHooks()
                 return
             end
             if result == "go" then
+                -- Suppress BrewClick if the engine also runs the macro script this frame.
                 Macro._brewFired = true
+                Macro._brewFiredAt = (type(GetGameTime) == "function" and tonumber(GetGameTime())) or 0
                 if StockPiler3.Brew and StockPiler3.Brew.FirePerform then
                     StockPiler3.Brew.FirePerform()
                 end
@@ -1086,30 +1092,47 @@ function Macro.HarvestClick()
     if Macro.FireHarvestGameAction() then
         return
     end
-    if Grow.FireHarvestAction then
-        Grow.FireHarvestAction()
+    -- Fallback when no bar slot / Action bind failed (Grow.FireHarvestAction never existed).
+    if StockPiler3.HarvestChrome and StockPiler3.HarvestChrome.FireHarvestAction then
+        StockPiler3.HarvestChrome.FireHarvestAction()
+        return
+    end
+    if Grow.HarvestClick then
+        Grow.HarvestClick()
     end
 end
 
 function Macro.BrewClick()
+    Macro.ExpireBrewFiredGuard()
     if Macro._brewFired == true then
         Macro._brewFired = false
+        Macro._brewFiredAt = nil
         return
     end
     if not canBrewMacro() then
-        Macro._brewFired = false
         return
     end
     local Brew = StockPiler3.Brew
     if not Brew or not Brew.TryBrewClick then
-        Macro._brewFired = false
         return
     end
     local result = Brew.TryBrewClick()
     if result == "go" and Brew.FirePerform then
         Brew.FirePerform()
     end
-    Macro._brewFired = false
+end
+
+--- Drop sticky _brewFired if BrewClick never ran after OnLButtonUp FirePerform.
+function Macro.ExpireBrewFiredGuard()
+    if Macro._brewFired ~= true then
+        return
+    end
+    local at = tonumber(Macro._brewFiredAt) or 0
+    local now = (type(GetGameTime) == "function" and tonumber(GetGameTime())) or 0
+    if at <= 0 or now <= 0 or (now - at) >= 0.25 then
+        Macro._brewFired = false
+        Macro._brewFiredAt = nil
+    end
 end
 
 function Macro.Initialize()

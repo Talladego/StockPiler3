@@ -326,7 +326,15 @@ function Orch._TickBody()
         return
     end
 
-    -- brew loading/loaded -> skip grow; buy allowed
+    -- brew loading/loaded -> skip grow; buy allowed.
+    -- Probe first: settle-hold then silence can park phase=loaded forever
+    -- (blocks grow + plan rebuild until a forced Build / watchplan).
+    if Orch.IsBrewSessionActive() == true then
+        local Brew = StockPiler3.Brew
+        if Brew and Brew.ProbeStuckAutoLoaded then
+            Brew.ProbeStuckAutoLoaded("orch-tick")
+        end
+    end
     if Orch.IsBrewSessionActive() == true then
         if Sch and Sch.SetAutoGrowIdle then
             Sch.SetAutoGrowIdle(false)

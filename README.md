@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.88** — AutoBuy pools all watch deficits (shared flasks); drop container-skip fallback.
+**Version 0.3.89** — Plants tab + plant-stock AutoGrow; fix Eternal/Exceptional seed-buffer credit so stocked watches are not stuck on Seed buffer.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -17,12 +17,20 @@ Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macr
 | Command | Purpose |
 | :--- | :--- |
 | `/sp3` | Toggle window |
-| `/sp3 potions` / `watch` | Open tab |
+| `/sp3 potions` / `watch` / `plants` | Open tab |
 | `/sp3 help` | Command list |
 | `/sp3 debug` / `on` / `off` | Structured uilog |
 | `/sp3 plan` / `watchplan` / `state` / `growplan` / `brewplan` / `buyplan` | Dumps |
 | `/sp3 stats` / `bags` / `events` / `mem` / `audit` / `harvest` | Diagnostics |
 | `/sp3 perf` | In-addon hitch summary when LibPerf absent |
+
+## Plants tab (0.3.89)
+
+- Catalog of harvested plants that refine back to a seed (resin/byproducts excluded).
+- Plant **Effect** comes from the seed’s EFFECT bonus, stamped onto the plant at harvest/refine (and one-shot migrate from `grows`/`refines`); description text is only a last resort.
+- Watch a plant → Watch tab row with **Prio -**, blank Craftable/Brew; edit **Target** there (default 40).
+- AutoGrow plants raw floors **only after every enabled potion watch is stocked**; potions always first; seed buffer rules unchanged.
+- Smoke: enable a potion watch under target → confirm no `plant_stock` in `/sp3 growplan`; stock potions → plant deficit grows; Ready/Brew still only potion rows; Forget on Plants removes knowledge + watch.
 
 ## AutoGrow
 
@@ -38,7 +46,7 @@ Diagnose with `/sp3 growplan` (focus watches, demand shorts, current `plantJob`)
 
 ## Seed map (learn in-game)
 
-Account `grows` / `refines` link seed ↔ plant from plant / harvest / refine observes. Empty on install — plant and refine once so AutoGrow can resolve seeds for recipe mains/multipliers. Seed Packets are never preferred for AutoGrow.
+Account `grows` / `refines` link seed ↔ plant from plant / harvest / refine observes. Empty on install — plant and refine once so AutoGrow can resolve seeds for recipe mains/multipliers. Seed Packets are never preferred for AutoGrow. Harvest also stamps the seed’s EFFECT onto `Account.items[plantUid].effectId` for the Plants tab.
 
 ## Macros
 

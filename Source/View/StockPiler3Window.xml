@@ -67,9 +67,16 @@
                                 </Anchor>
                             </Anchors>
                         </Button>
-                        <Button name="$parentWatch" inherits="StockPiler3_Templates_TabButton" id="2">
+                        <Button name="$parentPlants" inherits="StockPiler3_Templates_TabButton" id="2">
                             <Anchors>
                                 <Anchor point="right" relativePoint="left" relativeTo="$parentPotions">
+                                    <AbsPoint x="0" y="0" />
+                                </Anchor>
+                            </Anchors>
+                        </Button>
+                        <Button name="$parentWatch" inherits="StockPiler3_Templates_TabButton" id="3">
+                            <Anchors>
+                                <Anchor point="right" relativePoint="left" relativeTo="$parentPlants">
                                     <AbsPoint x="0" y="0" />
                                 </Anchor>
                             </Anchors>
@@ -102,6 +109,11 @@
                 <Window name="SP3TabPotions" inherits="StockPiler3TabPotions">
                     <EventHandlers>
                         <EventHandler event="OnInitialize" function="StockPiler3TabPotions.Initialize" />
+                    </EventHandlers>
+                </Window>
+                <Window name="SP3TabPlants" inherits="StockPiler3TabPlants">
+                    <EventHandlers>
+                        <EventHandler event="OnInitialize" function="StockPiler3TabPlants.Initialize" />
                     </EventHandlers>
                 </Window>
                 <Window name="SP3TabWatch" inherits="StockPiler3TabWatch" />

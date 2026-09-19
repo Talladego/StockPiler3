@@ -647,14 +647,15 @@ function Inv.ResolvePotionItemData(potionKey, uid, existing)
     return best or existing
 end
 
---- Full stock item tooltip when itemData has Use-bonus. Returns true if shown.
-function Inv.ShowItemTooltip(itemData, anchorWindow)
+--- Full stock item tooltip. opts.allowWithoutUse: materials/plants (no Use bonus).
+function Inv.ShowItemTooltip(itemData, anchorWindow, opts)
     if type(itemData) ~= "table" or type(Tooltips) ~= "table"
         or type(Tooltips.CreateItemTooltip) ~= "function"
     then
         return false
     end
-    if not ItemDataHasUseBonus(itemData) then
+    opts = type(opts) == "table" and opts or {}
+    if opts.allowWithoutUse ~= true and not ItemDataHasUseBonus(itemData) then
         return false
     end
     local data = Inv.NormalizeItemDataForTooltip(itemData)

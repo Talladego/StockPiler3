@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ModuleFile xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    <UiMod name="StockPiler3" version="0.3.88" date="2026-09-18">
+    <UiMod name="StockPiler3" version="0.3.89" date="2026-09-18">
         <Author name="Talladego" email="" />
         <Description text="StockPiler3 — lean cult/apo stock automation. Parallel-safe with StockPiler / StockPiler2." />
         <VersionSettings gameVersion="1.4.8" windowsVersion="1.0" savedVariablesVersion="1.0" />
@@ -64,6 +64,7 @@
             <File name="Source/View/Ui.lua" />
             <File name="Source/View/StockPiler3Templates.xml" />
             <File name="Source/View/StockPiler3TabPotions.xml" />
+            <File name="Source/View/StockPiler3TabPlants.xml" />
             <File name="Source/View/StockPiler3TabWatch.xml" />
             <File name="Source/View/StockPiler3Window.xml" />
             <File name="Source/Bootstrap.lua" />
