@@ -3,7 +3,7 @@
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
-StockPiler3.Version = L"0.3.128"
+StockPiler3.Version = L"0.3.142"
 
 local function T(key, tokens)
     if StockPiler3.T then
@@ -206,6 +206,28 @@ function StockPiler3.OnSlash(input)
         else
             EmitLog("skillplan| dump unavailable")
             Print(T("boot.skillplan_dumped"))
+        end
+        return
+    end
+    if lower == "families" then
+        local SM = StockPiler3.SeedMap
+        if SM and SM.DumpFamilies then
+            SM.DumpFamilies(function(msg) EmitLog(msg) end)
+            Print(T("boot.families_dumped"))
+        else
+            EmitLog("families| dump unavailable")
+            Print(T("boot.families_dumped"))
+        end
+        return
+    end
+    if lower == "upgradeplan" then
+        local US = StockPiler3.UpgradeSeed
+        if US and US.Dump then
+            US.Dump(function(msg) EmitLog(msg) end)
+            Print(T("boot.upgrade_dumped"))
+        else
+            EmitLog("upgradeplan| dump unavailable")
+            Print(T("boot.upgrade_dumped"))
         end
         return
     end

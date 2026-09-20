@@ -1936,3 +1936,543 @@ function SM.DumpCraftCycleStats(emit)
         emit("  (none)")
     end
 end
+
+----------------------------------------------------------------
+-- Family ladders (Upgrade Seed / SkillUp graduation)
+----------------------------------------------------------------
+
+local function ItemSkillReq(item)
+    if type(item) ~= "table" then
+        return 0
+    end
+    local req = tonumber(item.craftingSkillRequirement) or tonumber(item.skillReq) or 0
+    if req <= 0 and type(item.bonuses) == "table" then
+        req = tonumber(item.bonuses[9]) or 0
+    end
+    if req <= 0 then
+        local Items = StockPiler3.Items
+        local uid = tonumber(item.uniqueID) or tonumber(item.uid) or 0
+        if uid > 0 and Items and Items.ToSpec then
+            local spec = Items.ToSpec(uid)
+            req = tonumber(spec and spec.skillLevel) or 0
+        end
+    end
+    return req
+end
+
+--- Last-token genus after normalize (e.g. "majestic goldweed" → "goldweed").
+function SM.GenusKeyFromName(name)
+    local n = NormalizeGrowName(ToNarrow(name))
+    if n == "" then
+        return ""
+    end
+    return string.match(n, "([^%s]+)$") or n
+end
+
+function SM.FamilyKeyParts(genus, role, effectId)
+    genus = string.lower(tostring(genus or ""))
+    role = string.lower(tostring(role or "unknown"))
+    if role == "" then
+        role = "unknown"
+    end
+    effectId = tonumber(effectId) or 0
+    if genus == "" then
+        return nil
+    end
+    return genus .. "|" .. role .. "|" .. tostring(effectId), genus, role, effectId
+end
+
+function SM.FamilyKeyFromSpec(spec)
+    if type(spec) ~= "table" then
+        return nil
+    end
+    local genus = SM.GenusKeyFromName(spec.name)
+    if genus == "" then
+        local uid = tonumber(spec.uid) or tonumber(spec.uniqueID) or tonumber(spec.boundUid) or 0
+        local sample = BagSample(uid)
+        genus = SM.GenusKeyFromName(sample and sample.name)
+    end
+    local role = tostring(spec.role or "unknown")
+    if role == "" then
+        role = "unknown"
+    end
+    local effectId = tonumber(spec.effectId) or 0
+    return SM.FamilyKeyParts(genus, role, effectId)
+end
+
+function SM.FamilyKeyFromUid(uid)
+    uid = tonumber(uid) or 0
+    if uid <= 0 then
+        return nil
+    end
+    local Items = StockPiler3.Items
+    local spec = Items and Items.ToSpec and Items.ToSpec(uid) or nil
+    if type(spec) == "table" then
+        local key = SM.FamilyKeyFromSpec(spec)
+        if key then
+            return key
+        end
+    end
+    local sample = BagSample(uid)
+    local genus = SM.GenusKeyFromName(sample and sample.name)
+    return SM.FamilyKeyParts(genus, "unknown", 0)
+end
+
+local function EnsureRung(bucket, skillReq)
+    skillReq = tonumber(skillReq) or 0
+    if skillReq < 1 then
+        return nil
+    end
+    local rungs = bucket.rungs
+    for i = 1, #rungs do
+        if rungs[i].skillReq == skillReq then
+            return rungs[i]
+        end
+    end
+    local rung = { skillReq = skillReq, seedUid = 0, plantUid = 0, name = "" }
+    rungs[#rungs + 1] = rung
+    return rung
+end
+
+local function SortRungs(rungs)
+    table.sort(rungs, function(a, b)
+        return (tonumber(a.skillReq) or 0) < (tonumber(b.skillReq) or 0)
+    end)
+end
+
+local function NoteSeedPlant(families, seedUid, plantUid, skillReq, name, role, effectId)
+    seedUid = tonumber(seedUid) or 0
+    plantUid = tonumber(plantUid) or 0
+    skillReq = tonumber(skillReq) or 0
+    if skillReq < 1 then
+        return
+    end
+    local genus = SM.GenusKeyFromName(name)
+    if genus == "" and plantUid > 0 then
+        local plantSample = BagSample(plantUid)
+        genus = SM.GenusKeyFromName(plantSample and plantSample.name)
+    end
+    if genus == "" and seedUid > 0 then
+        local seedSample = BagSample(seedUid)
+        genus = SM.GenusKeyFromName(seedSample and seedSample.name)
+    end
+    local key, g, r, e = SM.FamilyKeyParts(genus, role, effectId)
+    if not key then
+        return
+    end
+    local bucket = families[key]
+    if type(bucket) ~= "table" then
+        bucket = { key = key, genus = g, role = r, effectId = e, rungs = {} }
+        families[key] = bucket
+    end
+    local rung = EnsureRung(bucket, skillReq)
+    if not rung then
+        return
+    end
+    if seedUid > 0 then
+        rung.seedUid = seedUid
+    end
+    if plantUid > 0 then
+        rung.plantUid = plantUid
+    end
+    if name and name ~= "" and (rung.name == nil or rung.name == "") then
+        rung.name = ToNarrow(name)
+    end
+end
+
+--- Build all known family ladders from grows/refines/bags/account/vendor.
+--- Returns map familyKey → { key, genus, role, effectId, rungs[] }.
+function SM.BuildAllFamilyLadders()
+    local families = {}
+    local Items = StockPiler3.Items
+    local MS = StockPiler3.MaterialSpec
+
+    local function roleEffectForUid(uid)
+        uid = tonumber(uid) or 0
+        local role, effectId = "unknown", 0
+        if uid > 0 and Items and Items.ToSpec then
+            local spec = Items.ToSpec(uid)
+            if type(spec) == "table" then
+                role = tostring(spec.role or "unknown")
+                effectId = tonumber(spec.effectId) or 0
+            end
+        end
+        if (role == "" or role == "unknown") and uid > 0 and MS and MS.FromUid then
+            local spec = MS.FromUid(uid)
+            if type(spec) == "table" then
+                if role == "unknown" or role == "" then
+                    role = tostring(spec.role or "unknown")
+                end
+                if effectId <= 0 then
+                    effectId = tonumber(spec.effectId) or 0
+                end
+            end
+        end
+        return role, effectId
+    end
+
+    local grows = GrowsTable()
+    if type(grows) == "table" then
+        for seedKey, bucket in pairs(grows) do
+            local seedUid = tonumber(seedKey) or 0
+            if seedUid > 0 and type(bucket) == "table" then
+                local seedSample = BagSample(seedUid)
+                local seedReq = ItemSkillReq(seedSample or {})
+                if seedReq < 1 then
+                    seedReq = ItemSkillReq(bucket)
+                end
+                if type(bucket.products) == "table" then
+                    for plantKey, _ in pairs(bucket.products) do
+                        local plantUid = tonumber(plantKey) or 0
+                        local plantSample = BagSample(plantUid)
+                        local plantReq = ItemSkillReq(plantSample or {})
+                        local req = plantReq > 0 and plantReq or seedReq
+                        local role, effectId = roleEffectForUid(plantUid > 0 and plantUid or seedUid)
+                        local name = (plantSample and plantSample.name) or (seedSample and seedSample.name) or ""
+                        NoteSeedPlant(families, seedUid, plantUid, req, name, role, effectId)
+                    end
+                elseif seedReq >= 1 then
+                    local role, effectId = roleEffectForUid(seedUid)
+                    NoteSeedPlant(families, seedUid, 0, seedReq, seedSample and seedSample.name, role, effectId)
+                end
+            end
+        end
+    end
+
+    local refines = RefinesTable()
+    if type(refines) == "table" then
+        for plantKey, entry in pairs(refines) do
+            if type(entry) == "table" then
+                local plantUid = tonumber(plantKey) or 0
+                local seedUid = tonumber(entry.seedUid) or 0
+                local plantSample = BagSample(plantUid)
+                local req = ItemSkillReq(plantSample or {})
+                if req < 1 and seedUid > 0 then
+                    req = ItemSkillReq(BagSample(seedUid) or {})
+                end
+                local role, effectId = roleEffectForUid(plantUid > 0 and plantUid or seedUid)
+                NoteSeedPlant(families, seedUid, plantUid, req, plantSample and plantSample.name, role, effectId)
+            end
+        end
+    end
+
+    local function considerItem(item)
+        if type(item) ~= "table" then
+            return
+        end
+        local uid = tonumber(item.uniqueID) or tonumber(item.uid) or 0
+        if uid <= 0 then
+            return
+        end
+        if SM.IsSeedPacketUid and SM.IsSeedPacketUid(uid) then
+            return
+        end
+        local req = ItemSkillReq(item)
+        if req < 1 then
+            return
+        end
+        if IsBagSeedOrSporeItem(item) then
+            local plantUid = tonumber(SM.PrimaryPlantForSeed and SM.PrimaryPlantForSeed(uid)) or 0
+            local role, effectId = roleEffectForUid(plantUid > 0 and plantUid or uid)
+            NoteSeedPlant(families, uid, plantUid, req, item.name, role, effectId)
+        elseif SM.ItemLooksLikeRefinablePlant and SM.ItemLooksLikeRefinablePlant(item) == true then
+            local seedUid = 0
+            if SM.ResolveSeedUidForPlant then
+                seedUid = tonumber(SM.ResolveSeedUidForPlant(uid, nil)) or 0
+            end
+            local role, effectId = roleEffectForUid(uid)
+            NoteSeedPlant(families, seedUid, uid, req, item.name, role, effectId)
+        end
+    end
+
+    local Inv = StockPiler3.Inventory
+    if Inv and Inv.ForEachItem then
+        Inv.ForEachItem(considerItem)
+    end
+
+    local items = StockPiler3.Account and StockPiler3.Account.items
+    if type(items) == "table" then
+        for key, row in pairs(items) do
+            if type(row) == "table" then
+                if row.uniqueID == nil and tonumber(key) then
+                    row = { uniqueID = tonumber(key), name = row.name, craftingSkillRequirement = row.craftingSkillRequirement }
+                end
+                considerItem(row)
+            end
+        end
+    end
+
+    local VA = StockPiler3.VendorAdapter
+    if VA and VA.GetMatchIndex then
+        local index = VA.GetMatchIndex()
+        if type(index) == "table" and type(index.rows) == "table" then
+            for i = 1, #index.rows do
+                local row = index.rows[i]
+                considerItem(row and row.item)
+            end
+        end
+    end
+
+    for _, bucket in pairs(families) do
+        SortRungs(bucket.rungs)
+    end
+    return families
+end
+
+function SM.GetFamilyLadder(familyKey)
+    familyKey = tostring(familyKey or "")
+    if familyKey == "" then
+        return nil
+    end
+    local all = SM.BuildAllFamilyLadders()
+    return all[familyKey]
+end
+
+function SM.GetFamilyLadderForSpec(spec)
+    local key = SM.FamilyKeyFromSpec(spec)
+    if not key then
+        return nil
+    end
+    return SM.GetFamilyLadder(key)
+end
+
+--- Merge all role/effect buckets that share a genus into one climb ladder.
+--- Needed when L1 vendor seed is labeled ingredient and the watch plant is extender
+--- (e.g. Gobswort Spore @1 vs Taut Gobswort @200).
+function SM.GetGenusLadder(genus)
+    genus = string.lower(tostring(genus or ""))
+    if genus == "" then
+        return nil
+    end
+    local all = SM.BuildAllFamilyLadders()
+    local merged = nil
+    local roles = {}
+    for _, bucket in pairs(all) do
+        if type(bucket) == "table" and tostring(bucket.genus or "") == genus then
+            if type(merged) ~= "table" then
+                merged = {
+                    key = genus .. "|*|0",
+                    genus = genus,
+                    role = tostring(bucket.role or "unknown"),
+                    effectId = tonumber(bucket.effectId) or 0,
+                    rungs = {},
+                    merged = true,
+                }
+            end
+            local role = tostring(bucket.role or "")
+            if role ~= "" and role ~= "unknown" then
+                roles[role] = true
+                -- Prefer a concrete cult role over "ingredient" for buy-path labeling.
+                if merged.role == "unknown" or merged.role == "ingredient" then
+                    merged.role = role
+                end
+            end
+            if type(bucket.rungs) == "table" then
+                for i = 1, #bucket.rungs do
+                    local src = bucket.rungs[i]
+                    local rung = EnsureRung(merged, tonumber(src.skillReq) or 0)
+                    if rung then
+                        local seedUid = tonumber(src.seedUid) or 0
+                        local plantUid = tonumber(src.plantUid) or 0
+                        if seedUid > 0 and (tonumber(rung.seedUid) or 0) <= 0 then
+                            rung.seedUid = seedUid
+                        end
+                        if plantUid > 0 and (tonumber(rung.plantUid) or 0) <= 0 then
+                            rung.plantUid = plantUid
+                        end
+                        if src.name and src.name ~= "" and (rung.name == nil or rung.name == "") then
+                            rung.name = src.name
+                        end
+                    end
+                end
+            end
+        end
+    end
+    if type(merged) ~= "table" then
+        return nil
+    end
+    SortRungs(merged.rungs)
+    if next(roles) ~= nil then
+        -- Keep a stable preferred role for dump/status (extender/main/etc. over ingredient).
+        local prefer = { "extender", "stabilizer", "multiplier", "stimulant", "main", "goldweed" }
+        for i = 1, #prefer do
+            if roles[prefer[i]] == true then
+                merged.role = prefer[i]
+                break
+            end
+        end
+    end
+    return merged
+end
+
+function SM.GetGenusLadderForSpec(spec)
+    if type(spec) ~= "table" then
+        return nil
+    end
+    local _, genus = SM.FamilyKeyFromSpec(spec)
+    if not genus or genus == "" then
+        genus = SM.GenusKeyFromName(spec.name)
+    end
+    if (not genus or genus == "") then
+        local uid = tonumber(spec.uid) or tonumber(spec.uniqueID) or tonumber(spec.boundUid) or 0
+        if uid > 0 then
+            local sample = BagSample(uid)
+            genus = SM.GenusKeyFromName(sample and sample.name)
+        end
+    end
+    return SM.GetGenusLadder(genus)
+end
+
+--- Best owned (bag) seed on the ladder with skillReq <= climbCap.
+--- Skips infertile climb seeds. Prefers highest skillReq then Eternal tier.
+function SM.BestOwnedSeedOnLadder(ladder, climbCap, opts)
+    opts = type(opts) == "table" and opts or {}
+    if type(ladder) ~= "table" or type(ladder.rungs) ~= "table" then
+        return nil
+    end
+    climbCap = tonumber(climbCap) or 0
+    if climbCap < 1 then
+        return nil
+    end
+    local Inv = StockPiler3.Inventory
+    local best = nil
+    local bestScore = -1
+    for i = 1, #ladder.rungs do
+        local rung = ladder.rungs[i]
+        local req = tonumber(rung.skillReq) or 0
+        if req >= 1 and req <= climbCap then
+            local seedUid = tonumber(rung.seedUid) or 0
+            if seedUid > 0 and not (SM.IsInfertileSeed and SM.IsInfertileSeed(seedUid)) then
+                local count = Inv and Inv.CountByUid and tonumber(Inv.CountByUid(seedUid)) or 0
+                if count > 0 then
+                    if opts.mainsOnly == true then
+                        local role = tostring(ladder.role or "")
+                        if role ~= "" and role ~= "main" and role ~= "unknown" then
+                            count = 0
+                        end
+                    end
+                end
+                if count > 0 then
+                    local tier = SeedReplantTier(seedUid)
+                    local score = (req * 100000) + (tier * 1000) + count
+                    if score > bestScore then
+                        bestScore = score
+                        best = {
+                            seedUid = seedUid,
+                            plantUid = tonumber(rung.plantUid) or 0,
+                            skillReq = req,
+                            count = count,
+                            familyKey = ladder.key,
+                            genus = ladder.genus,
+                            role = ladder.role,
+                        }
+                    end
+                end
+            end
+        end
+    end
+    return best
+end
+
+--- Refinable plant on the ladder with skillReq > ownedSeedReq and <= climbCap.
+function SM.BestUpgradePlantOnLadder(ladder, climbCap, ownedSeedReq, opts)
+    opts = type(opts) == "table" and opts or {}
+    if type(ladder) ~= "table" or type(ladder.rungs) ~= "table" then
+        return nil
+    end
+    climbCap = tonumber(climbCap) or 0
+    ownedSeedReq = tonumber(ownedSeedReq) or 0
+    if climbCap < 1 then
+        return nil
+    end
+    local Refine = StockPiler3.Refine
+    local Items = StockPiler3.Items
+    local best = nil
+    local bestReq = -1
+    for i = 1, #ladder.rungs do
+        local rung = ladder.rungs[i]
+        local req = tonumber(rung.skillReq) or 0
+        local plantUid = tonumber(rung.plantUid) or 0
+        if plantUid > 0 and req > ownedSeedReq and req <= climbCap then
+            if opts.mainsOnly == true then
+                local role = tostring(ladder.role or "")
+                if role ~= "" and role ~= "main" and role ~= "unknown" then
+                    plantUid = 0
+                end
+            end
+            if plantUid > 0 and Refine and Refine.CountRefinablePlants then
+                local spec = Items and Items.ToSpec and Items.ToSpec(plantUid) or nil
+                local refinable = tonumber(Refine.CountRefinablePlants(plantUid, spec)) or 0
+                if refinable > 0 and req > bestReq then
+                    bestReq = req
+                    best = {
+                        seedUid = tonumber(rung.seedUid) or 0,
+                        plantUid = plantUid,
+                        skillReq = req,
+                        refinable = refinable,
+                        familyKey = ladder.key,
+                        genus = ladder.genus,
+                        role = ladder.role,
+                        upgrade = true,
+                    }
+                end
+            end
+        end
+    end
+    return best
+end
+
+--- Lowest buyable seed rung on ladder (usually skillReq 1), skipping infertile.
+function SM.LowestBuySeedOnLadder(ladder)
+    if type(ladder) ~= "table" or type(ladder.rungs) ~= "table" then
+        return nil
+    end
+    for i = 1, #ladder.rungs do
+        local rung = ladder.rungs[i]
+        local seedUid = tonumber(rung.seedUid) or 0
+        local req = tonumber(rung.skillReq) or 0
+        if seedUid > 0 and req >= 1 and not (SM.IsInfertileSeed and SM.IsInfertileSeed(seedUid)) then
+            return {
+                seedUid = seedUid,
+                plantUid = tonumber(rung.plantUid) or 0,
+                skillReq = req,
+                familyKey = ladder.key,
+                genus = ladder.genus,
+                role = ladder.role,
+            }
+        end
+    end
+    return nil
+end
+
+function SM.DumpFamilies(emit)
+    emit = emit or print
+    local all = SM.BuildAllFamilyLadders()
+    local keys = {}
+    for k in pairs(all) do
+        keys[#keys + 1] = k
+    end
+    table.sort(keys)
+    emit("--- seed families (" .. tostring(#keys) .. ") ---")
+    for i = 1, #keys do
+        local bucket = all[keys[i]]
+        local parts = {}
+        for r = 1, #bucket.rungs do
+            local rung = bucket.rungs[r]
+            parts[#parts + 1] = string.format(
+                "%d:s%d/p%d",
+                tonumber(rung.skillReq) or 0,
+                tonumber(rung.seedUid) or 0,
+                tonumber(rung.plantUid) or 0
+            )
+        end
+        emit(string.format(
+            "  %s [%s/%s/fx%s] %s",
+            tostring(bucket.key),
+            tostring(bucket.genus),
+            tostring(bucket.role),
+            tostring(bucket.effectId),
+            table.concat(parts, " ")
+        ))
+    end
+end

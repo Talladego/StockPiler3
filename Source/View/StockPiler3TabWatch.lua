@@ -21,6 +21,7 @@ local SEED_BUFFER_ENABLE_WIN = "SP3TabWatchSeedBufferEnable"
 local COMBAT_PAUSE_WIN = "SP3TabWatchCombatPause"
 local SKILLUP_CULT_WIN = "SP3TabWatchSkillUpCult"
 local SKILLUP_APO_WIN = "SP3TabWatchSkillUpApo"
+local UPGRADE_SEEDS_WIN = "SP3TabWatchUpgradeSeeds"
 
 local COLOR_OK = { 80, 200, 80 }
 local COLOR_WARN = { 220, 180, 60 }
@@ -134,6 +135,7 @@ local function ApplyStatusColor(labelWin, statusKey)
     elseif statusKey == "ready_to_craft_shared"
         or statusKey == "restocking"
         or statusKey == "need_seeds"
+        or statusKey == "upgrading_seed"
         or statusKey == "refining"
         or statusKey == "wait_cult"
         or statusKey == "seed_buffer"
@@ -640,6 +642,20 @@ local function UpdateSeedBufferEnableCheckbox()
     syncingUi = false
 end
 
+local function UpdateUpgradeSeedsCheckbox()
+    if not DoesWindowExist(UPGRADE_SEEDS_WIN) then
+        return
+    end
+    local canGrow = CanAutoGrowUi()
+    local US = StockPiler3.UpgradeSeed
+    local on = canGrow and US and US.IsEnabled and US.IsEnabled() == true
+    syncingUi = true
+    ButtonSetCheckButtonFlag(UPGRADE_SEEDS_WIN, true)
+    ButtonSetPressedFlag(UPGRADE_SEEDS_WIN, on == true)
+    ButtonSetDisabledFlag(UPGRADE_SEEDS_WIN, not canGrow)
+    syncingUi = false
+end
+
 local function UpdateSeedBufferLabel()
     local buf = StockPiler3.Watch and StockPiler3.Watch.GetSeedBufferMin
         and StockPiler3.Watch.GetSeedBufferMin() or 5
@@ -805,6 +821,9 @@ function StockPiler3TabWatch.Initialize()
     if DoesWindowExist("SP3TabWatchSkillUpApoLabel") then
         LabelSetText("SP3TabWatchSkillUpApoLabel", T("watch.skillup_apo"))
     end
+    if DoesWindowExist("SP3TabWatchUpgradeSeedsLabel") then
+        LabelSetText("SP3TabWatchUpgradeSeedsLabel", T("watch.upgrade_seeds"))
+    end
     TintStepper("SP3TabWatchSeedBufferChipBg")
     TintStepper("SP3TabWatchReserveChipBg")
     TintStepper("SP3TabWatchBudgetChipBg")
@@ -840,11 +859,14 @@ function StockPiler3TabWatch.RefreshSkillGates()
     local skillUpApo = SkillUp and SkillUp.IsApoEnabled and SkillUp.IsApoEnabled() == true
     local cultVis = SkillUp and SkillUp.IsCultVisible and SkillUp.IsCultVisible() == true
     local apoVis = SkillUp and SkillUp.IsApoVisible and SkillUp.IsApoVisible() == true
+    local UpgradeSeed = StockPiler3.UpgradeSeed
+    local upgradeOn = UpgradeSeed and UpgradeSeed.IsEnabled and UpgradeSeed.IsEnabled() == true
     local gatesKey = table.concat({
         tostring(canGrow), tostring(canBuy), tostring(autoGrow), tostring(additives),
         tostring(autoBuy), tostring(combatPause), tostring(seedBufOn), tostring(seedBuf),
         tostring(reserve), tostring(budget), tostring(spent),
         tostring(cultVis), tostring(apoVis), tostring(skillUpCult), tostring(skillUpApo),
+        tostring(upgradeOn),
     }, ":")
     if StockPiler3TabWatch._skillGatesKey == gatesKey then
         return
@@ -857,6 +879,7 @@ function StockPiler3TabWatch.RefreshSkillGates()
     UpdateAutoBuyCheckbox()
     UpdateCombatPauseCheckbox()
     UpdateSeedBufferEnableCheckbox()
+    UpdateUpgradeSeedsCheckbox()
     UpdateSeedBufferLabel()
     UpdateAutoBuyChips()
     UpdateSkillUpCheckboxes()
@@ -1110,6 +1133,29 @@ function StockPiler3TabWatch.OnToggleSeedBuffer()
     NotifySettings(T("watch.seed_buffer", { state = OnOff(row.growSeedBufferEnabled) }))
     AfterWatchSettingsChanged()
     UpdateSeedBufferEnableCheckbox()
+end
+
+function StockPiler3TabWatch.OnToggleUpgradeSeeds()
+    if syncingUi then
+        return
+    end
+    if not CanAutoGrowUi() then
+        UpdateUpgradeSeedsCheckbox()
+        return
+    end
+    local US = StockPiler3.UpgradeSeed
+    local on = ButtonGetPressedFlag(UPGRADE_SEEDS_WIN) == true
+    if US and US.SetEnabled then
+        US.SetEnabled(on)
+    else
+        local row = CharRow(true)
+        if type(row) == "table" then
+            row.upgradeSeedsEnabled = on
+        end
+    end
+    NotifySettings(T("watch.upgrade_seeds_state", { state = OnOff(on) }))
+    AfterWatchSettingsChanged()
+    UpdateUpgradeSeedsCheckbox()
 end
 
 function StockPiler3TabWatch.OnToggleAutoBuy()
@@ -1441,6 +1487,7 @@ local STATUS_TIP_COLORS = {
     need_skill = COLOR_BLOCK,
     buy_ingredients = COLOR_BLOCK,
     need_seeds = COLOR_WARN,
+    upgrading_seed = COLOR_WARN,
 }
 
 local function StatusTitleColor(statusKey)
@@ -1701,10 +1748,14 @@ local function BuildStatusTooltipRows(data)
                 haveColor = RgbDef(COLOR_OK)
                 noteKind = "stocked"
                 statusNote = T("watch.note.stocked")
-            elseif statusKey == "need_seeds" then
+            elseif statusKey == "need_seeds" or statusKey == "upgrading_seed" then
                 haveColor = RgbDef(COLOR_WARN)
                 noteKind = "warning"
-                statusNote = T("watch.note.buy_seeds")
+                if statusKey == "upgrading_seed" then
+                    statusNote = data.statusText or T("plan.status.upgrading_seed")
+                else
+                    statusNote = T("watch.note.buy_seeds")
+                end
             elseif statusKey == "restocking" then
                 -- Match potion tip plant-slot warn tint while AutoGrow can progress.
                 haveColor = RgbDef(COLOR_WARN)
@@ -2091,6 +2142,14 @@ function StockPiler3TabWatch.OnMouseOverSeedBufferEnable()
         return
     end
     Tip(T("tip.watch.seed_buffer"))
+end
+
+function StockPiler3TabWatch.OnMouseOverUpgradeSeeds()
+    if not CanAutoGrowUi() then
+        Tip(T("tip.watch.cult_required"))
+        return
+    end
+    Tip(T("tip.watch.upgrade_seeds"))
 end
 
 function StockPiler3TabWatch.OnMouseOverSeedBuffer()

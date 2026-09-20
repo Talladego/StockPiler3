@@ -139,7 +139,7 @@ local function StoreItemRejectedForBuy(item, job)
     if IsCultivationAdditiveStoreItem(item) then
         return true
     end
-    if type(job) == "table" and job.skillUp == true then
+    if type(job) == "table" and (job.skillUp == true or job.upgradeSeed == true) then
         return false
     end
     if Buy._allowPlantBuys ~= true and IsGrowableStoreItem(item) then
@@ -694,8 +694,13 @@ function Buy.CollectBuyJobs()
             skillUpHash = table.concat(parts, "|")
         end
     end
+    local UpgradeSeed = StockPiler3.UpgradeSeed
+    local upgradeHash = "0"
+    if UpgradeSeed and UpgradeSeed.IsEnabled and UpgradeSeed.IsEnabled() == true then
+        upgradeHash = "1"
+    end
     local cacheKey = tostring(snapGen) .. ":" .. tostring(watchGen) .. ":" .. tostring(skillHash)
-        .. ":" .. tostring(Buy._allowPlantBuys and 1 or 0) .. ":" .. skillUpHash
+        .. ":" .. tostring(Buy._allowPlantBuys and 1 or 0) .. ":" .. skillUpHash .. ":" .. upgradeHash
     if type(Buy._jobsCache) == "table" and Buy._jobsCacheKey == cacheKey then
         return Buy._jobsCache
     end
@@ -719,7 +724,7 @@ function Buy.CollectBuyJobs()
         for i = 1, #jobs do
             local job = jobs[i]
             local growable = job and (job.growable == true or job.isGrowable == true)
-            if not growable or (job and job.skillUp == true) then
+            if not growable or (job and (job.skillUp == true or job.upgradeSeed == true)) then
                 filtered[#filtered + 1] = job
             end
         end
@@ -732,6 +737,15 @@ function Buy.CollectBuyJobs()
         local skillJobs = SkillUp.CollectBuyJobs() or {}
         for i = 1, #skillJobs do
             jobs[#jobs + 1] = skillJobs[i]
+        end
+    end
+
+    -- Upgrade Seed: buy lowest family rung / top up climb seed.
+    local UpgradeSeed = StockPiler3.UpgradeSeed
+    if UpgradeSeed and UpgradeSeed.CollectBuyJobs then
+        local upJobs = UpgradeSeed.CollectBuyJobs() or {}
+        for i = 1, #upJobs do
+            jobs[#jobs + 1] = upJobs[i]
         end
     end
 

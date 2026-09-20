@@ -380,6 +380,195 @@ function Watch.SetAutoGrow(recipeKey, enabled)
     return watch
 end
 
+local function SkillsReady()
+    local Caps = StockPiler3.TradeSkillCaps
+    if Caps and Caps.AreTradeSkillsReady then
+        return Caps.AreTradeSkillsReady() == true
+    end
+    return (Caps and Caps.GetApoSkill and Caps.GetApoSkill() or 0) > 0
+        or (Caps and Caps.GetCultSkill and Caps.GetCultSkill() or 0) > 0
+end
+
+local function NotifySkillBlocked(kind, need, have)
+    local key = kind == "cult" and "watch.need_cult_skill" or "watch.need_apo_skill"
+    local msg = nil
+    if StockPiler3.T then
+        msg = StockPiler3.T(key, {
+            need = tostring(need or 0),
+            have = tostring(have or 0),
+        })
+    end
+    if msg == nil then
+        msg = L"Need higher crafting skill."
+    end
+    if StockPiler3.Ui and StockPiler3.Ui.Print then
+        StockPiler3.Ui.Print(msg)
+    elseif StockPiler3.Debug and StockPiler3.Debug.Print then
+        StockPiler3.Debug.Print(msg)
+    end
+end
+
+--- Apo skill required to craft this potion watch (0 if unknown).
+function Watch.PotionSkillNeed(recipeKey)
+    local RS = StockPiler3.RecipeSpec
+    if not RS then
+        return 0
+    end
+    local recipe = nil
+    if RS.RecipeSpecForPotion then
+        recipe = RS.RecipeSpecForPotion(recipeKey)
+    end
+    if type(recipe) ~= "table" and RS.ResolveWatchPotion then
+        local resolved = RS.ResolveWatchPotion(recipeKey)
+        if type(resolved) == "table" and resolved.recipeSpecKey and RS.GetRecipe then
+            recipe = RS.GetRecipe(resolved.recipeSpecKey)
+            if type(recipe) == "table" and (tonumber(resolved.outputUid) or 0) > 0 then
+                recipe.outputUid = resolved.outputUid
+            end
+        end
+    end
+    if RS.RecipeSkillRequirements then
+        local req = RS.RecipeSkillRequirements(recipe)
+        if type(req) == "table" then
+            local need = tonumber(req.apothecary) or tonumber(req.apo) or 0
+            if need > 0 then
+                return need
+            end
+        end
+    end
+    if RS.ResolveWatchPotion then
+        local resolved = RS.ResolveWatchPotion(recipeKey)
+        local uid = type(resolved) == "table" and (tonumber(resolved.outputUid) or 0) or 0
+        if uid > 0 and StockPiler3.Items and StockPiler3.Items.GetByUid then
+            local row = StockPiler3.Items.GetByUid(uid)
+            if type(row) == "table" then
+                return tonumber(row.skillReq) or tonumber(row.skillLevel)
+                    or tonumber(row.craftingSkillRequirement) or 0
+            end
+        end
+    end
+    return 0
+end
+
+--- Cult skill required to grow this plant watch (0 if unknown).
+function Watch.PlantSkillNeed(plantKey)
+    local uid = Watch.ParsePlantKey(plantKey)
+    if uid <= 0 then
+        return 0
+    end
+    if StockPiler3.Items and StockPiler3.Items.GetByUid then
+        local row = StockPiler3.Items.GetByUid(uid)
+        if type(row) == "table" then
+            local need = tonumber(row.skillReq) or tonumber(row.skillLevel)
+                or tonumber(row.craftingSkillRequirement) or 0
+            if need > 0 then
+                return need
+            end
+        end
+    end
+    if StockPiler3.Items and StockPiler3.Items.ToSpec then
+        local spec = StockPiler3.Items.ToSpec(uid)
+        if type(spec) == "table" then
+            return tonumber(spec.skillLevel) or tonumber(spec.craftingSkillRequirement)
+                or tonumber(spec.skillReq) or 0
+        end
+    end
+    return 0
+end
+
+--- True when potion watch may be enabled at current Apo skill.
+--- Returns ok, need, have. When skills are not ready yet, returns true (defer).
+function Watch.CanEnablePotionWatch(recipeKey)
+    if not SkillsReady() then
+        return true, 0, 0
+    end
+    local need = Watch.PotionSkillNeed(recipeKey)
+    if need <= 0 then
+        return true, 0, 0
+    end
+    local Caps = StockPiler3.TradeSkillCaps
+    local have = Caps and Caps.GetApoSkill and tonumber(Caps.GetApoSkill()) or 0
+    if have < need then
+        return false, need, have
+    end
+    return true, need, have
+end
+
+--- True when plant watch may be enabled at current Cult skill.
+function Watch.CanEnablePlantWatch(plantKey)
+    if not SkillsReady() then
+        return true, 0, 0
+    end
+    local need = Watch.PlantSkillNeed(plantKey)
+    if need <= 0 then
+        return true, 0, 0
+    end
+    local Caps = StockPiler3.TradeSkillCaps
+    local have = Caps and Caps.GetCultSkill and tonumber(Caps.GetCultSkill()) or 0
+    if have < need then
+        return false, need, have
+    end
+    return true, need, have
+end
+
+--- Disable enabled watches whose craft/grow skill exceeds current levels.
+--- opts.notify == true prints a one-line summary when any were disabled.
+--- Returns count disabled.
+function Watch.DisableOverSkillWatches(opts)
+    opts = type(opts) == "table" and opts or {}
+    if not SkillsReady() then
+        return 0
+    end
+    local disabledN = 0
+    local watches = Watch.GetWatches and Watch.GetWatches() or nil
+    if type(watches) == "table" then
+        for key, watch in pairs(watches) do
+            if type(watch) == "table" and watch.enabled == true then
+                local ok = Watch.CanEnablePotionWatch(key)
+                if ok ~= true then
+                    watch.enabled = false
+                    disabledN = disabledN + 1
+                end
+            end
+        end
+    end
+    local plants = Watch.GetPlantWatches and Watch.GetPlantWatches() or nil
+    if type(plants) == "table" then
+        for key, watch in pairs(plants) do
+            if type(watch) == "table" and watch.enabled == true then
+                local ok = Watch.CanEnablePlantWatch(key)
+                if ok ~= true then
+                    watch.enabled = false
+                    disabledN = disabledN + 1
+                end
+            end
+        end
+    end
+    if disabledN > 0 then
+        Watch.DensifyPriorityTiers()
+        Watch.ClampAllPriorityTiers()
+        Watch.BumpGen()
+        if opts.notify == true then
+            local msg = nil
+            if StockPiler3.T then
+                msg = StockPiler3.T("watch.disabled_over_skill", { count = tostring(disabledN) })
+            end
+            if msg == nil then
+                msg = L"Disabled watches above your crafting skill."
+            end
+            if StockPiler3.Ui and StockPiler3.Ui.Print then
+                StockPiler3.Ui.Print(msg)
+            elseif StockPiler3.Debug and StockPiler3.Debug.Print then
+                StockPiler3.Debug.Print(msg)
+            end
+        end
+        if StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Invalidate then
+            StockPiler3.PlanSnapshot.Invalidate()
+        end
+    end
+    return disabledN
+end
+
 function Watch.SetEnabled(recipeKey, enabled, opts)
     opts = type(opts) == "table" and opts or {}
     if enabled == true and opts.fromPotionsToggle == true then
@@ -387,6 +576,21 @@ function Watch.SetEnabled(recipeKey, enabled, opts)
     end
     local watch = Watch.EnsureWatch(recipeKey, opts)
     local wasEnabled = watch.enabled == true
+    if enabled == true then
+        local ok, need, have = Watch.CanEnablePotionWatch(recipeKey)
+        if ok ~= true then
+            watch.enabled = false
+            if opts.silent ~= true then
+                NotifySkillBlocked("apo", need, have)
+            end
+            if wasEnabled then
+                Watch.DensifyPriorityTiers()
+                Watch.ClampAllPriorityTiers()
+                Watch.BumpGen()
+            end
+            return watch, false, { reason = "need_skill", skill = "apo", need = need, have = have }
+        end
+    end
     watch.enabled = enabled == true
     if enabled == true and opts.fromPotionsToggle == true then
         watch.autoGrow = true
@@ -403,7 +607,7 @@ function Watch.SetEnabled(recipeKey, enabled, opts)
         end
     end
     Watch.BumpGen()
-    return watch
+    return watch, true
 end
 
 function Watch.ClearAll()
@@ -668,12 +872,20 @@ end
 function Watch.SetPlantEnabled(plantKey, enabled, opts)
     opts = type(opts) == "table" and opts or {}
     local watch = Watch.EnsurePlantWatch(plantKey, opts)
-    watch.enabled = enabled == true
     if enabled == true then
+        local ok, need, have = Watch.CanEnablePlantWatch(plantKey)
+        if ok ~= true then
+            watch.enabled = false
+            if opts.silent ~= true then
+                NotifySkillBlocked("cult", need, have)
+            end
+            return watch, false, { reason = "need_skill", skill = "cult", need = need, have = have }
+        end
         watch.autoGrow = true
     end
+    watch.enabled = enabled == true
     Watch.BumpGen()
-    return watch
+    return watch, true
 end
 
 function Watch.SetPlantAutoGrow(plantKey, enabled)

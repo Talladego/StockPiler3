@@ -1431,16 +1431,25 @@ local function CollectAutoGrowSeedLines()
                                 or (MS and MS.ProductKey and MS.ProductKey(spec))
                                 or ("plant:" .. tostring(plantUid))
                             if productKey ~= "" and seen[productKey] ~= true then
-                                local seed = SM.ResolveSeedForSpec and SM.ResolveSeedForSpec(spec)
                                 local seedUid = 0
-                                if type(seed) == "table" then
-                                    seedUid = tonumber(seed.uniqueID) or 0
+                                local seed = nil
+                                if SM.ResolveSeedUidForPlant then
+                                    seedUid = tonumber(SM.ResolveSeedUidForPlant(plantUid, spec)) or 0
+                                end
+                                if seedUid <= 0 and SM.ResolveSeedForSpec then
+                                    seed = SM.ResolveSeedForSpec(spec)
+                                    if type(seed) == "table" then
+                                        seedUid = tonumber(seed.uniqueID) or 0
+                                    end
                                 end
                                 if seedUid <= 0 and SM.GetSeedUidsForPlant then
                                     local seeds = SM.GetSeedUidsForPlant(plantUid)
                                     if type(seeds) == "table" and #seeds > 0 then
                                         seedUid = tonumber(seeds[1]) or 0
                                     end
+                                end
+                                if seedUid > 0 then
+                                    seed = seed or { uniqueID = seedUid }
                                 end
                                 seen[productKey] = true
                                 lines[#lines + 1] = {
@@ -1779,7 +1788,9 @@ local function ReconcileAutoGrowStatus(row)
         return false
     end
     local key = tostring(row.statusKey or "")
-    if key ~= "enable_autogrow" and key ~= "restocking" and key ~= "need_seeds" then
+    if key ~= "enable_autogrow" and key ~= "restocking" and key ~= "need_seeds"
+        and key ~= "upgrading_seed"
+    then
         return false
     end
     if not CanAutoGrowSkill() then
@@ -1795,7 +1806,7 @@ local function ReconcileAutoGrowStatus(row)
     if armed and key == "enable_autogrow" then
         row.statusKey = "restocking"
         row.statusText = T("plan.status.restocking")
-    elseif (not armed) and (key == "restocking" or key == "need_seeds") then
+    elseif (not armed) and (key == "restocking" or key == "need_seeds" or key == "upgrading_seed") then
         row.statusKey = "enable_autogrow"
         row.statusText = T("plan.status.enable_autogrow")
         row.statusLines = nil
@@ -1822,6 +1833,55 @@ local function ApplySeedBufferStatus(row)
     local Watch = StockPiler3.Watch
     if Watch and Watch.GetSeedBufferMin then
         buffer = tonumber(Watch.GetSeedBufferMin()) or 5
+    end
+    local US = StockPiler3.UpgradeSeed
+    local climb = nil
+    if US and US.IsEnabled and US.IsEnabled() == true then
+        if row.isPlantWatch == true or row.kind == "plant" or (tonumber(row.plantUid) or 0) > 0 then
+            climb = US.StatusForPlant and US.StatusForPlant(row.plantUid, row.spec) or nil
+        end
+        if type(climb) ~= "table" and US.StatusForWatch then
+            climb = US.StatusForWatch()
+        end
+        if type(climb) ~= "table" then
+            climb = US.GetActiveStatus and US.GetActiveStatus() or nil
+        end
+    end
+    if type(climb) == "table" and (climb.why == "planting" or climb.why == "refining"
+        or climb.why == "need_buy" or climb.why == "need_cult" or climb.why == "no_family"
+        or climb.why == "climbing")
+    then
+        row.statusKey = "upgrading_seed"
+        local genus = tostring(climb.genus or "seed")
+        local haveReq = tonumber(climb.haveReq) or 0
+        local needReq = tonumber(climb.needReq) or 0
+        local climbCap = tonumber(climb.climbCap) or 0
+        if climbCap < 1 then
+            climbCap = US.ClimbCap and US.ClimbCap(needReq) or needReq
+        end
+        local capShow = climbCap
+        if needReq > 0 and needReq < capShow then
+            capShow = needReq
+        end
+        row.statusText = T("plan.status.upgrading_seed_progress", {
+            genus = genus,
+            have = tostring(haveReq),
+            cap = tostring(capShow),
+        })
+        local lines = {
+            T("tip.watch.upgrade_seeds"),
+        }
+        if climb.why == "need_cult" or (needReq > 0 and climbCap > 0 and climbCap < needReq) then
+            lines[#lines + 1] = T("plan.status.upgrading_seed_cult_note", {
+                need = tostring(needReq),
+                floor = tostring(climbCap),
+            })
+        elseif climb.why == "need_buy" then
+            lines[#lines + 1] = T("plan.status.upgrading_seed_buy_note")
+        end
+        row.statusLines = lines
+        row.craftableShared = false
+        return
     end
     row.statusKey = "need_seeds"
     row.statusText = T("plan.status.need_seeds")
@@ -3152,6 +3212,7 @@ local function PatchWatchRowsLiveCounts(rows, opts)
             if uid > 0 then
                 local have = tonumber(Inv.CountByUid(uid)) or 0
                 local prevKey = tostring(row.statusKey or "")
+                local prevText = row.statusText
                 row.potionHave = have
                 row.stockText = towstring(tostring(have))
                 local min = tonumber(row.potionMin) or tonumber(row.target) or 0
@@ -3160,7 +3221,7 @@ local function PatchWatchRowsLiveCounts(rows, opts)
                 row.targetText = towstring(tostring(min))
                 ApplyPlantWatchStatus(row)
                 local newKey = tostring(row.statusKey or "")
-                if syncSnapshot and newKey ~= prevKey then
+                if syncSnapshot and (newKey ~= prevKey or row.statusText ~= prevText) then
                     PatchPlanSnapshotLiveStatus(row)
                 end
                 if newKey ~= prevKey then

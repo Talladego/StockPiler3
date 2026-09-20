@@ -525,20 +525,70 @@ function Inv.NormalizeItemDataForTooltip(itemData)
     if data.armor == nil then
         data.armor = 0
     end
+    if data.dps == nil then
+        data.dps = 0
+    end
+    if data.speed == nil then
+        data.speed = 0
+    end
+    if data.blockRating == nil then
+        data.blockRating = 0
+    end
     if data.maxEquip == nil then
         data.maxEquip = 0
     end
     if tonumber(data.iLevel) == nil then
         data.iLevel = tonumber(data.level) or 0
     end
+    -- DataUtils.RenownIsEnoughForItem / LevelIsEnoughForItem compare > 0 (nil throws).
+    if tonumber(data.level) == nil then
+        data.level = tonumber(data.iLevel) or 0
+    end
+    if tonumber(data.renown) == nil then
+        data.renown = 0
+    end
+    if tonumber(data.itemSet) == nil then
+        data.itemSet = 0
+    end
     if data.name == nil then
         data.name = L""
+    end
+    -- LabelSetText(ItemTooltipDescription, ...) rejects nil.
+    if data.description == nil then
+        data.description = L""
     end
     if data.iconNum == nil then
         data.iconNum = 0
     end
     if data.type == nil then
         data.type = tonumber(data.itemType) or 0
+    end
+    if data.craftingSkillRequirement == nil then
+        data.craftingSkillRequirement = 0
+    end
+    if data.rarity == nil then
+        data.rarity = 0
+    end
+    if data.dyeTintA == nil then
+        data.dyeTintA = 0
+    end
+    if data.dyeTintB == nil then
+        data.dyeTintB = 0
+    end
+    if data.tintA == nil then
+        data.tintA = 0
+    end
+    if data.tintB == nil then
+        data.tintB = 0
+    end
+    if data.isTwoHanded == nil then
+        data.isTwoHanded = false
+    end
+    if data.numEnhancementSlots == nil then
+        data.numEnhancementSlots = 0
+    end
+    if type(data.enhSlot) ~= "table" then
+        data.enhSlot = {}
     end
     return data
 end

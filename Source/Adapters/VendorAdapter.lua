@@ -30,6 +30,85 @@ local function TryCall(context, fn, ...)
 end
 
 --- Persist new store rows only (Touch once per new uid batch — no per-page spam).
+--- Only Cultivation / Apothecary craft mats — never mounts, dyes, junk.
+local function ApothecarySkillId()
+    return (GameData and GameData.TradeSkills and GameData.TradeSkills.APOTHECARY) or 4
+end
+
+local function CultivationSkillId()
+    return (GameData and GameData.TradeSkills and GameData.TradeSkills.CULTIVATION) or 3
+end
+
+local function CraftingFamilyBonus(item)
+    if type(item) ~= "table" then
+        return 0
+    end
+    local bonuses = item.craftingBonus or item.bonuses
+    if type(bonuses) ~= "table" then
+        return 0
+    end
+    for _, b in pairs(bonuses) do
+        if type(b) == "table" then
+            local ref = tonumber(b.bonusReference) or tonumber(b.reference) or 0
+            -- CRAFTING_FAMILY / trade skill family is bonus 5 in WAR apo tooling.
+            if ref == 5 then
+                return tonumber(b.bonusValue) or tonumber(b.value) or 0
+            end
+        end
+    end
+    if bonuses[5] ~= nil then
+        return tonumber(bonuses[5]) or 0
+    end
+    return 0
+end
+
+local function IsCraftRelevantVendorItem(item)
+    if type(item) ~= "table" then
+        return false
+    end
+    local cult = tonumber(item.cultivationType) or 0
+    if cult ~= 0 then
+        return true
+    end
+    local apo = ApothecarySkillId()
+    local cultSkill = CultivationSkillId()
+    local ts = tonumber(item.tradeSkill) or 0
+    if ts == apo or ts == cultSkill then
+        return true
+    end
+    local family = CraftingFamilyBonus(item)
+    if family == apo or family == cultSkill then
+        return true
+    end
+    local uid = tonumber(item.uniqueID) or tonumber(item.id) or 0
+    if uid > 0 and StockPiler3.Items and StockPiler3.Items.GetByUid then
+        local row = StockPiler3.Items.GetByUid(uid)
+        if type(row) == "table" then
+            if (tonumber(row.cultivationType) or 0) ~= 0 then
+                return true
+            end
+            local rts = tonumber(row.tradeSkill) or 0
+            if rts == apo or rts == cultSkill then
+                return true
+            end
+        end
+    end
+    local MS = StockPiler3.MaterialSpec
+    if MS and MS.FromItemData then
+        local ok, spec = pcall(MS.FromItemData, item)
+        if ok == true and type(spec) == "table" then
+            if (tonumber(spec.cultivationType) or 0) ~= 0 then
+                return true
+            end
+            local sts = tonumber(spec.tradeSkill) or 0
+            if sts == apo or sts == cultSkill then
+                return true
+            end
+        end
+    end
+    return false
+end
+
 local function LearnVendorRows(list)
     if type(list) ~= "table" then
         return 0
@@ -48,6 +127,9 @@ local function LearnVendorRows(list)
         if uid <= 0 then
             return
         end
+        if not IsCraftRelevantVendorItem(item) then
+            return
+        end
         -- Seed Items DB so fingerprint Matches can enrich thin store rows (flasks).
         if StockPiler3.Items and StockPiler3.Items.StoreItem then
             StockPiler3.Items.StoreItem(item, "vendor")
@@ -62,6 +144,7 @@ local function LearnVendorRows(list)
             iconNum = tonumber(item.iconNum) or 0,
             cost = tonumber(item.cost) or 0,
             cultivationType = tonumber(item.cultivationType) or 0,
+            tradeSkill = tonumber(item.tradeSkill) or CraftingFamilyBonus(item) or 0,
         }
         added = added + 1
     end

@@ -289,14 +289,55 @@ local function SuccessChanceAllowsLearn(chance)
     return chance == CSC.HIGH or chance == CSC.MEDIUM
 end
 
+local function LatchSkillUpOrigin()
+    local Brew = StockPiler3.Brew
+    local session = Brew and Brew.GetSession and Brew.GetSession() or nil
+    return type(session) == "table" and session.skillUp == true
+end
+
+--- Prefer the loaded brew-session recipe over a thin board snapshot.
+--- Returns materials, recipeKey, skillUpOrigin (or nil materials when unavailable).
+local function SessionRecipeLatch()
+    local Brew = StockPiler3.Brew
+    local session = Brew and Brew.GetSession and Brew.GetSession() or nil
+    if type(session) ~= "table" or type(session.recipe) ~= "table" then
+        return nil, nil, false
+    end
+    local materials = MaterialsFromSavedRecipe(session.recipe)
+    if type(materials) ~= "table" or #materials == 0 then
+        return nil, nil, false
+    end
+    local recipeKey = tostring(session.recipeSpecKey or "")
+    if recipeKey == "" and StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.RecipeSpecKey then
+        recipeKey = tostring(StockPiler3.RecipeSpec.RecipeSpecKey(materials) or "")
+    end
+    local skillUp = session.skillUp == true
+        or (type(session.recipe) == "table" and session.recipe.skillUpOrigin == true)
+    return materials, recipeKey, skillUp
+end
+
+local function MaterialsStability(materials)
+    local RS = StockPiler3.RecipeSpec
+    if not (RS and RS.MaterialsToSpecSlots and RS.SpecStabilityTotal) then
+        return 0
+    end
+    local slots = RS.MaterialsToSpecSlots(materials)
+    return tonumber(RS.SpecStabilityTotal(slots)) or 0
+end
+
 --- Keep a soft board snapshot while the apo recipe is loaded (VALID), so instant
 --- SUCCESS / bag-update / "You created" can still learn after the board clears.
 function BL.RefreshBoardSnapshot()
-    local slots = BL.CaptureApothecaryMaterials()
-    if slots == nil then
-        return false
+    local sessionMats, sessionKey, sessionSkillUp = SessionRecipeLatch()
+    local materials = sessionMats
+    local recipeKey = sessionKey or ""
+    if type(materials) ~= "table" then
+        local slots = BL.CaptureApothecaryMaterials()
+        if slots == nil then
+            return false
+        end
+        materials = AggregateMaterials(slots)
     end
-    local materials = AggregateMaterials(slots)
     local hasMain = false
     for i = 1, #materials do
         if materials[i].role == "main" then
@@ -307,10 +348,17 @@ function BL.RefreshBoardSnapshot()
     if not hasMain then
         return false
     end
+    if recipeKey == "" and StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.RecipeSpecKey then
+        recipeKey = tostring(StockPiler3.RecipeSpec.RecipeSpecKey(materials) or "")
+    end
+    local skillUpOrigin = sessionSkillUp == true or LatchSkillUpOrigin()
     BL._lastBoardMaterials = materials
+    BL._lastBoardRecipeKey = recipeKey
     BL._lastBoardPotionCounts = SnapshotPotionCounts()
     BL._lastBoardSuccessChance = LatchSuccessChance()
     BL._lastBoardAt = NowSec()
+    BL._lastBoardSkillUpOrigin = skillUpOrigin
+    BL._lastBoardFromSession = sessionMats ~= nil
     return true
 end
 
@@ -327,8 +375,8 @@ function BL.ArmPendingFromLastBoard()
         return false
     end
     local materials = BL._lastBoardMaterials
-    local recipeKey = ""
-    if StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.RecipeSpecKey then
+    local recipeKey = tostring(BL._lastBoardRecipeKey or "")
+    if recipeKey == "" and StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.RecipeSpecKey then
         recipeKey = StockPiler3.RecipeSpec.RecipeSpecKey(materials) or ""
     end
     BL._pendingCraft = {
@@ -336,17 +384,26 @@ function BL.ArmPendingFromLastBoard()
         recipeKey = recipeKey,
         potionCountsBefore = BL._lastBoardPotionCounts or {},
         successChance = tonumber(BL._lastBoardSuccessChance) or LatchSuccessChance(),
+        skillUpOrigin = BL._lastBoardSkillUpOrigin == true or LatchSkillUpOrigin(),
+        fromSessionRecipe = BL._lastBoardFromSession == true,
     }
     return true
 end
 
 function BL.BeginPendingCraft()
-    local slots = BL.CaptureApothecaryMaterials()
-    if slots == nil then
-        -- Instant craft may clear the board before PERFORMING; keep last board if fresh.
-        return BL.ArmPendingFromLastBoard() == true
+    local sessionMats, sessionKey, sessionSkillUp = SessionRecipeLatch()
+    local materials = sessionMats
+    local recipeKey = sessionKey or ""
+    local fromSession = sessionMats ~= nil
+    if type(materials) ~= "table" then
+        local slots = BL.CaptureApothecaryMaterials()
+        if slots == nil then
+            -- Instant craft may clear the board before PERFORMING; keep last board if fresh.
+            return BL.ArmPendingFromLastBoard() == true
+        end
+        materials = AggregateMaterials(slots)
+        fromSession = false
     end
-    local materials = AggregateMaterials(slots)
     local hasMain = false
     for i = 1, #materials do
         if materials[i].role == "main" then
@@ -358,21 +415,26 @@ function BL.BeginPendingCraft()
         BL._pendingCraft = nil
         return false
     end
-    local recipeKey = ""
-    if StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.RecipeSpecKey then
+    if recipeKey == "" and StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.RecipeSpecKey then
         recipeKey = StockPiler3.RecipeSpec.RecipeSpecKey(materials) or ""
     end
     local potionCounts = SnapshotPotionCounts()
     local successChance = LatchSuccessChance()
+    local skillUpOrigin = sessionSkillUp == true or LatchSkillUpOrigin()
     BL._lastBoardMaterials = materials
+    BL._lastBoardRecipeKey = recipeKey
     BL._lastBoardPotionCounts = potionCounts
     BL._lastBoardSuccessChance = successChance
     BL._lastBoardAt = NowSec()
+    BL._lastBoardSkillUpOrigin = skillUpOrigin
+    BL._lastBoardFromSession = fromSession
     BL._pendingCraft = {
         materials = materials,
         recipeKey = recipeKey,
         potionCountsBefore = potionCounts,
         successChance = successChance,
+        skillUpOrigin = skillUpOrigin,
+        fromSessionRecipe = fromSession,
     }
     return true
 end
@@ -456,19 +518,36 @@ function BL.CompletePendingCraftLearn(opts)
     end
     local RS = StockPiler3.RecipeSpec
     local ok = false
-    -- SP3 brew session: learn only the exact watched/saved recipe, never a partial board.
+    -- Prefer materials latched from the brew-session recipe (stable SkillUp / watch load).
+    -- Fall back to live session.recipe, then pending board snapshot.
+    local materials = pending.materials
     local Brew = StockPiler3.Brew
     local session = Brew and Brew.GetSession and Brew.GetSession() or nil
-    local intendedKey = type(session) == "table" and tostring(session.recipeSpecKey or "") or ""
-    local materials = pending.materials
-    if intendedKey ~= "" and type(session) == "table" and type(session.recipe) == "table" then
+    local intendedKey = tostring(pending.recipeKey or "")
+    if intendedKey == "" and type(session) == "table" then
+        intendedKey = tostring(session.recipeSpecKey or "")
+    end
+    if pending.fromSessionRecipe ~= true
+        and type(session) == "table"
+        and type(session.recipe) == "table"
+    then
         local exact = MaterialsFromSavedRecipe(session.recipe)
         if type(exact) == "table" and #exact > 0 then
             materials = exact
+            pending.fromSessionRecipe = true
+            if intendedKey == "" then
+                intendedKey = tostring(session.recipeSpecKey or "")
+            end
             pending.recipeKey = intendedKey
+            if session.skillUp == true or session.recipe.skillUpOrigin == true then
+                pending.skillUpOrigin = true
+            end
         end
-    elseif intendedKey ~= "" and tostring(pending.recipeKey or "") ~= ""
+    end
+    if intendedKey ~= ""
+        and tostring(pending.recipeKey or "") ~= ""
         and tostring(pending.recipeKey) ~= intendedKey
+        and pending.fromSessionRecipe ~= true
     then
         -- Board snapshot drifted from the loaded recipe — do not register a new fingerprint.
         if StockPiler3.Debug and StockPiler3.Debug.LogOp then
@@ -476,10 +555,21 @@ function BL.CompletePendingCraftLearn(opts)
         end
         return false
     end
+    -- Never stamp a success recipe whose board cannot succeed (stab < 0 = engine LOW).
+    -- Bag deltas must not bypass this gate (incomplete SkillUp/board snapshots).
+    local stab = MaterialsStability(materials)
+    if opts.failed ~= true and stab < 0 then
+        if StockPiler3.Debug and StockPiler3.Debug.LogOp then
+            StockPiler3.Debug.LogOp(
+                "brewlearn",
+                "reject unstable learn stab=" .. tostring(stab)
+            )
+        end
+        return false
+    end
     -- Engine SuccessChance is SoT for speculative learns (LOW = definite fail,
-    -- INVALID = incomplete). When the bag already gained potions, trust the
-    -- delta — SkillUp invent boards often latch LOW while crafts still succeed
-    -- (and ActionBar perform bypasses our engine-chance gate).
+    -- INVALID = incomplete). Stable SkillUp boards may latch LOW while still
+    -- succeeding via ActionBar — allow bag-delta learn only when stab >= 0.
     if opts.failed ~= true
         and #outputs == 0
         and not SuccessChanceAllowsLearn(pending.successChance)
@@ -501,12 +591,15 @@ function BL.CompletePendingCraftLearn(opts)
             "brewlearn",
             "learn despite SuccessChance=" .. tostring(pending.successChance)
                 .. " outputs=" .. tostring(#outputs)
+                .. " stab=" .. tostring(stab)
         )
     end
+    local skillUpOrigin = pending.skillUpOrigin == true or LatchSkillUpOrigin()
     if RS and RS.StoreLearnedRecipeSpec then
         ok = RS.StoreLearnedRecipeSpec(materials, outputs, {
             mainConsumed = opts.mainConsumed,
             failed = opts.failed == true,
+            skillUpOrigin = skillUpOrigin,
         }) == true
     end
     return ok

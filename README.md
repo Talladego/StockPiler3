@@ -2,6 +2,34 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
+**Version 0.3.142** — Tooltip pad: level/renown/itemSet/description so CreateItemTooltip no longer nil-compares or LabelSetText-fails on thin DB shells.
+
+**Version 0.3.141** — Root-cause: BrewLearn latches session recipe and rejects negative-stability learns; VendorAdapter stores only Cult/Apo mats (no migrate scrubber).
+
+**Version 0.3.140** — Fix Hide Skill up: persist skillUpOrigin on SkillUp learns; scrub impossible negative-stability recipes; backfill SkillUp-shaped boards.
+
+**Version 0.3.139** — Over-skill potion/plant watch checkboxes are greyed/disabled instead of click-toggling off.
+
+**Version 0.3.138** — Block watching potions/plants above current Apo/Cult skill (enable gate + scrub on skill update).
+
+**Version 0.3.137** — When Upgrade Seed is Cult-gated (floor reached, watch needs higher), release plots to SkillUp instead of idling forever.
+
+**Version 0.3.136** — Grow always arms Upgrade Seed when the toggle is on (plant-only watches); block SkillUp from stealing plots during an active climb.
+
+**Version 0.3.135** — Upgrade Seed: plant all intermediate-rung seeds (keep-0); refine same-tier plants when seedless; tooltip pad dps/speed/blockRating (nil compare).
+
+**Version 0.3.134** — Upgrade Seed: do not AutoBuy intermediate rungs (vendor is L1 only); plant L25/L50 with keep-1 so climb does not stall on buffer refine.
+
+**Version 0.3.133** — Fix Upgrade Seed stall: target-tier arrival check (not owned L25 spores); stop seed_buffer stealing intermediate rungs; clear stale climb status.
+
+**Version 0.3.132** — Upgrade Seed respects per-tier seed buffer (plant surplus only; AutoBuy tops up buffer+plots) so a bad harvest does not wipe the rung.
+
+**Version 0.3.131** — Watch status shows Upgrade Seed climb progress (e.g. Upgrading gobswort 25->150) instead of a bare Seed buffer.
+
+**Version 0.3.130** — Upgrade seeds fixes: real Cult skill for climb floor; plant watches as climb targets; genus-merged ladders (Gobswort L1+L200).
+
+**Version 0.3.129** — Upgrade seeds: watch-driven family climb (buy lower rung → plant → crit → refine) when a growable watch mat is missing; SeedMap family ladders; shared helpers used by SkillUp; Watch toggle (default off).
+
 **Version 0.3.128** — Cult SkillUp cold-start: prefer bag mains already at buffer (or plant-refinable to it); AutoBuy tops up `SeedDeficit` even when bags already hold some seeds; buy target stays on the chosen/plant-linked line.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
@@ -20,7 +48,7 @@ Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macr
 | `/sp3 potions` / `watch` / `plants` | Open tab |
 | `/sp3 help` | Command list |
 | `/sp3 debug` / `on` / `off` | Structured uilog |
-| `/sp3 plan` / `watchplan` / `state` / `growplan` / `brewplan` / `buyplan` / `skillplan` | Dumps |
+| `/sp3 plan` / `watchplan` / `state` / `growplan` / `brewplan` / `buyplan` / `skillplan` / `families` / `upgradeplan` | Dumps |
 | `/sp3 stats` / `bags` / `events` / `mem` / `audit` / `harvest` | Diagnostics |
 | `/sp3 stats clear` | Wipe Cult/Apo skill-up rate samples |
 | `/sp3 perf` | In-addon hitch summary when LibPerf absent |
@@ -44,6 +72,13 @@ Catalog of harvested plants that refine back to a seed (resin/byproducts exclude
 ## Skill up
 
 Ideal path from Cult 1 + Apo 1: one level-1 main seed → plant → harvest → refine (1 seed + 1 same-level **Arboreal Resin**) → crit/upgrade the same family. Diagnose with `/sp3 skillplan`.
+
+### Upgrade seeds
+
+- Toggle **Upgrade seeds** on the Watch tab (default off; needs Cultivation + AutoGrow).
+- When a watched growable mat is missing at its skillReq, climb that family: AutoBuy the lowest vendor rung → plant best owned rung ≤ Cult floor → refine crit upgrades → repeat until the watch’s tier exists.
+- Covers mains and non-mains (e.g. Goldweed). Skips infertile one-shots for climb. Status shows `Upgrading seed` with have→need.
+- Diagnose: `/sp3 families`, `/sp3 upgradeplan`.
 
 ### Cultivating
 
@@ -114,6 +149,20 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.142 | Tooltip pad level/renown/itemSet/description |
+| 0.3.141 | BrewLearn session latch + reject unstable; vendor craft-only |
+| 0.3.140 | Hide Skill up stamp + scrub unstable recipes |
+| 0.3.139 | Grey/disable over-skill watch checkboxes |
+| 0.3.138 | Block watches above current Apo/Cult skill |
+| 0.3.137 | Cult-gated Upgrade Seed releases SkillUp |
+| 0.3.136 | Grow: Upgrade Seed for plant-only watches; block SkillUp |
+| 0.3.135 | Upgrade: intermediate plant keep-0; tooltip dps nil pad |
+| 0.3.134 | Upgrade Seed: no intermediate AutoBuy; plant keep-1 |
+| 0.3.133 | Fix Upgrade Seed stall / seed_buffer intermediate steal |
+| 0.3.132 | Upgrade Seed: per-tier seed buffer / surplus plant |
+| 0.3.131 | Watch status: Upgrade Seed climb progress label |
+| 0.3.130 | Upgrade seeds: Cult skill, plant watches, genus ladders |
+| 0.3.129 | Upgrade seeds: family climb for missing watch mats |
 | 0.3.128 | Cult SkillUp cold-start: settle-ready seed pick; AutoBuy on SeedDeficit |
 | 0.3.127 | SkillUp review: Cult 200 Apo-assist; stall one-shot; vial buy vs buffer; SkillUp-only Apo rates; harvest extendOnly; quiet brew-row; skillUpOrigin scope |
 | 0.3.126–124 | Watch chrome layout / labels / Budget Reset / plant tip parity |

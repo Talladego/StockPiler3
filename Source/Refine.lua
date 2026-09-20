@@ -947,14 +947,22 @@ function Refine.CollectIntents()
         end
     end
 
-    -- 1b) SkillUp Cult: refine plants back to seeds to fill empty plots.
+    -- 1b) Upgrade Seed: refine family upgrade plants / buffer for climb line.
+    local UpgradeSeed = StockPiler3.UpgradeSeed
+    if UpgradeSeed and UpgradeSeed.AppendRefineIntents then
+        UpgradeSeed.AppendRefineIntents(intents, function(line, reason, uses, budget)
+            AppendIntent(intents, line, reason, uses, budget)
+        end)
+    end
+
+    -- 1c) SkillUp Cult: refine plants back to seeds to fill empty plots.
     local SkillUp = StockPiler3.SkillUp
     if SkillUp and SkillUp.AppendRefineIntents then
         SkillUp.AppendRefineIntents(intents, function(line, reason, uses, budget)
             AppendIntent(intents, line, reason, uses, budget)
         end)
     end
-    -- 1c) SkillUp Apo: refine brew-main surplus into Arboreal Resin when resin-short.
+    -- 1d) SkillUp Apo: refine brew-main surplus into Arboreal Resin when resin-short.
     if SkillUp and SkillUp.AppendApoResinRefineIntents then
         SkillUp.AppendApoResinRefineIntents(intents, function(line, reason, uses, budget)
             AppendIntent(intents, line, reason, uses, budget)

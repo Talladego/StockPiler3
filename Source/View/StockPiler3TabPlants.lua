@@ -343,6 +343,8 @@ local function BuildVisibleList()
                 levelText = towstring(levelNum > 0 and tostring(levelNum) or ""),
                 have = have,
                 watched = watched,
+                watchBlocked = (StockPiler3.Watch and StockPiler3.Watch.CanEnablePlantWatch
+                    and StockPiler3.Watch.CanEnablePlantWatch(plantKey) ~= true) == true,
                 iconNum = tonumber(plant.iconNum) or 0,
                 itemData = plant.itemData,
                 recipes = plant.recipes,
@@ -421,7 +423,18 @@ function StockPiler3TabPlants.UpdateRows()
                     DefaultColor.SetListRowTint(rowName .. "Background", rowIndex, false)
                 end
                 if DoesWindowExist(rowName .. "Watch") then
-                    ButtonSetPressedFlag(rowName .. "Watch", data.watched == true)
+                    local blocked = data.watchBlocked == true
+                    if StockPiler3.Watch and StockPiler3.Watch.CanEnablePlantWatch then
+                        blocked = StockPiler3.Watch.CanEnablePlantWatch(data.plantKey) ~= true
+                        data.watchBlocked = blocked
+                    end
+                    if ButtonSetCheckButtonFlag then
+                        ButtonSetCheckButtonFlag(rowName .. "Watch", true)
+                    end
+                    ButtonSetPressedFlag(rowName .. "Watch", data.watched == true and not blocked)
+                    if ButtonSetDisabledFlag then
+                        ButtonSetDisabledFlag(rowName .. "Watch", blocked)
+                    end
                 end
                 if DoesWindowExist(rowName .. "Icon") then
                     if data.iconNum and data.iconNum > 0 then
@@ -464,10 +477,35 @@ function StockPiler3TabPlants.OnToggleWatch()
     end
     local cur = Watch.GetPlantWatch and Watch.GetPlantWatch(data.plantKey)
     local enable = not (cur and cur.enabled == true)
-    Watch.SetPlantEnabled(data.plantKey, enable, { fromPlantsToggle = true })
+    local win = SystemData.ActiveWindow.name
+    if enable then
+        local blocked = data.watchBlocked == true
+        if Watch.CanEnablePlantWatch then
+            blocked = Watch.CanEnablePlantWatch(data.plantKey) ~= true
+            data.watchBlocked = blocked
+        end
+        if blocked then
+            if DoesWindowExist(win) then
+                ButtonSetPressedFlag(win, false)
+                if ButtonSetDisabledFlag then
+                    ButtonSetDisabledFlag(win, true)
+                end
+            end
+            Watch.SetPlantEnabled(data.plantKey, true, { fromPlantsToggle = true })
+            return
+        end
+    end
+    local _, ok = Watch.SetPlantEnabled(data.plantKey, enable, { fromPlantsToggle = true })
+    if enable and ok == false then
+        enable = false
+        data.watchBlocked = true
+    end
     data.watched = enable
-    if DoesWindowExist(SystemData.ActiveWindow.name) then
-        ButtonSetPressedFlag(SystemData.ActiveWindow.name, enable)
+    if DoesWindowExist(win) then
+        ButtonSetPressedFlag(win, enable)
+        if ButtonSetDisabledFlag then
+            ButtonSetDisabledFlag(win, data.watchBlocked == true)
+        end
     end
     if StockPiler3.Scheduler and StockPiler3.Scheduler.EnqueuePlanRebuild then
         StockPiler3.Scheduler.EnqueuePlanRebuild()

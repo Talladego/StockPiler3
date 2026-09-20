@@ -964,6 +964,67 @@ function RS.ResolveWatchPotion(watchKey)
     }
 end
 
+--- Apo skill needed to craft this recipe (max slot skillLevel; main preferred).
+--- Returns { apothecary = N, apo = N } or nil when unknown.
+function RS.RecipeSkillRequirements(recipe)
+    if type(recipe) ~= "table" then
+        return nil
+    end
+    HydrateRecipeSlots(recipe)
+    local need = 0
+    local mainNeed = 0
+    local slots = recipe.slots
+    if type(slots) == "table" then
+        for i = 1, #slots do
+            local slot = slots[i]
+            if type(slot) == "table" then
+                local spec = ResolveSlotSpec(slot)
+                local lv = 0
+                if type(spec) == "table" then
+                    lv = tonumber(spec.skillLevel) or tonumber(spec.craftingSkillRequirement) or 0
+                end
+                if lv <= 0 then
+                    local uid = tonumber(slot.uid)
+                        or (type(spec) == "table" and (tonumber(spec.uid) or tonumber(spec.boundUid)))
+                        or 0
+                    if uid > 0 and StockPiler3.Items and StockPiler3.Items.GetByUid then
+                        local row = StockPiler3.Items.GetByUid(uid)
+                        if type(row) == "table" then
+                            lv = tonumber(row.skillReq) or tonumber(row.skillLevel)
+                                or tonumber(row.craftingSkillRequirement) or 0
+                        end
+                    end
+                end
+                if lv > need then
+                    need = lv
+                end
+                local role = tostring(slot.role or (type(spec) == "table" and spec.role) or "")
+                if role == "main" and lv > mainNeed then
+                    mainNeed = lv
+                end
+            end
+        end
+    end
+    if mainNeed > 0 then
+        need = mainNeed
+    end
+    local outUid = tonumber(recipe.outputUid) or tonumber(recipe.activeOutcomeUid) or 0
+    if outUid > 0 and StockPiler3.Items and StockPiler3.Items.GetByUid then
+        local row = StockPiler3.Items.GetByUid(outUid)
+        if type(row) == "table" then
+            local outLv = tonumber(row.skillReq) or tonumber(row.skillLevel)
+                or tonumber(row.craftingSkillRequirement) or 0
+            if outLv > need then
+                need = outLv
+            end
+        end
+    end
+    if need <= 0 then
+        return nil
+    end
+    return { apothecary = need, apo = need }
+end
+
 function RS.FingerprintStats(recipe, potionUid)
     return RS.RecipeFingerprintStats(recipe, potionUid)
 end
@@ -1626,11 +1687,12 @@ local function ApplyPotionRecipeKeyList(potion, kept)
     end
 end
 
-function RS.RegisterKnownPotion(outputUid, out, recipeSpecKey, quality)
+function RS.RegisterKnownPotion(outputUid, out, recipeSpecKey, quality, opts)
     outputUid = tonumber(outputUid) or 0
     if outputUid <= 0 then
         return nil, false, false
     end
+    opts = type(opts) == "table" and opts or {}
     local potions = PotionsTable()
     if type(potions) ~= "table" then
         return nil, false, false
@@ -1644,6 +1706,9 @@ function RS.RegisterKnownPotion(outputUid, out, recipeSpecKey, quality)
             outputUid = outputUid,
             recipeKeys = {},
         }
+        if opts.skillUpOrigin == true then
+            existing.skillUpOrigin = true
+        end
     end
     existing.name = (out and out.name) or existing.name
     existing.nameNarrow = (out and (out.nameNarrow or ToNarrow(out.name))) or existing.nameNarrow
@@ -1876,6 +1941,20 @@ function RS.StoreLearnedRecipeSpec(materials, outputs, opts)
     if #slots == 0 then
         return false
     end
+    -- Engine LOW: stab < 0 cannot succeed. Do not stamp bogus 100% recipes
+    -- from incomplete SkillUp/board snapshots.
+    if opts.failed ~= true then
+        local stab = SpecStabilityTotal(slots)
+        if stab < 0 then
+            if StockPiler3.Debug and StockPiler3.Debug.LogOp then
+                StockPiler3.Debug.LogOp(
+                    "recipe",
+                    "reject StoreLearned unstable stab=" .. tostring(stab)
+                )
+            end
+            return false
+        end
+    end
     local fingerprint = SlotsFingerprint(slots)
     if fingerprint == "" then
         return false
@@ -1930,6 +2009,9 @@ function RS.StoreLearnedRecipeSpec(materials, outputs, opts)
         EnsureBrewStats(recipe)
         recipe.slots = SlimSlotsForStorage(slots)
     end
+    if opts.skillUpOrigin == true then
+        recipe.skillUpOrigin = true
+    end
 
     recipe.brewAttempts = (tonumber(recipe.brewAttempts) or 0) + 1
     if failed then
@@ -1938,11 +2020,14 @@ function RS.StoreLearnedRecipeSpec(materials, outputs, opts)
         recipe.brewSuccesses = (tonumber(recipe.brewSuccesses) or 0) + 1
         recipe.crafts = (tonumber(recipe.crafts) or 0) + 1
         local primaryQty = 0
+        local skillUpOpts = opts.skillUpOrigin == true and { skillUpOrigin = true } or nil
         for uid, out in pairs(byUid) do
             local quality = OutputQuality(out)
             local qty = tonumber(out.lastDelta) or tonumber(out.crafts) or 1
             RecordOutcome(recipe, uid, quality, qty)
-            local _, potionIsNew, recipeKeyAdded = RS.RegisterKnownPotion(uid, out, fingerprint, quality)
+            local _, potionIsNew, recipeKeyAdded = RS.RegisterKnownPotion(
+                uid, out, fingerprint, quality, skillUpOpts
+            )
             if potionIsNew == true or recipeKeyAdded == true then
                 structuralChange = true
             end

@@ -486,6 +486,8 @@ local function BuildVisibleList()
             have = have,
             haveText = towstring(tostring(have)),
             watched = watched,
+            watchBlocked = (StockPiler3.Watch and StockPiler3.Watch.CanEnablePotionWatch
+                and StockPiler3.Watch.CanEnablePotionWatch(potionKey) ~= true) == true,
             iconNum = tonumber(potion.iconNum or potionBase.iconNum) or 0,
             itemData = itemData,
             uniqueID = uid,
@@ -672,7 +674,15 @@ function StockPiler3TabPotions.UpdateRows()
                 WindowSetShowing(rowName, true)
                 DefaultColor.SetListRowTint(rowName .. "Background", rowIndex, false)
                 ButtonSetCheckButtonFlag(rowName .. "Watch", true)
-                ButtonSetPressedFlag(rowName .. "Watch", data.watched == true)
+                local blocked = data.watchBlocked == true
+                if StockPiler3.Watch and StockPiler3.Watch.CanEnablePotionWatch then
+                    blocked = StockPiler3.Watch.CanEnablePotionWatch(data.potionKey or data.id) ~= true
+                    data.watchBlocked = blocked
+                end
+                ButtonSetPressedFlag(rowName .. "Watch", data.watched == true and not blocked)
+                if ButtonSetDisabledFlag then
+                    ButtonSetDisabledFlag(rowName .. "Watch", blocked)
+                end
                 SetIconTexture(rowName .. "Icon", data.iconNum)
                 LabelSetText(rowName .. "Name", data.name or L"")
                 LabelSetTextColor(
@@ -756,9 +766,42 @@ function StockPiler3TabPotions.OnToggleWatch()
         return
     end
     local potionKey = data.potionKey or data.id
-    local enabled = ButtonGetPressedFlag(SystemData.ActiveWindow.name) == true
+    local win = SystemData.ActiveWindow.name
+    local enabled = ButtonGetPressedFlag(win) == true
+    if enabled then
+        local blocked = data.watchBlocked == true
+        if StockPiler3.Watch and StockPiler3.Watch.CanEnablePotionWatch then
+            blocked = StockPiler3.Watch.CanEnablePotionWatch(potionKey) ~= true
+            data.watchBlocked = blocked
+        end
+        if blocked then
+            if DoesWindowExist(win) then
+                ButtonSetPressedFlag(win, false)
+                if ButtonSetDisabledFlag then
+                    ButtonSetDisabledFlag(win, true)
+                end
+            end
+            -- Notify via the shared gate (does not enable).
+            if StockPiler3.Watch and StockPiler3.Watch.SetEnabled then
+                StockPiler3.Watch.SetEnabled(potionKey, true, { fromPotionsToggle = true })
+            end
+            return
+        end
+    end
+    local ok = true
     if StockPiler3.Watch and StockPiler3.Watch.SetEnabled then
-        StockPiler3.Watch.SetEnabled(potionKey, enabled, { fromPotionsToggle = true })
+        local _, setOk = StockPiler3.Watch.SetEnabled(potionKey, enabled, { fromPotionsToggle = true })
+        ok = setOk ~= false
+        if enabled and ok ~= true then
+            enabled = false
+            if DoesWindowExist(win) then
+                ButtonSetPressedFlag(win, false)
+                if ButtonSetDisabledFlag then
+                    ButtonSetDisabledFlag(win, true)
+                end
+            end
+            data.watchBlocked = true
+        end
     else
         local watch = StockPiler3.Catalog and StockPiler3.Catalog.EnsureWatch and StockPiler3.Catalog.EnsureWatch(potionKey)
         if type(watch) == "table" then

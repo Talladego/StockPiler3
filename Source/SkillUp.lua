@@ -622,72 +622,17 @@ function SkillUp.ScanBestRefinePlant()
     if targetMax < 1 then
         targetMax = 1
     end
-    local SM = StockPiler3.SeedMap
-    local Inv = StockPiler3.Inventory
-    local Items = StockPiler3.Items
-    local Refine = StockPiler3.Refine
-    if not (Inv and Inv.ForEachItem) then
-        return nil
+    local US = StockPiler3.UpgradeSeed
+    if US and US.ScanUpgradePlant then
+        local seed = SkillUp.PickBestBagSeed and SkillUp.PickBestBagSeed() or nil
+        local ownedReq = type(seed) == "table" and (tonumber(seed.skillReq) or 0) or 0
+        return US.ScanUpgradePlant({
+            climbCap = targetMax,
+            ownedSeedReq = ownedReq,
+            mainsOnly = true,
+        })
     end
-    local best = nil
-    local bestReq = -1
-    Inv.ForEachItem(function(item)
-        if type(item) ~= "table" then
-            return
-        end
-        if SM and SM.IsBagSeedOrSpore and SM.IsBagSeedOrSpore(item) then
-            return
-        end
-        if SM and SM.ItemLooksLikeRefinablePlant
-            and SM.ItemLooksLikeRefinablePlant(item) ~= true
-            and item.isRefinable ~= true
-        then
-            return
-        end
-        local pUid = tonumber(item.uniqueID) or 0
-        if pUid <= 0 then
-            return
-        end
-        local spec = Items and Items.ToSpec and Items.ToSpec(pUid) or nil
-        local role = tostring(spec and spec.role or "")
-        if role ~= "" and role ~= "main" then
-            return
-        end
-        local req = tonumber(spec and spec.skillLevel) or SeedSkillReq(item)
-        if req < 1 or req > targetMax then
-            return
-        end
-        local sUid = 0
-        if SM and SM.ResolveSeedUidForPlant then
-            sUid = tonumber(SM.ResolveSeedUidForPlant(pUid, spec)) or 0
-        end
-        if sUid <= 0 and SM and SM.GetSeedUidsForPlant then
-            local seeds = SM.GetSeedUidsForPlant(pUid) or {}
-            if type(seeds) == "table" and #seeds > 0 then
-                sUid = tonumber(SM.PickBestSeedUid and SM.PickBestSeedUid(pUid, seeds, spec) or seeds[1]) or 0
-            end
-        end
-        if sUid <= 0 then
-            local entry = StockPiler3.Account and StockPiler3.Account.refines
-                and StockPiler3.Account.refines[tostring(pUid)]
-            sUid = type(entry) == "table" and (tonumber(entry.seedUid) or 0) or 0
-        end
-        if sUid <= 0 then
-            return
-        end
-        local refinable = 0
-        if Refine and Refine.CountRefinablePlants then
-            refinable = tonumber(Refine.CountRefinablePlants(pUid, spec)) or 0
-        end
-        if refinable <= 0 then
-            return
-        end
-        if req > bestReq then
-            bestReq = req
-            best = { seedUid = sUid, plantUid = pUid, skillReq = req }
-        end
-    end)
-    return best
+    return nil
 end
 
 --- True when bags hold a plant whose skillReq beats the best *plantable* seed

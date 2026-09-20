@@ -230,6 +230,9 @@ function Bridge.OnTradeSkillUpdated()
     end
 
     if hashChanged or firstSkillsReady then
+        if StockPiler3.Watch and StockPiler3.Watch.DisableOverSkillWatches then
+            StockPiler3.Watch.DisableOverSkillWatches({ notify = firstSkillsReady })
+        end
         if StockPiler3.Scheduler and StockPiler3.Scheduler.EnqueuePlanRebuild then
             StockPiler3.Scheduler.EnqueuePlanRebuild()
         end
@@ -237,6 +240,12 @@ function Bridge.OnTradeSkillUpdated()
             -- Force gate key rebuild (cult/apo visibility just changed).
             StockPiler3TabWatch._skillGatesKey = nil
             StockPiler3TabWatch.RefreshSkillGates()
+        end
+        if StockPiler3TabPotions and StockPiler3TabPotions.UpdateRows then
+            StockPiler3TabPotions.UpdateRows()
+        end
+        if StockPiler3TabPlants and StockPiler3TabPlants.UpdateRows then
+            StockPiler3TabPlants.UpdateRows()
         end
         if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
             StockPiler3Window.RequestFooterRefresh()

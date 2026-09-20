@@ -516,33 +516,51 @@ local function PickBufferGrowCandidate(lines, SM, focusKeys, demand, focusGap)
         local line = lines[i]
         local seedUid = tonumber(line.seedUid) or 0
         if seedUid > 0 and CanUseSeedUid(seedUid) and LineAllowedForFocus(line) then
-            local credit = BufferCredit(seedUid)
-            local committed = tonumber(Grow._seedCommitted[seedUid]) or 0
-            local bag = OpaqueSeedCredit(seedUid, LiveSeedBag(seedUid))
-            local avail = bag - committed
-            if avail > 0 and credit < buffer then
-                local refinable = 0
-                if Refine and Refine.CountRefinablePlants then
-                    refinable = tonumber(Refine.CountRefinablePlants(line.plantUid, line.spec)) or 0
+            -- Upgrade Seed owns short plant watches until the target tier exists;
+            -- do not seed_buffer intermediate genus rungs into the craft bag.
+            local US = StockPiler3.UpgradeSeed
+            local climbOwns = false
+            if US and US.IsEnabled and US.IsEnabled() == true and US.StatusForPlant then
+                local plantUid = tonumber(line.plantUid) or 0
+                local climb = nil
+                if plantUid > 0 then
+                    climb = US.StatusForPlant(plantUid, line.spec)
+                elseif line.plantStock == true and type(line.spec) == "table" then
+                    climb = US.StatusForPlant(0, line.spec)
                 end
-                -- Must not buffer-grow while refinable plants remain.
-                if refinable <= 0 then
-                    local want = buffer - credit
-                    if want > bestWant then
-                        bestWant = want
-                        best = {
-                            spec = line.spec,
-                            specKey = line.specKey,
-                            seed = line.seed or { uniqueID = seedUid },
-                            seedUid = seedUid,
-                            plantUid = tonumber(line.plantUid) or 0,
-                            seedHave = bag,
-                            plantable = math.min(avail, want),
-                            deficit = want,
-                            craftsShort = want,
-                            role = SpecRole(line.spec),
-                            plantReason = "seed_buffer",
-                        }
+                if type(climb) == "table" and tostring(climb.why or "") ~= "need_cult" then
+                    climbOwns = true
+                end
+            end
+            if not climbOwns then
+                local credit = BufferCredit(seedUid)
+                local committed = tonumber(Grow._seedCommitted[seedUid]) or 0
+                local bag = OpaqueSeedCredit(seedUid, LiveSeedBag(seedUid))
+                local avail = bag - committed
+                if avail > 0 and credit < buffer then
+                    local refinable = 0
+                    if Refine and Refine.CountRefinablePlants then
+                        refinable = tonumber(Refine.CountRefinablePlants(line.plantUid, line.spec)) or 0
+                    end
+                    -- Must not buffer-grow while refinable plants remain.
+                    if refinable <= 0 then
+                        local want = buffer - credit
+                        if want > bestWant then
+                            bestWant = want
+                            best = {
+                                spec = line.spec,
+                                specKey = line.specKey,
+                                seed = line.seed or { uniqueID = seedUid },
+                                seedUid = seedUid,
+                                plantUid = tonumber(line.plantUid) or 0,
+                                seedHave = bag,
+                                plantable = math.min(avail, want),
+                                deficit = want,
+                                craftsShort = want,
+                                role = SpecRole(line.spec),
+                                plantReason = "seed_buffer",
+                            }
+                        end
                     end
                 end
             end
@@ -651,56 +669,78 @@ local function PickPlantStockCandidate(SM)
                         spec = MS.FromUid(plantUid)
                     end
                     if type(spec) == "table" and SM.IsGrowableSpec and SM.IsGrowableSpec(spec) == true then
-                        local seed = SM.ResolveSeedForSpec and SM.ResolveSeedForSpec(spec)
-                        local seedUid = type(seed) == "table" and (tonumber(seed.uniqueID) or 0) or 0
-                        if seedUid <= 0 and SM.GetSeedUidsForPlant then
-                            local seeds = SM.GetSeedUidsForPlant(plantUid)
-                            if type(seeds) == "table" and #seeds > 0 then
-                                seedUid = tonumber(seeds[1]) or 0
+                        -- Upgrade Seed owns short watches until the target tier exists;
+                        -- plant_stock must not burn lower-rung seeds past the buffer.
+                        local US = StockPiler3.UpgradeSeed
+                        local climb = US and US.IsEnabled and US.IsEnabled() == true
+                            and US.StatusForPlant and US.StatusForPlant(plantUid, spec) or nil
+                        local climbOwns = type(climb) == "table"
+                            and tostring(climb.why or "") ~= "need_cult"
+                        if not climbOwns then
+                            local seedUid = 0
+                            local seed = nil
+                            if SM.ResolveSeedUidForPlant then
+                                seedUid = tonumber(SM.ResolveSeedUidForPlant(plantUid, spec)) or 0
+                            end
+                            if seedUid <= 0 and SM.ResolveSeedForSpec then
+                                seed = SM.ResolveSeedForSpec(spec)
+                                if type(seed) == "table" then
+                                    seedUid = tonumber(seed.uniqueID) or 0
+                                end
+                            end
+                            if seedUid <= 0 and SM.GetSeedUidsForPlant then
+                                local seeds = SM.GetSeedUidsForPlant(plantUid)
+                                if type(seeds) == "table" and #seeds > 0 then
+                                    seedUid = tonumber(seeds[1]) or 0
+                                end
+                            end
+                            if seedUid > 0 then
                                 seed = seed or { uniqueID = seedUid }
                             end
-                        end
-                        if seedUid > 0 and CanUseSeedUid(seedUid) then
-                            local bufferOk = true
-                            if bufferOn then
-                                local credit = BufferCredit(seedUid)
-                                if credit < buffer then
-                                    bufferOk = false
-                                end
-                            end
-                            if bufferOk then
-                                local bag = OpaqueSeedCredit(seedUid, LiveSeedBag(seedUid))
-                                local committed = tonumber(Grow._seedCommitted[seedUid]) or 0
-                                local avail = bag - committed
-                                if avail < 1 then
-                                    local refinable = 0
-                                    if Refine and Refine.CountRefinablePlants then
-                                        -- Prefer not refining below plant floor — CountRefinable is bag plants.
-                                        refinable = tonumber(Refine.CountRefinablePlants(plantUid, spec)) or 0
-                                    end
-                                    if refinable > 0 then
-                                        -- Seeds pending refine; skip this line for plant_stock.
-                                        avail = 0
+                            if seedUid > 0 and CanUseSeedUid(seedUid) then
+                                local bufferOk = true
+                                if bufferOn then
+                                    local credit = BufferCredit(seedUid)
+                                    if credit < buffer then
+                                        bufferOk = false
                                     end
                                 end
-                                if avail >= 1 and need > bestNeed then
-                                    bestNeed = need
-                                    best = {
-                                        spec = spec,
-                                        specKey = (MS and MS.ProductKey and MS.ProductKey(spec))
-                                            or ("plant:" .. tostring(plantUid)),
-                                        seed = seed or { uniqueID = seedUid },
-                                        seedUid = seedUid,
-                                        plantUid = plantUid,
-                                        seedHave = bag,
-                                        plantable = math.min(avail, need),
-                                        deficit = need,
-                                        craftsShort = need,
-                                        role = SpecRole(spec),
-                                        plantReason = "plant_stock",
-                                        watchKey = tostring(plantKey),
-                                        pickMode = "plant_stock",
-                                    }
+                                if bufferOk then
+                                    local bag = OpaqueSeedCredit(seedUid, LiveSeedBag(seedUid))
+                                    local committed = tonumber(Grow._seedCommitted[seedUid]) or 0
+                                    local avail = bag - committed
+                                    if bufferOn then
+                                        -- Match Upgrade cushion: never plant into buffer.
+                                        avail = math.min(avail, math.max(0, bag - buffer))
+                                    end
+                                    if avail < 1 then
+                                        local refinable = 0
+                                        if Refine and Refine.CountRefinablePlants then
+                                            refinable = tonumber(Refine.CountRefinablePlants(plantUid, spec)) or 0
+                                        end
+                                        if refinable > 0 then
+                                            avail = 0
+                                        end
+                                    end
+                                    if avail >= 1 and need > bestNeed then
+                                        bestNeed = need
+                                        best = {
+                                            spec = spec,
+                                            specKey = (MS and MS.ProductKey and MS.ProductKey(spec))
+                                                or ("plant:" .. tostring(plantUid)),
+                                            seed = seed or { uniqueID = seedUid },
+                                            seedUid = seedUid,
+                                            plantUid = plantUid,
+                                            seedHave = bag,
+                                            plantable = math.min(avail, need),
+                                            deficit = need,
+                                            craftsShort = need,
+                                            role = SpecRole(spec),
+                                            plantReason = "plant_stock",
+                                            watchKey = tostring(plantKey),
+                                            pickMode = "plant_stock",
+                                        }
+                                    end
                                 end
                             end
                         end
@@ -1446,6 +1486,47 @@ function Grow.PickPlantCandidate()
     if needsRefine then
         return done(nil)
     end
+
+    -- Upgrade Seed: climb lower family rungs toward short watch mats (before buffer /
+    -- SkillUp). Must run for plant-only watches too — gating on potion #watches
+    -- skipped Taut Gobswort while SkillUp filled plots with spiderfrond (3010015).
+    local US = StockPiler3.UpgradeSeed
+    if US and US.IsEnabled and US.IsEnabled() == true then
+        if US.NeedsRefineFirst and US.NeedsRefineFirst() == true then
+            if StockPiler3.Refine and StockPiler3.Refine.MarkRefineDue then
+                StockPiler3.Refine.MarkRefineDue("upgrade-seed")
+            end
+            return done(nil)
+        end
+        local uj = US.PickPlantJob and US.PickPlantJob() or nil
+        if type(uj) == "table" and (tonumber(uj.seedUid) or 0) > 0 then
+            LogPlantPick(uj)
+            return done(uj)
+        end
+        -- Climb still progressing (plant/refine/buy): hold plots.
+        -- Cult-gated (have floor, watch needs higher): release SkillUp / buffer.
+        local climb = US.StatusForWatch and US.StatusForWatch() or nil
+        if type(climb) ~= "table" and US.GetActiveStatus then
+            climb = US.GetActiveStatus()
+        end
+        if type(climb) == "table" then
+            local why = tostring(climb.why or "")
+            if why == "need_cult" then
+                if US.MaybeNotifyStall then
+                    US.MaybeNotifyStall()
+                end
+                -- fall through — cannot climb further until Cult rises
+            else
+                if US.MaybeNotifyStall then
+                    US.MaybeNotifyStall()
+                end
+                return done(nil)
+            end
+        elseif US.MaybeNotifyStall then
+            US.MaybeNotifyStall()
+        end
+    end
+
     if type(demand) == "table" and PotionStockNeedsRefineFirst(demand, SM) then
         return done(nil)
     end

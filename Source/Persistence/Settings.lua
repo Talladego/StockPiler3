@@ -36,6 +36,9 @@ local ACCOUNT_LEAKED_SETTINGS_KEYS = {
 -- will delete them before SavedVariables write (wiped skillUpRates each reload).
 local ACCOUNT_ALLOWED = {
     accountVersion = true,
+    recipeFingerprintMigrateV2 = true,
+    recipeFingerprintMigrateV3 = true,
+    recipeFingerprintMigrateV4 = true,
 }
 for i = 1, #ACCOUNT_TABLES do
     ACCOUNT_ALLOWED[ACCOUNT_TABLES[i]] = true
@@ -100,6 +103,7 @@ StockPiler3.DefaultCharacterSettings = {
     brewPreferNonGrowableFirst = true,
     skillUpCultEnabled = false,
     skillUpApoEnabled = false,
+    upgradeSeedsEnabled = false,
 }
 
 StockPiler3.DefaultAccount = {
@@ -250,6 +254,7 @@ function P.EnsureCharacterBucketShape(char)
     char.autoGrowPauseCombat = char.autoGrowPauseCombat ~= false
     char.skillUpCultEnabled = char.skillUpCultEnabled == true
     char.skillUpApoEnabled = char.skillUpApoEnabled == true
+    char.upgradeSeedsEnabled = char.upgradeSeedsEnabled == true
     char.autoBuyReserveGold = ClampInt(char.autoBuyReserveGold, 1, 99, 10)
     char.autoBuyBudgetGold = ClampInt(char.autoBuyBudgetGold, 1, 999, 50)
     do
