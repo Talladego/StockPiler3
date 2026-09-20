@@ -874,6 +874,24 @@ function Grow.HasEmptyPlot()
     return false
 end
 
+function Grow.CountEmptyPlots()
+    local CA = StockPiler3.CultivatorAdapter
+    local maxPlots = CA and CA.NumPlots and tonumber(CA.NumPlots()) or 4
+    if maxPlots < 1 then
+        maxPlots = 4
+    end
+    local n = 0
+    for plotNum = 1, maxPlots do
+        local row = StockPiler3.Garden and StockPiler3.Garden.GetPlot and StockPiler3.Garden.GetPlot(plotNum)
+        if not IsPlotLocked(row, plotNum) and IsPlotEmptyRow(row) then
+            if (tonumber(Grow._pendingPlant[plotNum]) or 0) <= 0 then
+                n = n + 1
+            end
+        end
+    end
+    return n
+end
+
 function Grow.FindNextEmptyPlot()
     local CA = StockPiler3.CultivatorAdapter
     local maxPlots = CA and CA.NumPlots and CA.NumPlots() or 4
@@ -1433,32 +1451,35 @@ function Grow.PickPlantCandidate()
     end
 
     local Watch = StockPiler3.Watch
-    if not (Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true) then
-        return done(nil)
-    end
-    if not RS.CollectAutoGrowSeedLines then
-        return done(nil)
-    end
-    local lines = RS.CollectAutoGrowSeedLines() or {}
+    local lines = {}
     local focusGap = maxGap
-    if focusGap <= 0 then
-        for i = 1, #watches do
-            local d = tonumber(watches[i].deficit) or 0
-            if d > focusGap then
-                focusGap = d
+    if Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true
+        and RS.CollectAutoGrowSeedLines
+    then
+        lines = RS.CollectAutoGrowSeedLines() or {}
+        if focusGap <= 0 then
+            for i = 1, #watches do
+                local d = tonumber(watches[i].deficit) or 0
+                if d > focusGap then
+                    focusGap = d
+                end
             end
         end
-    end
-    local best = PickBufferGrowCandidate(lines, SM, nil, demand, focusGap)
-    if best ~= nil then
-        best.pickMode = "buffer"
-        LogPlantPick(best)
-        return done(best)
-    end
-    if focusGap > 0 then
+        local best = PickBufferGrowCandidate(lines, SM, nil, demand, focusGap)
+        if best ~= nil then
+            best.pickMode = "buffer"
+            LogPlantPick(best)
+            return done(best)
+        end
+        if focusGap > 0 then
+            return done(nil)
+        end
+    elseif #watches > 0 then
+        -- Watches still short, buffer off, no plantable job — do not SkillUp yet.
         return done(nil)
     end
-    best = PickPlantStockCandidate(SM)
+
+    local best = PickPlantStockCandidate(SM)
     if best ~= nil then
         best.pickMode = "plant_stock"
         LogPlantPick(best)
@@ -1468,8 +1489,25 @@ function Grow.PickPlantCandidate()
     if best ~= nil then
         best.pickMode = "surplus"
         LogPlantPick(best)
+        return done(best)
     end
-    return done(best)
+
+    -- Idle SkillUp Cult: only after watches are done (SkillUp.ShouldCultPlant gates).
+    local SkillUp = StockPiler3.SkillUp
+    if SkillUp and SkillUp.ShouldCultPlant and SkillUp.ShouldCultPlant() == true then
+        local job = SkillUp.PickPlantJob and SkillUp.PickPlantJob()
+        if type(job) == "table" and (tonumber(job.seedUid) or 0) > 0 then
+            LogPlantPick(job)
+            return done(job)
+        end
+        if StockPiler3.Refine and StockPiler3.Refine.MarkRefineDue then
+            StockPiler3.Refine.MarkRefineDue("skill-up")
+        end
+        if SkillUp.MaybeNotifyStall then
+            SkillUp.MaybeNotifyStall()
+        end
+    end
+    return done(nil)
 end
 
 function Grow.GetPlantJob()
@@ -1654,6 +1692,15 @@ function Grow.IssuePlantOne(opId)
         tostring(job.plantReason or ""),
         tostring(opId or "?")
     ))
+    -- Arm Cult skill-up attempt only when Cult is skilling (not pure Apo-assist grows).
+    if tostring(job.plantReason or "") == "skill_up" then
+        local SkillUp = StockPiler3.SkillUp
+        if SkillUp and SkillUp.NoteCultAttempt
+            and SkillUp.IsCultEnabled and SkillUp.IsCultEnabled() == true
+        then
+            SkillUp.NoteCultAttempt({ seedUid = seedUid })
+        end
+    end
     return done(true)
 end
 
@@ -2220,6 +2267,26 @@ function Grow.WakeAfterHarvest(plotNum, opts)
     Grow._chatHarvestNeedsForce = false
     if Sch and Sch.WakeAutoGrow then
         Sch.WakeAutoGrow()
+    end
+    -- Extend Cult skill-up pending window after harvest (skill may tick then).
+    -- extendOnly: do not start a new attempt if plant-arm pending expired.
+    local SkillUp = StockPiler3.SkillUp
+    if SkillUp and SkillUp.NoteCultAttempt and SkillUp.IsCultEnabled and SkillUp.IsCultEnabled() then
+        local seedUid = 0
+        local Garden = StockPiler3.Garden
+        if Garden and Garden.GetPlot then
+            local plot = Garden.GetPlot(plotNum)
+            if type(plot) ~= "table" and Grow.CachedPlot then
+                plot = Grow.CachedPlot(plotNum)
+            end
+            if type(plot) == "table" then
+                seedUid = tonumber(plot.seedUid) or 0
+                if seedUid <= 0 and type(plot.seed) == "table" then
+                    seedUid = tonumber(plot.seed.uniqueID) or 0
+                end
+            end
+        end
+        SkillUp.NoteCultAttempt({ seedUid = seedUid, extendOnly = true })
     end
     LogOnce(
         "harvest-wake-" .. tostring(plotNum or 0),

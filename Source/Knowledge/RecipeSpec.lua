@@ -667,13 +667,26 @@ local function GrowReserveForSpec(spec)
     if minBuf <= 0 then
         return 0
     end
-    -- Only reserve when AutoGrow is in play.
-    if Watch and Watch.HasAnyAutoGrow and Watch.HasAnyAutoGrow() ~= true then
-        if Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() ~= true then
-            return 0
+    -- Only reserve when AutoGrow / seed buffer is in play, or SkillUp may burn plants.
+    local skillUpActive = false
+    local SkillUpMod = StockPiler3.SkillUp
+    if SkillUpMod then
+        if SkillUpMod.ShouldCultGrowForSkillUp and SkillUpMod.ShouldCultGrowForSkillUp() == true then
+            skillUpActive = true
+        elseif SkillUpMod.IsApoEnabled and SkillUpMod.IsApoEnabled() == true then
+            skillUpActive = true
+        elseif SkillUpMod.IsCultEnabled and SkillUpMod.IsCultEnabled() == true then
+            skillUpActive = true
         end
-        if char.autoGrowEnabled ~= true then
-            return 0
+    end
+    if not skillUpActive then
+        if Watch and Watch.HasAnyAutoGrow and Watch.HasAnyAutoGrow() ~= true then
+            if Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() ~= true then
+                return 0
+            end
+            if char.autoGrowEnabled ~= true then
+                return 0
+            end
         end
     end
 
@@ -685,7 +698,11 @@ local function GrowReserveForSpec(spec)
         isSeed = true
         seedUid = plantOrSeedUid
     elseif plantOrSeedUid > 0 and SM then
-        if SM.PickBestSeedUid then
+        -- Same-tier / refine-linked seed only — never L1 Eternal for a T25 plant.
+        if SM.ResolveSeedUidForPlant then
+            seedUid = tonumber(SM.ResolveSeedUidForPlant(plantOrSeedUid, spec)) or 0
+        end
+        if seedUid <= 0 and SM.PickBestSeedUid then
             seedUid = tonumber(SM.PickBestSeedUid(plantOrSeedUid)) or 0
         end
         if seedUid <= 0 and SM.ResolveSeedUidForSpec then
@@ -714,6 +731,18 @@ local function GrowReserveForSpec(spec)
             live = tonumber(Inv.CountByUid(seedUid)) or 0
         end
         headroom = math.max(0, minBuf - live)
+    end
+    if headroom <= 0 then
+        headroom = 0
+    end
+    -- Cult SkillUp / Apo-assist grow: also hold plants needed to refill plots / buffer.
+    if skillUpActive and SkillUpMod and SkillUpMod.ShouldCultGrowForSkillUp
+        and SkillUpMod.ShouldCultGrowForSkillUp() == true and SkillUpMod.SeedDeficit
+    then
+        local deficit = tonumber(SkillUpMod.SeedDeficit(seedUid)) or 0
+        if deficit > headroom then
+            headroom = deficit
+        end
     end
     if headroom <= 0 then
         return 0
@@ -1455,6 +1484,58 @@ local function IsStrictFingerprintSubset(shortKey, longKey)
     return string.sub(longKey, #shortKey + 1, #shortKey + 1) == "|"
 end
 
+--- Incomplete main (`uid:N`) upgraded by a later EFFECT-stamped main (`fx:M`).
+--- Same role count / non-main segments; only the main identity token differs.
+local function IsIncompleteMainUpgrade(weakKey, strongKey)
+    weakKey = tostring(weakKey or "")
+    strongKey = tostring(strongKey or "")
+    if weakKey == "" or strongKey == "" or weakKey == strongKey then
+        return false
+    end
+    if not string.find(weakKey, "uid:", 1, true) then
+        return false
+    end
+    if not string.find(strongKey, "fx:", 1, true) then
+        return false
+    end
+    local weakParts = FingerprintRoleParts(weakKey)
+    local strongParts = FingerprintRoleParts(strongKey)
+    if #weakParts == 0 or #weakParts ~= #strongParts then
+        return false
+    end
+    local function StripMainIdentity(seg)
+        seg = tostring(seg or "")
+        seg = string.gsub(seg, "|uid:%d+", "")
+        seg = string.gsub(seg, "|fx:%d+", "")
+        -- EFFECT bonus lands as b:…6=N… when stamped; drop lone 6= from bonus list noise.
+        return seg
+    end
+    for i = 1, #weakParts do
+        local w = weakParts[i]
+        local s = strongParts[i]
+        if w == s then
+            -- exact role segment match
+        elseif string.find(w, "^mainx", 1) and string.find(s, "^mainx", 1) then
+            if StripMainIdentity(w) ~= StripMainIdentity(s) then
+                -- Allow bonus list to gain EFFECT ref 6 on the strong side.
+                local wNoB = string.gsub(StripMainIdentity(w), "|b:[^|]*", "")
+                local sNoB = string.gsub(StripMainIdentity(s), "|b:[^|]*", "")
+                if wNoB ~= sNoB then
+                    return false
+                end
+            end
+        else
+            return false
+        end
+    end
+    return true
+end
+
+local function IsWeakerFingerprint(weakKey, strongKey)
+    return IsStrictFingerprintSubset(weakKey, strongKey)
+        or IsIncompleteMainUpgrade(weakKey, strongKey)
+end
+
 --- Union of recipeKeys + alternateRecipeSpecKeys + active pointers (deduped).
 local function CollectPotionRecipeKeyList(potion)
     local seen = {}
@@ -1587,7 +1668,7 @@ function RS.RegisterKnownPotion(outputUid, out, recipeSpecKey, quality)
         local weaker = false
         for i = 1, #keys do
             local existingKey = tostring(keys[i] or "")
-            if existingKey ~= "" and IsStrictFingerprintSubset(recipeSpecKey, existingKey) then
+            if existingKey ~= "" and IsWeakerFingerprint(recipeSpecKey, existingKey) then
                 weaker = true
                 break
             end
@@ -1608,7 +1689,7 @@ function RS.RegisterKnownPotion(outputUid, out, recipeSpecKey, quality)
             local kept = {}
             for i = 1, #keys do
                 local k = tostring(keys[i] or "")
-                if k ~= "" and not IsStrictFingerprintSubset(k, recipeSpecKey) then
+                if k ~= "" and not IsWeakerFingerprint(k, recipeSpecKey) then
                     kept[#kept + 1] = k
                 end
             end
@@ -1654,7 +1735,7 @@ function RS.ScrubSubsetPotionRecipeKeys()
                             local b = tostring(keys[j] or "")
                             if a ~= b
                                 and type(recipes[b]) == "table"
-                                and IsStrictFingerprintSubset(a, b)
+                                and IsWeakerFingerprint(a, b)
                             then
                                 drop = true
                                 break
@@ -1707,7 +1788,7 @@ function RS.ScrubOrphanSubsetRecipes()
                 local b = allKeys[j]
                 if a ~= b
                     and type(recipes[b]) == "table"
-                    and IsStrictFingerprintSubset(a, b)
+                    and IsWeakerFingerprint(a, b)
                     and RecipeOutcomesOverlap(recipes[a], recipes[b])
                 then
                     drop = true
@@ -1749,7 +1830,7 @@ function RS.RelinkPotionRecipeKeysFromOutcomes()
                     local keys = CollectPotionRecipeKeyList(potion)
                     local weaker = false
                     for i = 1, #keys do
-                        if IsStrictFingerprintSubset(recipeKey, tostring(keys[i] or "")) then
+                        if IsWeakerFingerprint(recipeKey, tostring(keys[i] or "")) then
                             weaker = true
                             break
                         end
@@ -2225,6 +2306,32 @@ function RS.MigrateRecipeFingerprintsV3()
         StockPiler3.Knowledge.Touch("recipe-fingerprint-migrate-v3")
     end
     return true
+end
+
+--- Re-fingerprint after EFFECT stamps (e.g. resist families): merge incomplete-uid
+--- SkillUp recipes into fx:-stamped siblings so Potions tab stops showing duplicates.
+function RS.MigrateRecipeFingerprintsV4()
+    local acct = StockPiler3.Account
+    if type(acct) ~= "table" then
+        return false
+    end
+    if acct.recipeFingerprintMigrateV4 == true then
+        return false
+    end
+    -- Force a V3-style rebuild once; clear the latch so the merge path runs.
+    acct.recipeFingerprintMigrateV3 = nil
+    local ok = RS.MigrateRecipeFingerprintsV3()
+    acct.recipeFingerprintMigrateV4 = true
+    if RS.ScrubSubsetPotionRecipeKeys then
+        RS.ScrubSubsetPotionRecipeKeys()
+    end
+    if RS.ScrubOrphanSubsetRecipes then
+        RS.ScrubOrphanSubsetRecipes()
+    end
+    if StockPiler3.Knowledge and StockPiler3.Knowledge.Touch then
+        StockPiler3.Knowledge.Touch("recipe-fingerprint-migrate-v4")
+    end
+    return ok == true
 end
 
 -- Expose hydrate for planner

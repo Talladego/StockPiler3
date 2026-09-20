@@ -164,6 +164,13 @@ local function RowIsReadyToCraft(row)
     if row.kind == "plant" or row.isPlantWatch == true then
         return false
     end
+    -- SkillUp Apo synthetic row: bags can craft; no watch / AutoGrow arm required.
+    if row.skillUp == true then
+        if (tonumber(row.craftable) or 0) <= 0 then
+            return false
+        end
+        return RowNeedsMorePotions(row) == true
+    end
     -- Live bags win over stale plan deficit (prevents over-brew after target met).
     if not RowNeedsMorePotions(row) then
         return false
@@ -238,6 +245,18 @@ local function FindSessionRow()
     local session = GetSession()
     if session.phase == "idle" and session.potionKey == nil and session.rowId == nil then
         return nil
+    end
+    if session.skillUp == true then
+        local SkillUp = StockPiler3.SkillUp
+        local row = SkillUp and SkillUp.GetApoBrewRow and SkillUp.GetApoBrewRow()
+        if type(row) == "table" then
+            return row
+        end
+        if type(Brew._skillUpRow) == "table" then
+            return Brew._skillUpRow
+        end
+        -- Fall back to session fields so Ready checks still work mid-brew.
+        return session
     end
     local plan = CurrentPlan()
     local rows = plan and plan.rows
@@ -856,6 +875,8 @@ local function ClearSession(opts)
     session.recipeSpecKey = nil
     session.potionRecipeKey = nil
     session.uniqueID = nil
+    session.skillUp = nil
+    Brew._skillUpRow = nil
     -- Set phase only via SetSessionPhase so loading->idle is logged.
     SetSessionPhase("idle", opts.reason or "clear")
     if opts.adoptBlock == true then
@@ -971,19 +992,31 @@ function Brew.PickReadyWatch()
     end
     local plan = CurrentPlan()
     local rows = plan and plan.rows
-    if type(rows) ~= "table" then
-        return nil
-    end
-    local best = nil
-    for i = 1, #rows do
-        local row = rows[i]
-        if RowIsReadyToCraft(row) then
-            if best == nil or CompareReadyWatch(row, best) then
-                best = row
+    if type(rows) == "table" then
+        local best = nil
+        for i = 1, #rows do
+            local row = rows[i]
+            if RowIsReadyToCraft(row) then
+                if best == nil or CompareReadyWatch(row, best) then
+                    best = row
+                end
             end
         end
+        if best ~= nil then
+            return best
+        end
     end
-    return best
+    -- Idle SkillUp Apo: invent a stable board from surplus mats.
+    local SkillUp = StockPiler3.SkillUp
+    if SkillUp and SkillUp.ShouldApoBrew and SkillUp.ShouldApoBrew() == true
+        and SkillUp.BuildApoBrewRow
+    then
+        local skillRow = SkillUp.BuildApoBrewRow()
+        if RowIsReadyToCraft(skillRow) then
+            return skillRow
+        end
+    end
+    return nil
 end
 
 function Brew.HasReadyToCraft()
@@ -1012,6 +1045,11 @@ function Brew.CanBrewNow()
     end
 
     if phase == "loaded" then
+        -- SkillUp Apo: keep footer lit while the board can still perform.
+        if session.skillUp == true then
+            return Brew.ValidateApothecaryPerform() == true
+                and (tonumber(session.craftable) or 0) > 0
+        end
         -- Target met while still loaded: do not fall through to another watch.
         if not RowNeedsMorePotions(session) then
             return false
@@ -1210,12 +1248,23 @@ local function BeginLoadJob(row, source)
     session.recipe = recipe
     session.recipeSpecKey = recipeSpecKey
     session.potionRecipeKey = row.potionRecipeKey or row.id
-    SyncSessionStockFromBags(session)
-    if not RowNeedsMorePotions(session) then
-        LogBrew("load abort target already met have="
-            .. tostring(session.potionHave) .. "/" .. tostring(session.potionMin))
-        ClearSession({ reason = "target-already-met" })
-        return false
+    session.skillUp = row.skillUp == true
+    if session.skillUp == true then
+        Brew._skillUpRow = row
+        -- Unknown output uid: do not abort on LivePotionHave; keep brewing surplus.
+        session.uniqueID = 0
+        session.potionHave = 0
+        session.potionMin = tonumber(row.potionMin) or 9999
+        session.potionDeficit = tonumber(row.potionDeficit) or session.potionMin
+    else
+        Brew._skillUpRow = nil
+        SyncSessionStockFromBags(session)
+        if not RowNeedsMorePotions(session) then
+            LogBrew("load abort target already met have="
+                .. tostring(session.potionHave) .. "/" .. tostring(session.potionMin))
+            ClearSession({ reason = "target-already-met" })
+            return false
+        end
     end
     SetSessionPhase("loading", "begin-load")
     Brew.InvalidateCanBrewCache()
@@ -1560,6 +1609,11 @@ function Brew.TryPerform(opId)
         Brew._brewHaveBefore = LivePotionHave(GetSession())
         LogBrew("perform opId=" .. tostring(opId or "?")
             .. " haveBefore=" .. tostring(Brew._brewHaveBefore))
+        local SkillUp = StockPiler3.SkillUp
+        if SkillUp and SkillUp.NoteApoAttempt then
+            local session = GetSession()
+            SkillUp.NoteApoAttempt({ skillUp = session and session.skillUp == true })
+        end
         if StockPiler3.Scheduler and StockPiler3.Scheduler.EnqueueBagFlush then
             StockPiler3.Scheduler.EnqueueBagFlush(true)
         end
@@ -1586,6 +1640,16 @@ function Brew.TryBrewClick()
 
     if phase == "loaded" then
         if Brew._loadSource == "manual" then
+            return "blocked"
+        end
+        if session.skillUp == true then
+            if Brew.ValidateApothecaryPerform() == true then
+                return "go"
+            end
+            local why = PerformBlockReason() or "click-perform-blocked"
+            LogBrew("click unload skillup perform-blocked reason=" .. tostring(why))
+            Brew.ClearLoadedSession({ reason = why })
+            ForceBrewUiRefresh()
             return "blocked"
         end
         SyncSessionStockFromBags(session)
@@ -1672,6 +1736,48 @@ function Brew.Tick()
     return false
 end
 
+--- Auto-load SkillUp Apo board when idle (watches done); user Brew click performs.
+function Brew.MaybeAutoLoadSkillUp()
+    if type(Brew._job) == "table" then
+        return false
+    end
+    local session = GetSession()
+    if tostring(session.phase or "idle") ~= "idle" then
+        return false
+    end
+    if NowSec() < (tonumber(Brew._adoptBlockUntil) or 0) then
+        return false
+    end
+    local blocked = AutoBrewBlocked()
+    if blocked then
+        return false
+    end
+    local SkillUp = StockPiler3.SkillUp
+    if not (SkillUp and SkillUp.ShouldApoBrew and SkillUp.ShouldApoBrew() == true) then
+        return false
+    end
+    -- Prefer real watch Ready rows; only auto-load SkillUp when none.
+    local plan = CurrentPlan()
+    local rows = plan and plan.rows
+    if type(rows) == "table" then
+        for i = 1, #rows do
+            if RowIsReadyToCraft(rows[i]) then
+                return false
+            end
+        end
+    end
+    local row = SkillUp.BuildApoBrewRow and SkillUp.BuildApoBrewRow()
+    if type(row) ~= "table" then
+        return false
+    end
+    if BeginLoadJob(row, "auto") then
+        KickLoadJob()
+        LogBrew("skillup auto-load")
+        return true
+    end
+    return false
+end
+
 --- Clear auto-loaded sessions that cannot perform after settle.
 --- Without this, settle-hold + no further crafting-updated parks phase=loaded,
 --- Orchestrator skips grow, and Scheduler skips plan rebuild until watchplan.
@@ -1733,6 +1839,9 @@ function Brew.OnUpdate(timeElapsed)
     if now > 0 and now >= due then
         Brew._stuckProbeAt = now
         Brew.ProbeStuckAutoLoaded("onupdate")
+        if Brew.MaybeAutoLoadSkillUp then
+            Brew.MaybeAutoLoadSkillUp()
+        end
     end
 end
 
@@ -1796,6 +1905,41 @@ function Brew.RefreshSessionAfterBrew()
         ForceBrewUiRefresh()
         return
     end
+
+    -- SkillUp Apo: no watch target — keep board while craftable + engine OK.
+    if session.skillUp == true then
+        Brew._brewHaveBefore = nil
+        if session.craftable ~= nil then
+            session.craftable = math.max(0, (tonumber(session.craftable) or 0) - 1)
+        end
+        local stillValid = Brew.ValidateApothecaryPerform() == true
+        local craftLeft = tonumber(session.craftable) or 0
+        LogBrew(string.format(
+            "after-brew skillup craftable=%s valid=%s",
+            tostring(craftLeft), tostring(stillValid)
+        ))
+        if stillValid ~= true or craftLeft <= 0 then
+            Brew.ClearLoadedSession({ reason = "after-brew-skillup-done" })
+            -- Rebuild next SkillUp board if mats remain.
+            if StockPiler3.Scheduler and StockPiler3.Scheduler.EnqueueBagFlush then
+                StockPiler3.Scheduler.EnqueueBagFlush(true)
+            end
+            ForceBrewUiRefresh()
+            return
+        end
+        -- Refresh craftable from bags for the next click.
+        local SkillUp = StockPiler3.SkillUp
+        if SkillUp and SkillUp.BuildApoBrewRow then
+            local nextRow = SkillUp.BuildApoBrewRow()
+            if type(nextRow) == "table" then
+                session.craftable = tonumber(nextRow.craftable) or craftLeft
+                Brew._skillUpRow = nextRow
+            end
+        end
+        ForceBrewUiRefresh()
+        return
+    end
+
     local haveBefore = Brew._brewHaveBefore
     Brew._brewHaveBefore = nil
     -- Prefer live bag count (yield estimates under/over-count crits and lag).

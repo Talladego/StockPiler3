@@ -206,7 +206,10 @@ local function MatchesEffectFilter(effectKey, filter)
     return effectKey == filter
 end
 
-local function PassesFilters(row, nameFilter, effectFilter)
+local function PassesFilters(row, nameFilter, effectFilter, hideSkillUp)
+    if hideSkillUp == true and row.skillUpOrigin == true and row.watched ~= true then
+        return false
+    end
     if not MatchesNameFilter(row.name, nameFilter)
         and not MatchesNameFilter(row.baseName, nameFilter)
         and not MatchesNameFilter(row.recipeLabel, nameFilter)
@@ -408,7 +411,7 @@ local function BuildVisibleList()
     end
     local nameFilter = s.potionNameFilter or ""
     local effectFilter = s.potionEffectFilter or ""
-    -- Known-recipe filter omitted: never applied even if checkbox exists.
+    local hideSkillUp = s.potionHideSkillUp ~= false
     local rows = {}
 
     if StockPiler3.Inventory and StockPiler3.Inventory.RefreshAllIfNeeded then
@@ -447,6 +450,13 @@ local function BuildVisibleList()
             end
         end
         local baseName = potion.name or potionBase.name or towstring(tostring(uid))
+        local skillUpOrigin = potion.skillUpOrigin == true
+            or (type(potionBase) == "table" and potionBase.skillUpOrigin == true)
+            or (type(potion.recipe) == "table" and potion.recipe.skillUpOrigin == true)
+        local displayName = baseName
+        if skillUpOrigin == true then
+            displayName = baseName .. T("potions.tag.skillup")
+        end
         local powerNum = tonumber(potion.power) or 0
         local stabilityNum = tonumber(potion.stability) or 0
         local multiplierNum = tonumber(potion.multiplier) or 0
@@ -458,8 +468,9 @@ local function BuildVisibleList()
             potionBaseKey = potion.potionKey or potionBase.potionKey,
             recipeSpecKey = potion.recipeSpecKey,
             recipeLabel = potion.recipeLabel or L"",
-            name = baseName,
+            name = displayName,
             baseName = baseName,
+            skillUpOrigin = skillUpOrigin,
             effectKey = effectKey,
             effectText = EffectTextForRow(effectKey),
             powerNum = powerNum,
@@ -480,6 +491,29 @@ local function BuildVisibleList()
             uniqueID = uid,
         }
         ApplyPotionStats(row, itemData)
+        -- Learned Account.items tier when bag/DB shell still lacks iLevel/skillReq.
+        if (tonumber(row.levelNum) or 0) <= 0 and uid > 0 then
+            local learned = StockPiler3.Items and StockPiler3.Items.GetByUid and StockPiler3.Items.GetByUid(uid)
+            if type(learned) == "table" then
+                local lvl = tonumber(learned.iLevel) or tonumber(learned.skillReq) or tonumber(learned.skillLevel) or 0
+                if lvl <= 0 and type(learned.bonuses) == "table" then
+                    lvl = tonumber(learned.bonuses[9]) or 0
+                end
+                if lvl > 0 then
+                    row.rankNum = lvl
+                    row.levelNum = lvl
+                    row.levelText = towstring(tostring(lvl))
+                end
+            end
+        end
+        if (tonumber(row.levelNum) or 0) <= 0 and type(potionBase) == "table" then
+            local lvl = tonumber(potionBase.iLevel) or tonumber(potionBase.level) or 0
+            if lvl > 0 then
+                row.rankNum = lvl
+                row.levelNum = lvl
+                row.levelText = towstring(tostring(lvl))
+            end
+        end
         row.nameR, row.nameG, row.nameB = ItemRarityNameColor(itemData)
         local recipe = potion.recipe
         if not recipe and RS and RS.GetRecipe and potion.recipeSpecKey then
@@ -506,7 +540,7 @@ local function BuildVisibleList()
             potionBase
         )
         row.hasRecipe = row.recipeData ~= nil
-        if PassesFilters(row, nameFilter, effectFilter) then
+        if PassesFilters(row, nameFilter, effectFilter, hideSkillUp) then
             rows[#rows + 1] = row
         end
     end
@@ -588,12 +622,15 @@ function StockPiler3TabPotions.Initialize()
     if DoesWindowExist("SP3TabPotionsSearchBox") then
         TextEditBoxSetText("SP3TabPotionsSearchBox", towstring(s.potionNameFilter or ""))
     end
-    -- Omit known-recipe filter: hide checkbox + label; never apply.
+    -- Hide Skill up potions (default on). Reuse former known-recipe checkbox.
     if DoesWindowExist("SP3TabPotionsFilterKnownRecipe") then
-        WindowSetShowing("SP3TabPotionsFilterKnownRecipe", false)
+        WindowSetShowing("SP3TabPotionsFilterKnownRecipe", true)
+        ButtonSetCheckButtonFlag("SP3TabPotionsFilterKnownRecipe", true)
+        ButtonSetPressedFlag("SP3TabPotionsFilterKnownRecipe", s.potionHideSkillUp ~= false)
     end
     if DoesWindowExist("SP3TabPotionsFilterKnownRecipeLabel") then
-        WindowSetShowing("SP3TabPotionsFilterKnownRecipeLabel", false)
+        WindowSetShowing("SP3TabPotionsFilterKnownRecipeLabel", true)
+        LabelSetText("SP3TabPotionsFilterKnownRecipeLabel", T("potions.hide_skillup"))
     end
     InitEffectCombo()
     UpdateSortHeaders()
@@ -667,11 +704,16 @@ function StockPiler3TabPotions.UpdateRows()
 end
 
 function StockPiler3TabPotions.OnToggleKnownRecipeFilter()
-    -- Omitted: keep checkbox hidden; do not persist or apply filter.
-    if DoesWindowExist("SP3TabPotionsFilterKnownRecipe") then
-        WindowSetShowing("SP3TabPotionsFilterKnownRecipe", false)
-        ButtonSetPressedFlag("SP3TabPotionsFilterKnownRecipe", false)
+    local s = GetSettings()
+    if type(s) ~= "table" then
+        return
     end
+    local on = true
+    if DoesWindowExist("SP3TabPotionsFilterKnownRecipe") then
+        on = ButtonGetPressedFlag("SP3TabPotionsFilterKnownRecipe") == true
+    end
+    s.potionHideSkillUp = on
+    StockPiler3TabPotions.Refresh()
 end
 
 function StockPiler3TabPotions.OnSearchChanged()

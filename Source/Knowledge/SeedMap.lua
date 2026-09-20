@@ -692,6 +692,114 @@ function SM.PickBestSeedUid(plantUid, seedUids, _spec)
     return bestUid
 end
 
+--- Seed UID for buffer / refine / Apo plant-hold math.
+--- Prefer the seed this plant refines into, then same skillReq as the plant.
+--- Do NOT use PickBestSeedUid alone: that prefers Eternal L1 in bags and lets
+--- Apo burn a rare higher-tier plant while counting L1 seeds as "buffer OK".
+function SM.ResolveSeedUidForPlant(plantUid, plantSpec)
+    plantUid = tonumber(plantUid) or 0
+    if plantUid <= 0 then
+        return 0
+    end
+    local plantReq = 0
+    if type(plantSpec) == "table" then
+        plantReq = tonumber(plantSpec.skillLevel) or tonumber(plantSpec.craftingSkillRequirement) or 0
+    end
+    if plantReq <= 0 then
+        local plantData = BagSample(plantUid)
+        if type(plantData) == "table" then
+            plantReq = tonumber(plantData.craftingSkillRequirement) or tonumber(plantData.skillReq) or 0
+            if plantReq <= 0 and type(plantData.bonuses) == "table" then
+                plantReq = tonumber(plantData.bonuses[9]) or 0
+            end
+        end
+    end
+    if plantReq <= 0 and StockPiler3.Items and StockPiler3.Items.ToSpec then
+        local spec = StockPiler3.Items.ToSpec(plantUid)
+        plantReq = tonumber(spec and spec.skillLevel) or 0
+    end
+
+    local function seedSkillReq(uid)
+        uid = tonumber(uid) or 0
+        if uid <= 0 then
+            return 0
+        end
+        local item = BagSample(uid)
+        if type(item) == "table" then
+            local req = tonumber(item.craftingSkillRequirement) or tonumber(item.skillReq) or 0
+            if req <= 0 and type(item.bonuses) == "table" then
+                req = tonumber(item.bonuses[9]) or 0
+            end
+            if req > 0 then
+                return req
+            end
+        end
+        if StockPiler3.Items and StockPiler3.Items.GetByUid then
+            local row = StockPiler3.Items.GetByUid(uid)
+            if type(row) == "table" then
+                local req = tonumber(row.craftingSkillRequirement) or tonumber(row.skillReq) or 0
+                if req <= 0 and type(row.bonuses) == "table" then
+                    req = tonumber(row.bonuses[9]) or 0
+                end
+                return req
+            end
+        end
+        return 0
+    end
+
+    -- 1) Observed refine product → seed (exact ladder rung for this plant).
+    local entry = RefinesTable() and RefinesTable()[tostring(plantUid)]
+    local refineSeed = type(entry) == "table" and (tonumber(entry.seedUid) or 0) or 0
+    if refineSeed > 0 and not SM.IsSeedPacketUid(refineSeed) then
+        return refineSeed
+    end
+
+    -- 2) Among grow/refine-linked seeds, prefer matching plant skillReq.
+    local linked = SM.GetSeedUidsForPlant(plantUid) or {}
+    local matchUid, anyUid = 0, 0
+    for i = 1, #linked do
+        local uid = tonumber(linked[i]) or 0
+        if uid > 0 and not SM.IsSeedPacketUid(uid) then
+            if anyUid <= 0 then
+                anyUid = uid
+            end
+            if plantReq > 0 and seedSkillReq(uid) == plantReq then
+                matchUid = uid
+                break
+            end
+        end
+    end
+    if matchUid > 0 then
+        return matchUid
+    end
+
+    -- 3) Same-skillReq via PickBest among filtered list only.
+    if plantReq > 0 and #linked > 0 then
+        local same = {}
+        for i = 1, #linked do
+            local uid = tonumber(linked[i]) or 0
+            if uid > 0 and seedSkillReq(uid) == plantReq then
+                same[#same + 1] = uid
+            end
+        end
+        if #same > 0 and SM.PickBestSeedUid then
+            local best = tonumber(SM.PickBestSeedUid(plantUid, same, plantSpec)) or 0
+            if best > 0 then
+                return best
+            end
+            return same[1]
+        end
+    end
+
+    if anyUid > 0 then
+        return anyUid
+    end
+    if SM.PickBestSeedUid then
+        return tonumber(SM.PickBestSeedUid(plantUid, linked, plantSpec)) or 0
+    end
+    return 0
+end
+
 function SM.IsOneWayHarvestSpec(spec)
     if type(spec) ~= "table" then
         return false
@@ -1320,6 +1428,20 @@ function SM.BeginPendingHarvest(plotNum, seedUid)
     end
 end
 
+function SM.NoteCultSkillHit(seedUid, delta)
+    seedUid = tonumber(seedUid) or 0
+    delta = tonumber(delta) or 1
+    if seedUid <= 0 or delta <= 0 then
+        return false
+    end
+    local bucket = EnsureGrowBucket(seedUid)
+    if type(bucket) ~= "table" then
+        return false
+    end
+    bucket.cultSkillHits = (tonumber(bucket.cultSkillHits) or 0) + delta
+    return true
+end
+
 --- Chat "Your creation failed." with an armed pending: close without learning bag trash.
 function SM.CompletePendingHarvestAsCritFail()
     local pending = SM._pendingHarvest
@@ -1626,7 +1748,9 @@ function SM.ItemLooksLikeRefinablePlant(itemData)
 end
 
 ----------------------------------------------------------------
--- Migrate: stamp plant effectId from known seed links (one-shot)
+-- Migrate: stamp plant effectId from known seed links
+-- V1 one-shot; V2 retries plants still missing EFFECT (e.g. resist
+-- families whose description patterns landed after V1).
 ----------------------------------------------------------------
 
 function SM.MigratePlantEffectsFromSeeds()
@@ -1634,7 +1758,8 @@ function SM.MigratePlantEffectsFromSeeds()
     if type(acct) ~= "table" then
         return 0
     end
-    if acct.plantEffectFromSeedMigrateV1 == true then
+    local forceRetry = acct.plantEffectFromSeedMigrateV2 ~= true
+    if acct.plantEffectFromSeedMigrateV1 == true and not forceRetry then
         return 0
     end
     -- plantUid -> { seedUid, samples }
@@ -1713,6 +1838,7 @@ function SM.MigratePlantEffectsFromSeeds()
     end
 
     acct.plantEffectFromSeedMigrateV1 = true
+    acct.plantEffectFromSeedMigrateV2 = true
     if changed > 0 and StockPiler3.Knowledge and StockPiler3.Knowledge.Touch then
         StockPiler3.Knowledge.Touch("plant-effect-seed")
     end
@@ -1756,6 +1882,11 @@ function SM.DumpCraftCycleStats(emit)
     end
     if growN == 0 then
         emit("  (none)")
+    end
+
+    local SkillUp = StockPiler3.SkillUp
+    if SkillUp and SkillUp.DumpRates then
+        SkillUp.DumpRates(emit)
     end
 
     local refines = RefinesTable() or {}

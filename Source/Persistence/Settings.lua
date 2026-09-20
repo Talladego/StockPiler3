@@ -6,7 +6,7 @@ StockPiler3 = StockPiler3 or {}
 StockPiler3.Persistence = StockPiler3.Persistence or {}
 local P = StockPiler3.Persistence
 
-local ACCOUNT_TABLES = { "items", "grows", "refines", "recipes", "potions", "additives", "vendorItems" }
+local ACCOUNT_TABLES = { "items", "grows", "refines", "recipes", "potions", "additives", "vendorItems", "skillUpRates" }
 
 -- Historical leak keys (settings flags written onto Account). Strip on load.
 local ACCOUNT_LEAKED_SETTINGS_KEYS = {
@@ -16,6 +16,7 @@ local ACCOUNT_LEAKED_SETTINGS_KEYS = {
     "autoBuyEnabled",
     "autoBuyReserveGold",
     "autoBuyBudgetGold",
+    "autoBuySpentBrass",
     "growSeedBufferMin",
     "growSeedBufferEnabled",
     "autoGrowPauseCombat",
@@ -31,16 +32,14 @@ local ACCOUNT_LEAKED_SETTINGS_KEYS = {
     "potionKnownRecipeOnly",
 }
 
+-- Must include every ACCOUNT_TABLES key or Shutdown StripUnexpectedAccountKeys
+-- will delete them before SavedVariables write (wiped skillUpRates each reload).
 local ACCOUNT_ALLOWED = {
     accountVersion = true,
-    items = true,
-    grows = true,
-    refines = true,
-    recipes = true,
-    potions = true,
-    additives = true,
-    vendorItems = true,
 }
+for i = 1, #ACCOUNT_TABLES do
+    ACCOUNT_ALLOWED[ACCOUNT_TABLES[i]] = true
+end
 
 local function ClampInt(n, lo, hi, default)
     n = tonumber(n)
@@ -81,6 +80,7 @@ StockPiler3.DefaultSettings = {
     potionEffectFilter = "",
     potionSortColumn = "name",
     potionSortAscending = true,
+    potionHideSkillUp = true,
 }
 
 StockPiler3.DefaultCharacterSettings = {
@@ -90,6 +90,7 @@ StockPiler3.DefaultCharacterSettings = {
     autoBuyEnabled = false,
     autoBuyReserveGold = 10,
     autoBuyBudgetGold = 50,
+    autoBuySpentBrass = 0,
     growSeedBufferMin = 5,
     growSeedBufferEnabled = true,
     autoGrowPauseCombat = true,
@@ -97,6 +98,8 @@ StockPiler3.DefaultCharacterSettings = {
     brewRespectGrowReserve = true,
     -- Brew load: spend butcher/vendor twins before cult plants. Future UI toggle.
     brewPreferNonGrowableFirst = true,
+    skillUpCultEnabled = false,
+    skillUpApoEnabled = false,
 }
 
 StockPiler3.DefaultAccount = {
@@ -108,6 +111,7 @@ StockPiler3.DefaultAccount = {
     potions = {},
     additives = {},
     vendorItems = {},
+    skillUpRates = { v = 2, cult = {}, apo = {} },
 }
 
 function P.ToNarrow(value)
@@ -193,6 +197,9 @@ function P.EnsureSettings()
     if s.potionSortAscending == nil then
         s.potionSortAscending = true
     end
+    if s.potionHideSkillUp == nil then
+        s.potionHideSkillUp = true
+    end
     if s.selectedTab == nil then
         s.selectedTab = 1
     end
@@ -241,8 +248,18 @@ function P.EnsureCharacterBucketShape(char)
     char.brewPreferNonGrowableFirst = char.brewPreferNonGrowableFirst ~= false
     char.growSeedBufferEnabled = char.growSeedBufferEnabled ~= false
     char.autoGrowPauseCombat = char.autoGrowPauseCombat ~= false
+    char.skillUpCultEnabled = char.skillUpCultEnabled == true
+    char.skillUpApoEnabled = char.skillUpApoEnabled == true
     char.autoBuyReserveGold = ClampInt(char.autoBuyReserveGold, 1, 99, 10)
     char.autoBuyBudgetGold = ClampInt(char.autoBuyBudgetGold, 1, 999, 50)
+    do
+        local spent = tonumber(char.autoBuySpentBrass)
+        if spent == nil or spent < 0 then
+            char.autoBuySpentBrass = 0
+        else
+            char.autoBuySpentBrass = math.floor(spent)
+        end
+    end
     char.growSeedBufferMin = ClampInt(char.growSeedBufferMin, 4, 20, 5)
     return char
 end
@@ -313,11 +330,17 @@ function P.StripUnexpectedAccountKeys()
         return 0
     end
     local n = 0
+    local removed = {}
     for k, _ in pairs(a) do
         if ACCOUNT_ALLOWED[k] ~= true then
+            removed[#removed + 1] = tostring(k)
             a[k] = nil
             n = n + 1
         end
+    end
+    if n > 0 and StockPiler3.Debug and StockPiler3.Debug.LogOp then
+        StockPiler3.Debug.LogOp("persist", "strip-account-keys n=" .. tostring(n)
+            .. " keys=" .. table.concat(removed, ","))
     end
     return n
 end

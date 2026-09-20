@@ -188,9 +188,76 @@ function Bridge.OnTradeSkillUpdated()
     if Caps and Caps.MarkTradeSkillsReady then
         Caps.MarkTradeSkillsReady()
     end
-    if StockPiler3.Scheduler and StockPiler3.Scheduler.EnqueuePlanRebuild then
-        StockPiler3.Scheduler.EnqueuePlanRebuild()
+    local cult = Caps and Caps.GetCultSkill and Caps.GetCultSkill() or 0
+    local apo = Caps and Caps.GetApoSkill and Caps.GetApoSkill() or 0
+    local levelsHash = Caps and Caps.LevelsHash and Caps.LevelsHash()
+        or (tostring(cult) .. ":" .. tostring(apo))
+    local prevHash = Bridge._skillLevelsHash
+    local hashChanged = prevHash ~= levelsHash
+    local firstSkillsReady = Bridge._skillsWereReady ~= true
+        and (cult > 0 or apo > 0)
+    Bridge._skillLevelsHash = levelsHash
+    if cult > 0 or apo > 0 then
+        Bridge._skillsWereReady = true
     end
+
+    local prev = Bridge._skillPrev
+    if type(prev) ~= "table" then
+        Bridge._skillPrev = { cult = cult, apo = apo }
+        hashChanged = true
+    else
+        local dCult = cult - (tonumber(prev.cult) or cult)
+        local dApo = apo - (tonumber(prev.apo) or apo)
+        prev.cult = cult
+        prev.apo = apo
+        -- Logout / char switch: ignore large negative jumps.
+        if dCult <= -5 or dApo <= -5 then
+            if Caps and Caps.ResetTradeSkillsReady then
+                Caps.ResetTradeSkillsReady()
+            end
+            Bridge._skillsWereReady = false
+            Bridge._skillLevelsHash = nil
+            Bridge._skillPrev = nil
+            return
+        end
+        local SkillUp = StockPiler3.SkillUp
+        if dCult > 0 and SkillUp and SkillUp.OnCultSkillDelta then
+            SkillUp.OnCultSkillDelta(dCult)
+        end
+        if dApo > 0 and SkillUp and SkillUp.OnApoSkillDelta then
+            SkillUp.OnApoSkillDelta(dApo)
+        end
+    end
+
+    if hashChanged or firstSkillsReady then
+        if StockPiler3.Scheduler and StockPiler3.Scheduler.EnqueuePlanRebuild then
+            StockPiler3.Scheduler.EnqueuePlanRebuild()
+        end
+        if StockPiler3TabWatch and StockPiler3TabWatch.RefreshSkillGates then
+            -- Force gate key rebuild (cult/apo visibility just changed).
+            StockPiler3TabWatch._skillGatesKey = nil
+            StockPiler3TabWatch.RefreshSkillGates()
+        end
+        if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
+            StockPiler3Window.RequestFooterRefresh()
+        end
+        if firstSkillsReady and cult > 0
+            and StockPiler3.Scheduler and StockPiler3.Scheduler.WakeAutoGrow
+        then
+            StockPiler3.Scheduler.WakeAutoGrow()
+        end
+        if StockPiler3.Debug and StockPiler3.Debug.LogOp then
+            StockPiler3.Debug.LogOp("caps", string.format(
+                "trade-skill-updated cult=%d apo=%d first=%s",
+                cult, apo, tostring(firstSkillsReady)
+            ))
+        end
+    end
+end
+
+--- Trainer / interact closed: GameData may update a tick after TRADE_SKILL_UPDATED.
+function Bridge.OnInteractDone()
+    Bridge.OnTradeSkillUpdated()
 end
 
 function Bridge.OnStoreShow()
@@ -214,6 +281,9 @@ function Bridge.OnLoadingEnd()
     if StockPiler3.TradeSkillCaps and StockPiler3.TradeSkillCaps.ResetTradeSkillsReady then
         StockPiler3.TradeSkillCaps.ResetTradeSkillsReady()
     end
+    Bridge._skillLevelsHash = nil
+    Bridge._skillPrev = nil
+    Bridge._skillsWereReady = false
     if StockPiler3.Garden and StockPiler3.Garden.SyncAll then
         StockPiler3.Garden.SyncAll()
     end
@@ -330,6 +400,7 @@ function Bridge.Register()
     RegisterOne(ev, "PLAYER_CRAFTING_UPDATED", prefix .. "OnCraftingUpdated")
     RegisterOne(ev, "PLAYER_CULTIVATION_UPDATED", prefix .. "OnCultivationUpdated")
     RegisterOne(ev, "TRADE_SKILL_UPDATED", prefix .. "OnTradeSkillUpdated")
+    RegisterOne(ev, "INTERACT_DONE", prefix .. "OnInteractDone")
     RegisterOne(ev, "LOADING_END", prefix .. "OnLoadingEnd")
     RegisterOne(ev, "INTERACT_SHOW_STORE", prefix .. "OnStoreShow")
     RegisterOne(ev, "UPDATE_PROCESSED", prefix .. "OnUpdateProcessed")

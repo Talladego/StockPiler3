@@ -19,6 +19,8 @@ local ADDITIVES_WIN = "SP3TabWatchAdditives"
 local AUTOBUY_WIN = "SP3TabWatchAutoBuy"
 local SEED_BUFFER_ENABLE_WIN = "SP3TabWatchSeedBufferEnable"
 local COMBAT_PAUSE_WIN = "SP3TabWatchCombatPause"
+local SKILLUP_CULT_WIN = "SP3TabWatchSkillUpCult"
+local SKILLUP_APO_WIN = "SP3TabWatchSkillUpApo"
 
 local COLOR_OK = { 80, 200, 80 }
 local COLOR_WARN = { 220, 180, 60 }
@@ -125,11 +127,17 @@ end
 local function ApplyStatusColor(labelWin, statusKey)
     statusKey = tostring(statusKey or "")
     local c = COLOR_GRAY
-    if statusKey == "potion_stocked" or statusKey == "plant_stocked" or statusKey == "ready_to_craft" then
+    if statusKey == "potion_stocked" or statusKey == "plant_stocked" or statusKey == "ready_to_craft"
+        or statusKey == "planting" or statusKey == "buffer_plant" or statusKey == "growing"
+    then
         c = COLOR_OK
     elseif statusKey == "ready_to_craft_shared"
         or statusKey == "restocking"
         or statusKey == "need_seeds"
+        or statusKey == "refining"
+        or statusKey == "wait_cult"
+        or statusKey == "seed_buffer"
+        or statusKey == "idle"
     then
         c = COLOR_WARN
     elseif statusKey == "no_recipe"
@@ -137,6 +145,15 @@ local function ApplyStatusColor(labelWin, statusKey)
         or statusKey == "need_apothecary"
         or statusKey == "need_skill"
         or statusKey == "buy_ingredients"
+        or statusKey == "no_seeds"
+        or statusKey == "need_vendor"
+        or statusKey == "autobuy_off"
+        or statusKey == "no_vendor_seed"
+        or statusKey == "need_mats"
+        or statusKey == "need_resin"
+        or statusKey == "unstable"
+        or statusKey == "need_container_vendor"
+        or statusKey == "no_vendor_container"
     then
         c = COLOR_BLOCK
     end
@@ -145,6 +162,10 @@ end
 
 local function IsPlantWatchRow(data)
     return type(data) == "table" and (data.kind == "plant" or data.isPlantWatch == true)
+end
+
+local function IsSkillUpWatchRow(data)
+    return type(data) == "table" and (data.skillUp == true or data.addonOwned == true)
 end
 
 local function EnsureWatchNameRarityColors(data)
@@ -268,7 +289,7 @@ local function ApplyRowBrewButton(btnWin, data)
     if not DoesWindowExist(btnWin) then
         return
     end
-    if IsPlantWatchRow(data) then
+    if IsPlantWatchRow(data) or (type(data) == "table" and data.hideBrew == true) then
         WindowSetShowing(btnWin, false)
         return
     end
@@ -457,14 +478,20 @@ local function HasEnabledWatch()
     return false
 end
 
+local function HasSkillUpWatchStatus()
+    local SkillUp = StockPiler3.SkillUp
+    return SkillUp and SkillUp.ShouldShowWatchStatus and SkillUp.ShouldShowWatchStatus() == true
+end
+
 local function BuildVisibleList(opts)
     opts = type(opts) == "table" and opts or {}
     local prevList = StockPiler3TabWatch.listData
     local prevOrder = StockPiler3TabWatch.displayOrder
     local plan = nil
     local forcePlan = opts.forcePlan == true
-    -- Enabled watches but empty/stale plan: sync-build so Watch tab is never blank after toggle.
-    if not forcePlan and HasEnabledWatch() then
+    local hasContent = HasEnabledWatch() or HasSkillUpWatchStatus()
+    -- Enabled watches / SkillUp status but empty/stale plan: sync-build so Watch tab is never blank.
+    if not forcePlan and hasContent then
         local snap = StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Get
             and StockPiler3.PlanSnapshot.Get()
         local snapRows = type(snap) == "table" and snap.rows or nil
@@ -484,7 +511,7 @@ local function BuildVisibleList(opts)
         local keepPrev = type(prevList) == "table" and #prevList > 0
         if keepPrev then
             local keep = type(plan) ~= "table"
-            if not keep and HasEnabledWatch() then
+            if not keep and hasContent then
                 keep = true
             end
             if keep then
@@ -570,6 +597,35 @@ local function UpdateCombatPauseCheckbox()
     syncingUi = false
 end
 
+local function UpdateSkillUpCheckboxes()
+    local SkillUp = StockPiler3.SkillUp
+    local cultVis = SkillUp and SkillUp.IsCultVisible and SkillUp.IsCultVisible() == true
+    local apoVis = SkillUp and SkillUp.IsApoVisible and SkillUp.IsApoVisible() == true
+    local cultOn = SkillUp and SkillUp.IsCultEnabled and SkillUp.IsCultEnabled() == true
+    local apoOn = SkillUp and SkillUp.IsApoEnabled and SkillUp.IsApoEnabled() == true
+
+    if DoesWindowExist(SKILLUP_CULT_WIN) then
+        WindowSetShowing(SKILLUP_CULT_WIN, cultVis == true)
+        syncingUi = true
+        ButtonSetCheckButtonFlag(SKILLUP_CULT_WIN, true)
+        ButtonSetPressedFlag(SKILLUP_CULT_WIN, cultVis == true and cultOn == true)
+        syncingUi = false
+    end
+    if DoesWindowExist("SP3TabWatchSkillUpCultLabel") then
+        WindowSetShowing("SP3TabWatchSkillUpCultLabel", cultVis == true)
+    end
+    if DoesWindowExist(SKILLUP_APO_WIN) then
+        WindowSetShowing(SKILLUP_APO_WIN, apoVis == true)
+        syncingUi = true
+        ButtonSetCheckButtonFlag(SKILLUP_APO_WIN, true)
+        ButtonSetPressedFlag(SKILLUP_APO_WIN, apoVis == true and apoOn == true)
+        syncingUi = false
+    end
+    if DoesWindowExist("SP3TabWatchSkillUpApoLabel") then
+        WindowSetShowing("SP3TabWatchSkillUpApoLabel", apoVis == true)
+    end
+end
+
 local function UpdateSeedBufferEnableCheckbox()
     if not DoesWindowExist(SEED_BUFFER_ENABLE_WIN) then
         return
@@ -596,6 +652,42 @@ local function UpdateAutoBuyChips()
     local budget = type(row) == "table" and tonumber(row.autoBuyBudgetGold) or 50
     SetChipNumber("SP3TabWatchReserveChipValue", "SP3TabWatchReserveChip", reserve)
     SetChipNumber("SP3TabWatchBudgetChipValue", "SP3TabWatchBudgetChip", budget)
+
+    local spent = 0
+    local exhausted = false
+    local Buy = StockPiler3.Buy
+    if Buy and Buy.GetSpentBrass then
+        spent = tonumber(Buy.GetSpentBrass()) or 0
+    elseif type(row) == "table" then
+        spent = tonumber(row.autoBuySpentBrass) or 0
+    end
+    local budgetBrass = budget * ((Buy and Buy.BRASS_PER_GOLD) or 10000)
+    exhausted = spent >= budgetBrass
+    local c = exhausted and COLOR_BLOCK or COLOR_OK
+    if DoesWindowExist("SP3TabWatchBudgetChipValue") then
+        LabelSetTextColor("SP3TabWatchBudgetChipValue", c[1], c[2], c[3])
+    end
+    if DoesWindowExist("SP3TabWatchBudgetChipBg") and WindowSetTintColor then
+        if exhausted then
+            WindowSetTintColor("SP3TabWatchBudgetChipBg", 90, 30, 30)
+        else
+            WindowSetTintColor("SP3TabWatchBudgetChipBg", 30, 70, 30)
+        end
+    end
+    if DoesWindowExist("SP3TabWatchBudgetReset") then
+        local canReset = spent > 0
+        ButtonSetDisabledFlag("SP3TabWatchBudgetReset", not canReset)
+        if canReset then
+            -- Match per-row Load/Brew: gold when actionable.
+            SetButtonTextColorAll("SP3TabWatchBudgetReset", COLOR_WARN[1], COLOR_WARN[2], COLOR_WARN[3])
+        else
+            SetButtonTextColorAll("SP3TabWatchBudgetReset", COLOR_GRAY[1], COLOR_GRAY[2], COLOR_GRAY[3])
+        end
+    end
+end
+
+function StockPiler3TabWatch.RefreshAutoBuyMoneyUi()
+    UpdateAutoBuyChips()
 end
 
 local function RowDataFromActiveChild()
@@ -623,6 +715,9 @@ end
 
 local function AdjustTarget(data, delta)
     if type(data) ~= "table" then
+        return
+    end
+    if IsSkillUpWatchRow(data) then
         return
     end
     if IsPlantWatchRow(data) then
@@ -664,7 +759,7 @@ local function AdjustTarget(data, delta)
 end
 
 local function AdjustPriority(data, delta)
-    if type(data) ~= "table" or IsPlantWatchRow(data) then
+    if type(data) ~= "table" or IsPlantWatchRow(data) or IsSkillUpWatchRow(data) then
         return
     end
     local potionKey = data.potionRecipeKey or data.id or data.potionKey
@@ -701,6 +796,15 @@ function StockPiler3TabWatch.Initialize()
     LabelSetText("SP3TabWatchCombatPauseLabel", T("watch.combat_pause_label"))
     LabelSetText("SP3TabWatchReserveLabel", T("watch.reserve_label"))
     LabelSetText("SP3TabWatchBudgetLabel", T("watch.budget_label"))
+    if DoesWindowExist("SP3TabWatchBudgetReset") then
+        ButtonSetText("SP3TabWatchBudgetReset", T("watch.budget_reset"))
+    end
+    if DoesWindowExist("SP3TabWatchSkillUpCultLabel") then
+        LabelSetText("SP3TabWatchSkillUpCultLabel", T("watch.skillup_cult"))
+    end
+    if DoesWindowExist("SP3TabWatchSkillUpApoLabel") then
+        LabelSetText("SP3TabWatchSkillUpApoLabel", T("watch.skillup_apo"))
+    end
     TintStepper("SP3TabWatchSeedBufferChipBg")
     TintStepper("SP3TabWatchReserveChipBg")
     TintStepper("SP3TabWatchBudgetChipBg")
@@ -730,10 +834,17 @@ function StockPiler3TabWatch.RefreshSkillGates()
     local seedBuf = StockPiler3.Watch and StockPiler3.Watch.GetSeedBufferMin and StockPiler3.Watch.GetSeedBufferMin() or 5
     local reserve = type(row) == "table" and tonumber(row.autoBuyReserveGold) or 10
     local budget = type(row) == "table" and tonumber(row.autoBuyBudgetGold) or 50
+    local spent = type(row) == "table" and tonumber(row.autoBuySpentBrass) or 0
+    local SkillUp = StockPiler3.SkillUp
+    local skillUpCult = SkillUp and SkillUp.IsCultEnabled and SkillUp.IsCultEnabled() == true
+    local skillUpApo = SkillUp and SkillUp.IsApoEnabled and SkillUp.IsApoEnabled() == true
+    local cultVis = SkillUp and SkillUp.IsCultVisible and SkillUp.IsCultVisible() == true
+    local apoVis = SkillUp and SkillUp.IsApoVisible and SkillUp.IsApoVisible() == true
     local gatesKey = table.concat({
         tostring(canGrow), tostring(canBuy), tostring(autoGrow), tostring(additives),
         tostring(autoBuy), tostring(combatPause), tostring(seedBufOn), tostring(seedBuf),
-        tostring(reserve), tostring(budget),
+        tostring(reserve), tostring(budget), tostring(spent),
+        tostring(cultVis), tostring(apoVis), tostring(skillUpCult), tostring(skillUpApo),
     }, ":")
     if StockPiler3TabWatch._skillGatesKey == gatesKey then
         return
@@ -748,6 +859,7 @@ function StockPiler3TabWatch.RefreshSkillGates()
     UpdateSeedBufferEnableCheckbox()
     UpdateSeedBufferLabel()
     UpdateAutoBuyChips()
+    UpdateSkillUpCheckboxes()
     if prev == false and canGrow == true then
         if StockPiler3.Ui and StockPiler3.Ui.MarkWatchUiDirty then
             StockPiler3.Ui.MarkWatchUiDirty()
@@ -838,6 +950,8 @@ function StockPiler3TabWatch.UpdateRows()
                     tostring(data.priorityTierText or data.priorityTier or 1),
                     tostring(data.statusKey or ""),
                     tostring(data.autoGrow == true),
+                    tostring(data.hideAutoGrow == true),
+                    tostring(data.hideBrew == true),
                     tostring(data.craftableShared == true),
                     tostring(data.seedBufferShort == true),
                     tostring(craftableGreen),
@@ -866,7 +980,7 @@ function StockPiler3TabWatch.UpdateRows()
                     LabelSetTextColor(rowName .. "Name", nameR, nameG, nameB)
                     LabelSetText(rowName .. "Status", data.statusText or L"")
                     LabelSetText(rowName .. "Stock", data.stockText or towstring(tostring(data.potionHave or 0)))
-                    if IsPlantWatchRow(data) then
+                    if IsSkillUpWatchRow(data) or IsPlantWatchRow(data) then
                         LabelSetText(rowName .. "Craftable", L"")
                     else
                         LabelSetText(rowName .. "Craftable", data.craftableText or T("ui.dash"))
@@ -876,18 +990,33 @@ function StockPiler3TabWatch.UpdateRows()
                     ApplyStatusColor(rowName .. "Status", data.statusKey)
                     local autoGrowWin = rowName .. "AutoGrow"
                     if DoesWindowExist(autoGrowWin) then
-                        syncingUi = true
-                        ButtonSetCheckButtonFlag(autoGrowWin, true)
-                        ButtonSetPressedFlag(autoGrowWin, canGrow and data.autoGrow == true)
-                        ButtonSetDisabledFlag(autoGrowWin, not canGrow)
-                        syncingUi = false
+                        local hideAg = type(data) == "table" and data.hideAutoGrow == true
+                        WindowSetShowing(autoGrowWin, hideAg ~= true)
+                        if hideAg ~= true then
+                            syncingUi = true
+                            ButtonSetCheckButtonFlag(autoGrowWin, true)
+                            local pressed = false
+                            if IsSkillUpWatchRow(data) and tostring(data.skillUpKind or "") == "cult" then
+                                -- Cult SkillUp: read-only mirror of master AutoGrow.
+                                pressed = canGrow and data.autoGrow == true
+                                ButtonSetPressedFlag(autoGrowWin, pressed)
+                                ButtonSetDisabledFlag(autoGrowWin, true)
+                            else
+                                pressed = canGrow and data.autoGrow == true
+                                ButtonSetPressedFlag(autoGrowWin, pressed)
+                                ButtonSetDisabledFlag(autoGrowWin, (not canGrow) or IsSkillUpWatchRow(data))
+                            end
+                            syncingUi = false
+                        end
                     end
                     LabelSetTextColor(rowName .. "Target", 255, 255, 255)
                     local target = tonumber(data.target) or 0
                     local have = tonumber(data.potionHave) or 0
                     local craftable = tonumber(data.craftable) or 0
                     local stockColor = { 255, 255, 255 }
-                    if target > 0 then
+                    if IsSkillUpWatchRow(data) then
+                        stockColor = { 255, 255, 255 }
+                    elseif target > 0 then
                         if have >= target then
                             stockColor = COLOR_OK
                         elseif (have + craftable) >= target then
@@ -897,7 +1026,7 @@ function StockPiler3TabWatch.UpdateRows()
                         end
                     end
                     LabelSetTextColor(rowName .. "Stock", stockColor[1], stockColor[2], stockColor[3])
-                    if IsPlantWatchRow(data) then
+                    if IsSkillUpWatchRow(data) or IsPlantWatchRow(data) then
                         LabelSetTextColor(rowName .. "Craftable", COLOR_GRAY[1], COLOR_GRAY[2], COLOR_GRAY[3])
                     else
                         local craftColor = COLOR_BLOCK
@@ -1019,6 +1148,50 @@ function StockPiler3TabWatch.OnToggleCombatPause()
     AfterSoftMoneySetting()
 end
 
+function StockPiler3TabWatch.OnToggleSkillUpCult()
+    if syncingUi then
+        return
+    end
+    local SkillUp = StockPiler3.SkillUp
+    if not (SkillUp and SkillUp.IsCultVisible and SkillUp.IsCultVisible() == true) then
+        UpdateSkillUpCheckboxes()
+        return
+    end
+    local on = ButtonGetPressedFlag(SKILLUP_CULT_WIN) == true
+    if SkillUp.SetCultEnabled then
+        SkillUp.SetCultEnabled(on)
+    end
+    NotifySettings(T("watch.skillup_cult_state", { state = OnOff(on) }))
+    AfterWatchSettingsChanged()
+    UpdateSkillUpCheckboxes()
+    StockPiler3TabWatch.Refresh({ forcePlan = true })
+    if on and StockPiler3.Scheduler and StockPiler3.Scheduler.WakeAutoGrow then
+        StockPiler3.Scheduler.WakeAutoGrow()
+    end
+    if StockPiler3.Buy and StockPiler3.Buy.InvalidateJobsCache then
+        StockPiler3.Buy.InvalidateJobsCache()
+    end
+end
+
+function StockPiler3TabWatch.OnToggleSkillUpApo()
+    if syncingUi then
+        return
+    end
+    local SkillUp = StockPiler3.SkillUp
+    if not (SkillUp and SkillUp.IsApoVisible and SkillUp.IsApoVisible() == true) then
+        UpdateSkillUpCheckboxes()
+        return
+    end
+    local on = ButtonGetPressedFlag(SKILLUP_APO_WIN) == true
+    if SkillUp.SetApoEnabled then
+        SkillUp.SetApoEnabled(on)
+    end
+    NotifySettings(T("watch.skillup_apo_state", { state = OnOff(on) }))
+    AfterWatchSettingsChanged()
+    UpdateSkillUpCheckboxes()
+    StockPiler3TabWatch.Refresh({ forcePlan = true })
+end
+
 local function AdjustSeedBuffer(flags, dir)
     if not CanAutoGrowUi() then
         UpdateSeedBufferEnableCheckbox()
@@ -1104,12 +1277,39 @@ function StockPiler3TabWatch.OnBudgetRButtonUp(flags)
     AdjustBudget(flags, -1)
 end
 
+function StockPiler3TabWatch.OnBudgetReset()
+    if syncingUi then
+        return
+    end
+    local Buy = StockPiler3.Buy
+    local spent = Buy and Buy.GetSpentBrass and Buy.GetSpentBrass() or 0
+    if spent <= 0 then
+        UpdateAutoBuyChips()
+        return
+    end
+    if Buy and Buy.ResetAllowanceSpent then
+        Buy.ResetAllowanceSpent()
+    elseif StockPiler3.Watch and StockPiler3.Watch.ResetAutoBuySpentBrass then
+        StockPiler3.Watch.ResetAutoBuySpentBrass()
+    end
+    NotifySettings(T("watch.budget_reset_done"))
+    UpdateAutoBuyChips()
+    AfterSoftMoneySetting()
+end
+
 function StockPiler3TabWatch.OnToggleRowAutoGrow()
     if syncingUi then
         return
     end
     local data = RowDataFromActiveChild()
     if not data or not CanAutoGrowUi() then
+        return
+    end
+    if IsSkillUpWatchRow(data) then
+        -- Addon-owned SkillUp rows: Cult AutoGrow is master-linked (display-only);
+        -- Apo has no per-row AutoGrow.
+        StockPiler3TabWatch._rowPaintKey = nil
+        StockPiler3TabWatch.UpdateRows()
         return
     end
     if IsPlantWatchRow(data) then
@@ -1182,6 +1382,27 @@ end
 local function Tip(text)
     Tooltips.CreateTextOnlyTooltip(SystemData.ActiveWindow.name, text)
     Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_RIGHT)
+end
+
+local function TipTradeSkill(skillId)
+    skillId = tonumber(skillId) or 0
+    if skillId > 0 and Tooltips and type(Tooltips.CreateTradeskillTooltip) == "function" then
+        Tooltips.CreateTradeskillTooltip(skillId, Tooltips.ANCHOR_WINDOW_RIGHT)
+        return
+    end
+    local Caps = StockPiler3.TradeSkillCaps
+    local level = Caps and Caps.Level and Caps.Level(skillId) or 0
+    local label = L"Trade skill"
+    if skillId == (Caps and Caps.CultivationId and Caps.CultivationId() or 3) then
+        label = T("watch.skillup_cult")
+    elseif skillId == (Caps and Caps.ApothecaryId and Caps.ApothecaryId() or 4) then
+        label = T("watch.skillup_apo")
+    end
+    if level > 0 then
+        Tip(towstring(string.format("%s\nSkill Level: %d", tostring(label), level)))
+    else
+        Tip(label)
+    end
 end
 
 local function ToNarrow(v)
@@ -1438,6 +1659,16 @@ local function BuildStatusTooltipRows(data)
         if text and text ~= L"" then
             rows[#rows + 1] = { text = text, kind = "meta" }
         end
+    end
+
+    -- SkillUp rows: status message + statusLines only (no potion Stock/Target chrome).
+    if IsSkillUpWatchRow(data) then
+        if type(data.statusLines) == "table" then
+            for i = 1, #data.statusLines do
+                appendMeta(data.statusLines[i])
+            end
+        end
+        return rows
     end
 
     local liveHave = tonumber(data.potionHave)
@@ -1846,6 +2077,14 @@ function StockPiler3TabWatch.OnMouseOverCombatPause()
     Tip(T("tip.watch.combat_pause"))
 end
 
+function StockPiler3TabWatch.OnMouseOverSkillUpCult()
+    Tip(T("tip.watch.skillup_cult"))
+end
+
+function StockPiler3TabWatch.OnMouseOverSkillUpApo()
+    Tip(T("tip.watch.skillup_apo"))
+end
+
 function StockPiler3TabWatch.OnMouseOverSeedBufferEnable()
     if not CanAutoGrowUi() then
         Tip(T("tip.watch.cult_required"))
@@ -1867,12 +2106,39 @@ function StockPiler3TabWatch.OnMouseOverReserve()
 end
 
 function StockPiler3TabWatch.OnMouseOverBudget()
-    Tip(T("tip.watch.budget_chip"))
+    local Buy = StockPiler3.Buy
+    local spent = Buy and Buy.GetSpentBrass and Buy.GetSpentBrass() or 0
+    local allowance = Buy and Buy.GetBudgetGold and Buy.GetBudgetGold() or 50
+    local spentLabel = (Buy and Buy.FormatMoneyBrass and Buy.FormatMoneyBrass(spent))
+        or tostring(spent)
+    local remain = Buy and Buy.GetAllowanceRemainingBrass and Buy.GetAllowanceRemainingBrass() or 0
+    local remainLabel = (Buy and Buy.FormatMoneyBrass and Buy.FormatMoneyBrass(remain))
+        or tostring(remain)
+    Tip(T("tip.watch.budget_chip", {
+        spent = spentLabel,
+        allowance = tostring(allowance) .. "g",
+        remain = remainLabel,
+    }))
+end
+
+function StockPiler3TabWatch.OnMouseOverBudgetReset()
+    Tip(T("tip.watch.budget_reset"))
 end
 
 function StockPiler3TabWatch.OnMouseOverIcon()
     local data = RowDataFromActiveChild()
     if not data then
+        return
+    end
+    if IsSkillUpWatchRow(data) then
+        local Caps = StockPiler3.TradeSkillCaps
+        local skillId = 0
+        if tostring(data.skillUpKind or "") == "apo" then
+            skillId = Caps and Caps.ApothecaryId and Caps.ApothecaryId() or 4
+        else
+            skillId = Caps and Caps.CultivationId and Caps.CultivationId() or 3
+        end
+        TipTradeSkill(skillId)
         return
     end
     local uid = tonumber(data.uniqueID) or tonumber(data.plantUid) or 0
@@ -1957,6 +2223,10 @@ function StockPiler3TabWatch.OnMouseOverStock()
     if not data then
         return
     end
+    if IsSkillUpWatchRow(data) then
+        Tip(T("tip.watch.skillup_metrics"))
+        return
+    end
     Tip(T("tip.watch.have_target", {
         have = tostring(data.potionHave or 0),
         target = tostring(data.target or 0),
@@ -1966,6 +2236,10 @@ end
 function StockPiler3TabWatch.OnMouseOverCraftable()
     local data = RowDataFromActiveChild()
     if not data or IsPlantWatchRow(data) then
+        return
+    end
+    if IsSkillUpWatchRow(data) then
+        Tip(T("tip.watch.skillup_metrics"))
         return
     end
     local craftable = tonumber(data.craftable) or 0
@@ -1981,6 +2255,11 @@ function StockPiler3TabWatch.OnMouseOverCraftable()
 end
 
 function StockPiler3TabWatch.OnMouseOverTarget()
+    local data = RowDataFromActiveChild()
+    if data and IsSkillUpWatchRow(data) then
+        Tip(T("tip.watch.skillup_metrics"))
+        return
+    end
     Tip(T("tip.watch.target_chip"))
 end
 
@@ -1989,6 +2268,11 @@ function StockPiler3TabWatch.OnMouseOverPrio()
 end
 
 function StockPiler3TabWatch.OnMouseOverRowAutoGrow()
+    local data = RowDataFromActiveChild()
+    if data and IsSkillUpWatchRow(data) and tostring(data.skillUpKind or "") == "cult" then
+        Tip(T("tip.watch.skillup_cult_autogrow"))
+        return
+    end
     Tip(T("tip.watch.row_autogrow"))
 end
 

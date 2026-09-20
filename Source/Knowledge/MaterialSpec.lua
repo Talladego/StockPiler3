@@ -398,6 +398,13 @@ end
 -- Infer EFFECT when craftingBonus omits ref 6 (common on heal/stat mains).
 -- Order matters: "willpower potions" contains the substring "power potion".
 local DESC_EFFECT_PATTERNS = {
+    -- Resist families before generic "armor" / "resist" substrings.
+    { "spirit resistance", "rspi" },
+    { "spirit resist", "rspi" },
+    { "corporeal resistance", "rcorp" },
+    { "corporeal resist", "rcorp" },
+    { "elemental resistance", "rele" },
+    { "elemental resist", "rele" },
     { "intelligence", "int" },
     { "willpower", "wil" },
     { "strength", "str" },

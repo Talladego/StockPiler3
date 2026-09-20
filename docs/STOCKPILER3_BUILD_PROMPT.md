@@ -15,9 +15,11 @@ Use this document as the sole **product + performance** specification for a gree
 
 ## 1. Mission
 
-StockPiler3 is a Cultivation + Apothecary stock-automation addon. Players watch potions (one row per learned recipe fingerprint), set bag stock targets, AutoGrow plots from deficits and a seed buffer, refine plants to seeds when needed, harvest ready plots via footer/macro, brew Ready watches, and AutoBuy craft mats at vendors—without hijacking native craft skills.
+StockPiler3 is a Cultivation + Apothecary stock-automation addon. Players watch potions (one row per learned recipe fingerprint), optionally watch plant stock floors, set bag targets, AutoGrow plots from deficits and a seed buffer, refine plants to seeds when needed, harvest ready plots via footer/macro, brew Ready watches, AutoBuy craft mats at vendors, and optionally run **SkillUp** (idle Cult + Apo leveling after watches are done)—without hijacking native craft skills.
 
 **Primary goal:** stay snappy under load. Architecture exists to serve that goal and the core loop above—not to mirror SP2’s folder tree.
+
+**Shipped beyond the SP2 UX baseline:** Plants tab + plant-stock AutoGrow; SkillUp Cult/Apo (ephemeral Watch rows, seed/vial AutoBuy, rate samples); AutoBuy hard lifetime gold allowance.
 
 ---
 
@@ -94,8 +96,6 @@ Browse **all** of [Talladego’s repositories](https://github.com/Talladego?tab=
 
 - Bank / alt-aware stock targets
 - Auction house buying or vendor route planning
-- Dedicated Plants tab (raise potion targets instead)
-- Idle plant-bag floors without raising potion targets
 - Full bulk-refine / craft-queue product
 - Export/import watch presets
 - Finer scenario/combat pause policies beyond Watch **Combat pause** + Flatten/plan deferral
@@ -104,6 +104,8 @@ Browse **all** of [Talladego’s repositories](https://github.com/Talladego?tab=
 - Secondary language packs beyond enUS (scaffold + `T()` must exist; other packs may fall back per key)
 - **Cloning SP2’s design weight** — do not re-create SP2’s patch-layered module count, duplicate Demand entry points, or “invalidate everything” habits for parity theater
 - **Feature parity with every SP2 diagnostic quirk** — keep `/sp3` dumps useful; skip half-wired UI (e.g. known-recipe filter: implement fully or omit)
+
+**Note:** Early drafts listed “no Plants tab / no idle plant floors” as non-goals. **Shipped SP3 includes** a Plants tab, plant-stock AutoGrow (after potion watches are stocked), and SkillUp. Do not remove those without an explicit product decision.
 
 ---
 
@@ -166,6 +168,7 @@ StockPiler3/
     Brew/         Brew.lua (session FSM; no footer/tooltip chrome)
     Refine/       Refine.lua
     Buy/          Buy.lua
+    SkillUp/      SkillUp.lua (Cult + Apo idle skill-up; may live at Source/SkillUp.lua)
     Executors/    Grow, Refine, Brew, Buy
     Adapters/     Bag, Cultivator, Apothecary, Vendor, CraftChat, TradeSkillCaps
     Knowledge/    RecipeSpec, SeedMap (+ split only if needed), BrewLearn, LearnBridge,
@@ -173,7 +176,7 @@ StockPiler3/
     Macro/        Macro.lua
     Persistence/  Settings, Character, Account
     Locale/       Locale.lua, enUS.lua
-    View/         Window, Templates, TabPotions, TabWatch, Catalog, Ui,
+    View/         Window, Templates, TabPotions, TabWatch, TabPlants, Catalog, Ui,
                   HarvestChrome, HarvestTooltip, BrewChrome, BrewTooltip, RecipeTooltip
 ```
 
@@ -351,25 +354,26 @@ Treat named SP2 helpers (`HasAnyBufferShort`, `WarmHave`, `FrameWork`, …) as *
 
 ### 7.2 Window and tabs
 
-- **Potions** — learned catalog; name search; effect filter; sort columns; rarity-colored names; one row per recipe fingerprint; live refresh on knowledge gen; watch; forget; recipe/icon tooltips. Columns (§8): Watch, Name, Lvl, Effect, Pwr, Stab, Mult, SCrit, Yield, Stock, Recipe, Forget.
-- **Watch** — master AutoGrow, additives, Combat pause, seed buffer enable + min chip, AutoBuy + reserve/budget; leftmost **Prio** chip (shared tiers `1..N`, N = enabled Watch-list rows; AutoGrow-off still counts/editable), Name (rarity colors via `DataUtils.GetItemRarityColor`), Status / Stock / Craftable / Target / AutoGrow / Brew. AutoGrow column header reads AutoGrow (not “Priority”).
+- **Potions** — learned catalog; name search; effect filter; sort columns; rarity-colored names; one row per recipe fingerprint; live refresh on knowledge gen; watch; forget; recipe/icon tooltips; optional **Hide Skill up** (default on) for `skillUpOrigin` rows. Columns (§8): Watch, Name, Lvl, Effect, Pwr, Stab, Mult, SCrit, Yield, Stock, Recipe, Forget.
+- **Watch** — master AutoGrow, additives, Combat pause, seed buffer enable + min chip, AutoBuy + reserve/budget/Reset; **Level up Cultivating / Apothecary** when eligible; leftmost **Prio** chip (shared tiers `1..N`, N = enabled Watch-list rows; AutoGrow-off still counts/editable), Name (rarity colors via `DataUtils.GetItemRarityColor`), Status / Stock / Craftable / Target / AutoGrow / Brew. AutoGrow column header reads AutoGrow (not “Priority”). SkillUp may inject **ephemeral** Cult/Apo status rows (not SavedVariables watches).
+- **Plants** — harvested plants that refine to a seed (exclude resin/byproducts); stats from learned `Account.items` (craftingBonus) even at stock 0; watch → Watch row with plant Target (default 40), Prio `-`, blank Craftable/Brew.
 - **Footer** — Clear watches (Potions tab); Harvest + Brew (Watch tab); live tooltips that update while hovered when readiness changes.
-- **Skill gates** — AutoGrow / additives / seed buffer / Combat pause / row AutoGrow → Cultivation; Brew → Apothecary; AutoBuy → Cultivation **or** Apothecary. Tooltips explain gated state. Re-apply after SESSION_LOADED / window show (tradeSkills often missing at CreateWindow Initialize).
+- **Skill gates** — AutoGrow / additives / seed buffer / Combat pause / row AutoGrow / Level up Cult → Cultivation; Brew / Level up Apo → Apothecary; AutoBuy → Cultivation **or** Apothecary. Tooltips explain gated state. Re-apply after SESSION_LOADED / window show (tradeSkills often missing at CreateWindow Initialize).
 
 ### 7.3 Automation
 
-- AutoGrow, Refine (buffer / plant-need / resin-need), Harvest (manual), Brew (footer vs row), AutoBuy — see §9.
+- AutoGrow, Refine (buffer / plant-need / resin-need), Harvest (manual), Brew (footer vs row), AutoBuy, **SkillUp** (Cult plant/refine/buy + Apo brew/vials after watches done) — see §9.
 
 ### 7.4 Knowledge
 
-- Empty Account on install; brew once for slots; harvest/refine for seed maps; one-way mains without refine (§5.10).
+- Empty Account on install; brew once for slots; harvest/refine for seed maps; one-way mains without refine (§5.10). Persist `skillUpRates` on Account allow-list (do not strip on Shutdown).
 
 ### 7.5 Slash commands
 
 | Command | Behavior |
 | :--- | :--- |
 | `/sp3` | Toggle main window |
-| `/sp3 potions` / `watch` | Open on tab |
+| `/sp3 potions` / `watch` / `plants` | Open on tab |
 | `/sp3 help` | Command list |
 | `/sp3 debug` / `on` / `off` | Structured uilog |
 | `/sp3 plan` | Planner dump |
@@ -378,7 +382,9 @@ Treat named SP2 helpers (`HasAnyBufferShort`, `WarmHave`, `FrameWork`, …) as *
 | `/sp3 growplan` | Garden / grow / refine diagnostics |
 | `/sp3 brewplan` | Brew session + ready watches |
 | `/sp3 buyplan` | Buy jobs |
-| `/sp3 stats` | Craft-cycle stats (plant/harvest/crit/SM, refine, brew rates) |
+| `/sp3 skillplan` | SkillUp gates, garden, budgets, Apo brew/vials, rates |
+| `/sp3 stats` | Craft-cycle + Cult/Apo skill-up rate samples |
+| `/sp3 stats clear` | Wipe SkillUp rate samples |
 | `/sp3 bags` / `bags force` | Bag snapshot |
 | `/sp3 events` / `on` / `off` / `dump` | Event bus trace |
 | `/sp3 mem` | Safe table key counts only (never dump full addon table) |
@@ -410,20 +416,24 @@ Rename `StockPiler2*` → `StockPiler3*`. Rewrite all View Lua. If XML cannot be
 StockPiler3Window (movable, savesettings)
 ├─ Background, TitleBar, WindowImage, Close
 ├─ ButtonBackground
-├─ TabButtons → Potions (id=1), Watch (id=2)
+├─ TabButtons → Potions (id=1), Watch (id=2), Plants (id=3)
 ├─ WindowSocket
 ├─ TabPotions
 │  ├─ Banner
-│  ├─ SearchBox, EffectCombo [, FilterKnownRecipe — optional; see §8.5]
+│  ├─ SearchBox, EffectCombo [, Hide Skill up] [, FilterKnownRecipe — optional; see §8.5]
 │  ├─ Sort headers: Watch | Name | Lvl | Effect | Pwr | Stab | Mult | SCrit | Yield | Stock | Recipe | Forget
 │  └─ List → PotionRow { Watch, Icon, Name, Level, Effect, Power, Stability, Multiplier, SuperCrit, Yield, Have, Recipe, Forget }
 ├─ TabWatch
 │  ├─ Banner
-│  ├─ Enable AutoGrow, Additives, Combat pause
+│  ├─ Enable AutoGrow, Additives, Combat pause, Level up Cultivating, Level up Apothecary
 │  ├─ SeedBufferEnable, SeedBufferChip (min 4–20)
-│  ├─ AutoBuy, ReserveChip (1–99), BudgetChip (1–999)
+│  ├─ AutoBuy, ReserveChip (1–99), BudgetChip (1–999 hard allowance), BudgetReset
 │  ├─ Column headers (Prio, Name, Status, Stock, Craftable, Target, AutoGrow, Brew)
 │  └─ List → WatchRow { PrioChip, Icon, Name, Status, Stock, Craftable, TargetChip, AutoGrow, Load }
+│     (+ ephemeral SkillUp Cult/Apo status rows when Level up is active and watches are done)
+├─ TabPlants
+│  ├─ Banner / sort headers (Name, stats, Stock, Watch, Forget)
+│  └─ List → PlantRow { Icon, Name, stats…, Have, Watch, Forget }
 └─ ClearWatches (Potions), Harvest (gameactionbutton), Brew (Watch)
 ```
 
@@ -553,6 +563,7 @@ StockPiler3Window (movable, savesettings)
 - Optional additives; no plant while brew session loading/crafting.
 - One-way / Liniment-class: plant/learn without expecting plant→seed refine (§5.10).
 - Combat pause (default on): defer plant in combat/scenario — not lake-only.
+- **Plant-stock watches:** after every enabled potion watch is stocked, AutoGrow may plant for plant-floor deficits (`plant_stock`); potions always first.
 
 ### 9.3 Refine
 
@@ -608,24 +619,47 @@ StockPiler3Window (movable, savesettings)
 ### 9.6 AutoBuy
 
 - Independent of AutoGrow when vendor open.
-- Cult/Apo craft mats; plant/seed buys only if Cultivation missing (`allowPlantBuys = not CanAutoGrow()`).
-- No growables when character can AutoGrow (reject growable store rows in match).
+- Cult/Apo craft mats; plant/seed buys only if Cultivation missing (`allowPlantBuys = not CanAutoGrow()`), **except** SkillUp jobs (`job.skillUp == true`) which may buy growable seeds / vials while CanAutoGrow.
+- No growables when character can AutoGrow (reject growable store rows in match) — SkillUp seed jobs exempt.
 - Fair buy: focus max bottle-gap watches first; fallback to all short watches for buyable non-growable bottlenecks only (skip pooled containers — avoids vial overbuy when focus is growable-only).
-- Gold reserve (1–99, default 10) + per-visit budget (1–999, default 50) in gold units × 10k brass; max purchases per visit ~80.
+- Gold reserve (1–99, default 10) + hard lifetime allowance (1–999, default 50) in gold units × 10k brass; spent persists until Reset; max purchases per visit ~80.
 - **Vendor responsiveness (0.4.169):** store-open tick interval ~1s; `WakeAutoBuy` meets that gate (do not stall under AutoGrow idle 5s). Store page updates refresh match index so late vials buy. Watch/plan demand changes while vendor stays open invalidate buy jobs and wake AutoBuy again.
 - Store-close detection for reserved/budget stops; resume on close→open or ClearMoneyGateStop (not every store update).
 - No alt-currency / non–cult-apo junk.
 - Chat: per-material `AutoBuy: Nx Name (spent Xg)` when that type’s need fills; flush leftovers on stop/close; item LINKs.
 - Vendor learn: Touch knowledge only when new vendor rows added.
 
-### 9.7 Macros
+### 9.7 SkillUp (Cult + Apo idle leveling)
+
+Active only when enabled watches are **done** (stocked / no enabled watches). Does not replace potion AutoGrow priority.
+
+**Cult (`skillUpCultEnabled`, under Cult 200; or Apo-assist grow at Cult 200):**
+
+- Requires master AutoGrow + Cultivation. Plant main-ingredient seeds at `TargetMaxSkill` (min of Cult/Apo floors when both Level-up toggles are on). Prefer exact Apo floor when assisting so Cult feeds Apo.
+- Prefer bag seed lines already at buffer credit, or with enough refinable plants to cover `SeedDeficit`; otherwise AutoBuy tops up `SeedDeficit = max(buffer headroom, seeds needed for empty plots)` even when bags already hold some seeds. Refine-before-buy for that seed’s plants. Buy target = bag pick, else plant-linked seed, else vendor/learned.
+- Fill every unlocked plot. At Cult 200 + Apo SkillUp on: still plant Apo-tier mains; do not arm Cult skill samples (`NoteCultAttempt` stops at Cult max).
+- Harvest only **extends** live Cult pending (`extendOnly`); plant path arms attempts. Crit upgrades refine up to `FloorCultTier` even when planting is Apo-capped.
+- Stall notify once per reason (first latch chats); clear when deficit settled / refining / AutoBuy mid-purchase.
+
+**Apo (`skillUpApoEnabled`, under Apo 200):**
+
+- Brew only at `FloorApoTier`. Stabilizer = Arboreal Resin only. Board must be engine HIGH.
+- Resin short → refine leftover mains below Apo floor first, then surplus of exact-floor brew main (keep ≥1). Buffer-safe (`PlantBrewSurplus` / `respectGrowReserve`).
+- Vial AutoBuy: one remaining tier band; E[crafts] from SkillUp-only rate samples (`NoteApoAttempt` requires `opts.skillUp`); may buy vials while brew main is buffer-held (`ignoreReserve` gate). Cap ~300.
+- `BuildApoBrewRow({ quiet = true })` for Watch paint / `/sp3 skillplan` (no stall chat / MarkRefineDue). Brew/orch keep default notify.
+- Stamp `skillUpOrigin` only on SkillUp-built recipes (`BuildApoBrewRecipe`) — not on every learn while Apo SkillUp is toggled on.
+- Ephemeral Watch row: blank Stock/Craftable/Target; status tip holds buffer / tier / craftable / stall why. Cult row AutoGrow mirrors master (read-only); Apo hides AutoGrow, shows Brew when ready.
+
+**Rates:** Account `skillUpRates` (must stay on ACCOUNT allow-list). `/sp3 stats` / `stats clear`. Pending TTL ~90s.
+
+### 9.8 Macros
 
 - Implement §2.1 fully (create, activate, tooltips, grey/disabled when not ready, fingerprint gating, UpdateEnabledState hook).
 - Enable with footer; do not hijack stock craft skills.
 - Harvest icon / Brew icon stable; tooltip hijack → HarvestTooltip / BrewTooltip.
 - Sync when window closed.
 
-### 9.8 Chat / sounds
+### 9.9 Chat / sounds
 
 | Event | Behavior |
 | :--- | :--- |
@@ -639,6 +673,7 @@ StockPiler3Window (movable, savesettings)
 | Watch status becomes red | One-shot chat per transition (wait until trade skills ready at login) |
 | All watches green + Ready | One-shot notify |
 | AutoGrow idle but player action needed | One-shot notify (buy flasks / skill gates) |
+| SkillUp Cult/Apo stall | One-shot chat + sound per stall reason; clear when condition lifts |
 
 ASCII punctuation only in chat locale strings (` - `, `|`, `...`) — no UTF-8 fancy dashes/ellipsis.
 
@@ -676,9 +711,13 @@ Key = player name (strip trailing `^…` realm markup); fallback `_default`.
 | `autoGrowPauseCombat` | true |
 | `autoBuyEnabled` | false |
 | `autoBuyReserveGold` | 10 (1–99) |
-| `autoBuyBudgetGold` | 50 (1–999) |
+| `autoBuyBudgetGold` | 50 (1–999) hard lifetime allowance |
+| `autoBuySpentBrass` | 0 (lifetime spend vs allowance; Reset clears) |
 | `growSeedBufferMin` | 5 (4–20) |
 | `growSeedBufferEnabled` | true |
+| `skillUpCultEnabled` | false |
+| `skillUpApoEnabled` | false |
+| `potionHideSkillUp` | true |
 | `brewMacroEnabled` | false unless explicitly true (SP2 default false; honor in SP3 if you gate macro create) |
 | `brewRespectGrowReserve` | true |
 
@@ -686,7 +725,7 @@ Watch defaults: `enabled = false`, `targetStock = 40`, `autoGrow = false` (Ensur
 
 ### 10.4 Account
 
-Empty install: `accountVersion` (SP2 uses 3 for cleanup migrations), `items`, `grows`, `refines`, `recipes`, `potions`, `additives`, `vendorItems`. Relearn in-game. Version bumps may clear false SV flags / polluted grows.
+Empty install: `accountVersion` (SP2 uses 3 for cleanup migrations), `items`, `grows`, `refines`, `recipes`, `potions`, `additives`, `vendorItems`, **`skillUpRates`**. Relearn in-game. Version bumps may clear false SV flags / polluted grows. ACCOUNT allow-list must include `skillUpRates` so Shutdown strip does not wipe samples each reload.
 
 ---
 
@@ -705,6 +744,7 @@ Empty install: `accountVersion` (SP2 uses 3 for cleanup migrations), `items`, `g
 | `ui.*` | Window chrome |
 | `potions.*` | Potions tab (incl. `potions.sort.multiplier` → Mult) |
 | `watch.*` | Watch UI + notes |
+| `skillup.*` | SkillUp stall / status / tips |
 | `tip.watch.*` / `brew.tip.*` / `grow.tip.*` | Tooltips |
 | `plan.status.*` / `plan.line.*` | Status column + tip lines |
 | `effect.short.*` / `effect.full.*` | Effect labels |
@@ -755,9 +795,9 @@ Empty install: `accountVersion` (SP2 uses 3 for cleanup migrations), `items`, `g
 
 ## 14. Diagnostics
 
-Slash-driven: debug uilog (`StockPiler3| …`); plan/watchplan/state/growplan/brewplan/buyplan/stats/bags/mem; event ring; hitch logger (LibPerf or in-addon) + baseline; audit. Empty-trail spikes → likely engine—do not Begin-spam.
+Slash-driven: debug uilog (`StockPiler3| …`); plan/watchplan/state/growplan/brewplan/buyplan/skillplan/stats/bags/mem; event ring; hitch logger (LibPerf or in-addon) + baseline; audit. Empty-trail spikes → likely engine—do not Begin-spam.
 
-Craft-cycle stats: plantAttempts, specialMomentHits, refineAttempts+seedOut, harvest survive/SM/yield helpers, brew success/yield, empirical Cult/Apo skill-up % (n≥5) via TRADE_SKILL_UPDATED attribution. Surface in `/sp3 stats` and Status / footer tips where SP2 does.
+Craft-cycle stats: plantAttempts, specialMomentHits, refineAttempts+seedOut, harvest survive/SM/yield helpers, brew success/yield, empirical Cult/Apo skill-up % via TRADE_SKILL_UPDATED attribution (SkillUp pending windows). Surface in `/sp3 stats` and Status / footer tips where useful.
 
 ---
 
@@ -800,22 +840,27 @@ Craft-cycle stats: plantAttempts, specialMomentHits, refineAttempts+seedOut, har
 33. Butcher substitute brew does not mark cult main not-growable.
 34. Plot unlocks respected; Locked plots not planted.
 35. Localization: UI/chat via T(); ASCII chat punctuation; missing key fallback.
+36. Plants tab — refinable plant catalog; watch → plant Target; potion watches stocked before plant_stock AutoGrow.
+37. SkillUp Cult — settle-ready seed pick; SeedDeficit AutoBuy; plot fill; Apo-assist at Cult 200; harvest extendOnly.
+38. SkillUp Apo — FloorApoTier brew; resin-only stabilizer; SkillUp-only rate samples; quiet Watch brew-row; skillUpOrigin only on SkillUp recipes.
+39. AutoBuy Budget — hard lifetime allowance + Reset; chip spent/remaining tip.
 
 ### Performance
 
-36. Refine UI quiet — no per-tick full Watch rebuild; flush after; WarmHave skipped while outstanding.
-37. Hotbar noise — no Macro appearance storm (fingerprint).
-38. Harvest complete — no LearnBridge every dirty frame; SkipUi fusion avoided.
-39. Scenario — no Flatten/plan thrash every bag event.
-40. AutoBuy multi-buy — no per-item full invalidate; one rebuild after visit fills.
-41. Empty trail honesty — not “fixed” by Begin spam; ≥250ms floor.
-42. Multi-plot harvest wake — single force invalidate + quiet (no P1–P4 storm).
-43. Inventory snaps — no WakeAutoGrow/ClearFillBlocked storm; O(1) intent invalidate (no HasAnyBufferShort).
-44. FindSeedSlot / seed-line caches hit on repeated plant/refine.
-45. Cheap PlanRebuild / GardenPatch used mid-refine / plant-harvest; soft Invalidate keeps rows.
-46. Target chip stocked↔stocked — no PlanRebuild hitch.
-47. Tooltip hover — no CollectIntents / ResolveSeed / plan tip mutation.
-48. Settings soft paths — Reserve/Budget/Additives do not force heavy rebuilds.
+40. Refine UI quiet — no per-tick full Watch rebuild; flush after; WarmHave skipped while outstanding.
+41. Hotbar noise — no Macro appearance storm (fingerprint).
+42. Harvest complete — no LearnBridge every dirty frame; SkipUi fusion avoided.
+43. Scenario — no Flatten/plan thrash every bag event.
+44. AutoBuy multi-buy — no per-item full invalidate; one rebuild after visit fills.
+45. Empty trail honesty — not “fixed” by Begin spam; ≥250ms floor.
+46. Multi-plot harvest wake — single force invalidate + quiet (no P1–P4 storm).
+47. Inventory snaps — no WakeAutoGrow/ClearFillBlocked storm; O(1) intent invalidate (no HasAnyBufferShort).
+48. FindSeedSlot / seed-line caches hit on repeated plant/refine.
+49. Cheap PlanRebuild / GardenPatch used mid-refine / plant-harvest; soft Invalidate keeps rows.
+50. Target chip stocked↔stocked — no PlanRebuild hitch.
+51. Tooltip hover — no CollectIntents / ResolveSeed / plan tip mutation.
+52. Settings soft paths — Reserve/Budget/Additives do not force heavy rebuilds.
+53. SkillUp Watch refresh — no Apo stall chat / MarkRefineDue from quiet BuildApoBrewRow.
 
 ---
 
@@ -836,8 +881,10 @@ Ship a thin responsive skeleton first; add core loop next; polish last.
 11. Brew + executor (footer vs row; grow reserve; closed-window Ready wake)
 12. Buy + executor (vendor-open fast tick, WakeAutoBuy, batch invalidate)
 13. Macro (§2.1 + closed-window sync)
-14. Polish — tooltips, chat/sounds, forget, stats, localization
-15. Perf pass — §6 + scenarios 36–48; delete or merge anything that does not earn its hitch cost
+14. Plants tab + plant-stock AutoGrow (after potions stocked)
+15. SkillUp Cult/Apo (gates, ephemeral Watch rows, seed/vial AutoBuy, rates)
+16. Polish — tooltips, chat/sounds, forget, stats, localization
+17. Perf pass — §6 + scenarios 40–53; delete or merge anything that does not earn its hitch cost
 
 Perf review at **each** milestone.
 
@@ -846,13 +893,13 @@ Perf review at **each** milestone.
 ## 17. Definition of done
 
 - **Perf:** §6 + §15 performance scenarios pass under harvest/refine/vendor storms (LibPerf ≥250ms or equivalent hitch logger). Prefer equal-or-better hitch profile vs SP2 with less complexity.
-- **Core UX:** §7 features + §9 contracts deliver SP2 0.4.174 *capabilities* (Mult column, live Status, closed-window Brew wake, AutoBuy cadence, seed-buffer refine correctness)—without requiring SP2’s internal shape.
+- **Core UX:** §7 features + §9 contracts deliver SP2 0.4.174 *capabilities* plus shipped SP3 Plants + SkillUp + lifetime AutoBuy allowance—without requiring SP2’s internal shape.
 - **Lean design:** Clear engine-I/O vs plan vs UI boundaries; no copied SP1/SP2 Core/domain Lua; no hard dependency on unpublished local addons.
 - **UI:** §8 columns/interactions complete (XML from SP2 GitHub optional; rebuild allowed).
 - **Locale:** §11 scaffold + enUS shipped.
 - **Acceptance:** §15 feature scenarios pass.
 
-**Start here:** create `StockPiler3` as a new addon with **performance-first** architecture; keep this file as the spec; clone https://github.com/xyeppp/RoR-Interface for stock UI; browse https://github.com/Talladego?tab=repositories for patterns (StockPiler2 = UX/hitch contracts, not a module template; WarTriage / CustomUIv3 / EZGuard / GCDsaver / etc. as needed). Reimplement under StockPiler3—do not hard-depend on sibling addons.
+**Start here:** keep this file as the living spec for StockPiler3; clone https://github.com/xyeppp/RoR-Interface for stock UI; browse https://github.com/Talladego?tab=repositories for patterns (StockPiler2 = UX/hitch contracts, not a module template; WarTriage / CustomUIv3 / EZGuard / GCDsaver / etc. as needed). Reimplement under StockPiler3—do not hard-depend on sibling addons. Public product repo: https://github.com/Talladego/StockPiler3.
 ---
 
 ## 18. Explicit pitfalls from SP2 history (do not regress)

@@ -582,7 +582,7 @@ local function PreferRicherItemData(a, b)
     return a
 end
 
---- Overlay iLevel/rarity from Account.items when bag/DB shells omit them.
+--- Overlay iLevel/rarity/skillReq/craftingBonus from Account.items when bag/DB shells omit them.
 local function EnrichFromLearned(uid, item)
     if type(item) ~= "table" then
         return item
@@ -596,6 +596,19 @@ local function EnrichFromLearned(uid, item)
     local learnedLvl = tonumber(learned.iLevel) or tonumber(learned.level) or 0
     if lvl <= 0 and learnedLvl > 0 then
         item.iLevel = learnedLvl
+        item.level = learnedLvl
+    end
+    local req = tonumber(item.craftingSkillRequirement) or tonumber(item.skillReq) or 0
+    local learnedReq = tonumber(learned.craftingSkillRequirement) or tonumber(learned.skillReq) or 0
+    if req <= 0 and learnedReq > 0 then
+        item.craftingSkillRequirement = learnedReq
+        item.skillReq = learnedReq
+        item.skillLevel = learnedReq
+    end
+    -- Potion Lvl column falls back to skillReq when iLevel was never stored.
+    if (tonumber(item.iLevel) or 0) <= 0 and learnedReq > 0 then
+        item.iLevel = learnedReq
+        item.level = learnedReq
     end
     if (tonumber(item.rarity) or 0) <= 0 and (tonumber(learned.rarity) or 0) > 0 then
         item.rarity = learned.rarity
@@ -605,6 +618,20 @@ local function EnrichFromLearned(uid, item)
     end
     if (tonumber(item.iconNum) or 0) <= 0 and (tonumber(learned.iconNum) or 0) > 0 then
         item.iconNum = learned.iconNum
+    end
+    local function HasCraftBonus(data)
+        if type(data) ~= "table" or type(data.craftingBonus) ~= "table" then
+            return false
+        end
+        for _, bonus in pairs(data.craftingBonus) do
+            if type(bonus) == "table" and (tonumber(bonus.bonusReference) or 0) > 0 then
+                return true
+            end
+        end
+        return false
+    end
+    if not HasCraftBonus(item) and HasCraftBonus(learned) then
+        item.craftingBonus = learned.craftingBonus
     end
     return item
 end

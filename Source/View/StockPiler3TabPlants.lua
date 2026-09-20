@@ -528,6 +528,16 @@ function StockPiler3TabPlants.OnMouseOverIcon()
     then
         return
     end
+    -- Same placeholder as Potions when bag/DB tooltip cannot be built.
+    if type(Tooltips) == "table" and type(Tooltips.CreateTextOnlyTooltip) == "function" then
+        Tooltips.CreateTextOnlyTooltip(
+            SystemData.ActiveWindow.name,
+            data.name or T("ui.plant_fallback")
+        )
+        if Tooltips.AnchorTooltip and Tooltips.ANCHOR_WINDOW_RIGHT then
+            Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_RIGHT)
+        end
+    end
 end
 
 function StockPiler3TabPlants.OnMouseOverRecipe()

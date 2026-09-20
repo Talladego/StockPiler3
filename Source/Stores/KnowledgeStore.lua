@@ -64,6 +64,9 @@ function Know.MigrateFingerprints()
     if StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.MigrateRecipeFingerprintsV3 then
         StockPiler3.RecipeSpec.MigrateRecipeFingerprintsV3()
     end
+    if StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.MigrateRecipeFingerprintsV4 then
+        StockPiler3.RecipeSpec.MigrateRecipeFingerprintsV4()
+    end
     if StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.MigratePotionEffectKeys then
         StockPiler3.RecipeSpec.MigratePotionEffectKeys()
     end

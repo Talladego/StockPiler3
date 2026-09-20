@@ -842,6 +842,11 @@ function Refine.ShouldAllowRefineNow()
             end
         end
         if plantable then
+            local SkillUp = StockPiler3.SkillUp
+            -- SkillUp tier graduation: refine higher plant before replanting lower seeds.
+            if SkillUp and SkillUp.HasUpgradePlant and SkillUp.HasUpgradePlant() == true then
+                return true, "skill-up-upgrade"
+            end
             if bufferPending then
                 if plantReason == "potion_stock" or plantReason == "seed_buffer" then
                     return false, "plant-first"
@@ -879,9 +884,16 @@ function Refine.CollectIntents()
     end
     local cacheKey = IntentCacheKey()
     if Refine._intentCacheKey == cacheKey and type(Refine._intentCache) == "table" then
-        -- Empty-cache bust when HasPendingBufferRefine.
+        -- Empty-cache bust when buffer/SkillUp may have gained plants since last miss.
         if #Refine._intentCache == 0 then
-            if Refine.HasPendingBufferRefine() == true then
+            local SkillUp = StockPiler3.SkillUp
+            local skillUpPending = SkillUp and SkillUp.ShouldCultPlant
+                and SkillUp.ShouldCultPlant() == true
+                and SkillUp.HasRefinablePlants and SkillUp.HasRefinablePlants() == true
+            if Refine.HasPendingBufferRefine() == true
+                or skillUpPending == true
+                or Refine._refineDirtyReason == "harvest"
+            then
                 Refine.InvalidateIntentCache()
             else
                 return Refine._intentCache
@@ -933,6 +945,20 @@ function Refine.CollectIntents()
                 end
             end
         end
+    end
+
+    -- 1b) SkillUp Cult: refine plants back to seeds to fill empty plots.
+    local SkillUp = StockPiler3.SkillUp
+    if SkillUp and SkillUp.AppendRefineIntents then
+        SkillUp.AppendRefineIntents(intents, function(line, reason, uses, budget)
+            AppendIntent(intents, line, reason, uses, budget)
+        end)
+    end
+    -- 1c) SkillUp Apo: refine brew-main surplus into Arboreal Resin when resin-short.
+    if SkillUp and SkillUp.AppendApoResinRefineIntents then
+        SkillUp.AppendApoResinRefineIntents(intents, function(line, reason, uses, budget)
+            AppendIntent(intents, line, reason, uses, budget)
+        end)
     end
 
     -- 2) Plant-need
@@ -1103,7 +1129,7 @@ function Refine.IssueOne(intent, opId)
     local reason = tostring(intent.reason or "refine")
     local pending = tonumber(Refine._pendingByPlant[plantUid]) or 0
     local stack = tonumber(item.stackCount) or tonumber(item.StackCount) or 1
-    local maxUses = (reason == "seed-buffer" or reason == "resin-need") and 5 or 1
+        local maxUses = (reason == "seed-buffer" or reason == "resin-need" or reason == "skill-up") and 5 or 1
     uses = math.min(uses, stack, (Refine.MAX_PENDING_PER_PLANT or 6) - pending, maxUses)
 
     -- Clamp to live headroom (not resin-need).

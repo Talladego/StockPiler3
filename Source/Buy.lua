@@ -135,9 +135,12 @@ local function IsCultivationAdditiveStoreItem(item)
     return cult == soil or cult == water or cult == nutrient
 end
 
-local function StoreItemRejectedForBuy(item)
+local function StoreItemRejectedForBuy(item, job)
     if IsCultivationAdditiveStoreItem(item) then
         return true
+    end
+    if type(job) == "table" and job.skillUp == true then
+        return false
     end
     if Buy._allowPlantBuys ~= true and IsGrowableStoreItem(item) then
         return true
@@ -194,7 +197,7 @@ local function JobAcquireKey(job, item)
 end
 
 --- Brass → compact g/s/b (WAR: 1g = 100s = 10000b). Avoids "0g" for sub-gold spends.
-local function FormatSpentLabel(brass)
+function Buy.FormatMoneyBrass(brass)
     brass = math.max(0, math.floor((tonumber(brass) or 0) + 1e-9))
     local perGold = Buy.BRASS_PER_GOLD or 10000
     local perSilver = Buy.BRASS_PER_SILVER or 100
@@ -221,6 +224,10 @@ local function FormatSpentLabel(brass)
         return string.format("%ds", s)
     end
     return string.format("%db", b)
+end
+
+local function FormatSpentLabel(brass)
+    return Buy.FormatMoneyBrass(brass)
 end
 
 local function ChatMaterialFill(uid, name, count, spentBrass)
@@ -288,6 +295,16 @@ local function AccountConfirmedBuy(pending, liveMoney)
     Buy._visitSpentBrass = (tonumber(Buy._visitSpentBrass) or 0) + costTotal
     Buy._visitBought = (tonumber(Buy._visitBought) or 0) + qty
     Buy._visitMoneyBrass = tonumber(liveMoney) or PlayerMoneyBrass()
+    local Watch = StockPiler3.Watch
+    if Watch and Watch.AddAutoBuySpentBrass then
+        Watch.AddAutoBuySpentBrass(costTotal)
+    end
+    if StockPiler3.Ui and StockPiler3.Ui.MarkWatchUiDirty then
+        StockPiler3.Ui.MarkWatchUiDirty()
+    end
+    if StockPiler3TabWatch and StockPiler3TabWatch.RefreshAutoBuyMoneyUi then
+        StockPiler3TabWatch.RefreshAutoBuyMoneyUi()
+    end
     AddVisitAcquired(key, qty)
     if type(pending.job) == "table" and type(pending.item) == "table" then
         NoteFillProgress(pending.job, pending.item, qty, unitCost)
@@ -549,33 +566,55 @@ function Buy.GetBudgetGold()
     return 50
 end
 
+--- Lifetime AutoBuy spend against the hard allowance (persisted).
+function Buy.GetSpentBrass()
+    local Watch = StockPiler3.Watch
+    if Watch and Watch.GetAutoBuySpentBrass then
+        return Watch.GetAutoBuySpentBrass()
+    end
+    return 0
+end
+
+function Buy.GetAllowanceRemainingBrass()
+    local budget = Buy.GetBudgetGold() * (Buy.BRASS_PER_GOLD or 10000)
+    return math.max(0, budget - Buy.GetSpentBrass())
+end
+
+function Buy.IsAllowanceExhausted()
+    return Buy.GetAllowanceRemainingBrass() <= 0
+end
+
 function Buy.InvalidateJobsCache()
     Buy._jobsCache = nil
     Buy._jobsCacheKey = nil
 end
 
+--- Clear visit money-gate stop when allowance/reserve again permits buying.
+--- Does not wipe lifetime spent (use ResetAllowanceSpent for that).
 function Buy.ClearMoneyGateStop(via)
     if Buy._visitStopReason ~= "reserve" and Buy._visitStopReason ~= "budget" then
         return false
     end
     local was = Buy._visitStopReason
+    via = tostring(via or "?")
+    if was == "budget" and via ~= "reset-spent" then
+        if Buy.IsAllowanceExhausted() then
+            return false
+        end
+    end
     Buy._visitStopReason = nil
-    Buy._visitSpentBrass = 0
-    Buy._visitBought = 0
-    Buy._visitPurchases = 0
-    Buy._visitAcquired = {}
-    Buy._fillChatPending = {}
     Buy._pendingBuy = nil
     Buy._noSpendCooldownUntil = {}
-    Buy._planArmedAfterFill = false
     Buy._visitMoneyBrass = PlayerMoneyBrass()
     Buy.InvalidateJobsCache()
     LogBuy(string.format(
-        "resume clear-stop was=%s via=%s money=%d reserveGold=%d",
+        "resume clear-stop was=%s via=%s money=%d spentBrass=%d reserveGold=%d budgetGold=%d",
         tostring(was),
-        tostring(via or "?"),
+        via,
         tonumber(Buy._visitMoneyBrass) or 0,
-        Buy.GetReserveGold()
+        Buy.GetSpentBrass(),
+        Buy.GetReserveGold(),
+        Buy.GetBudgetGold()
     ))
     if StockPiler3.Scheduler and StockPiler3.Scheduler.WakeAutoBuy then
         StockPiler3.Scheduler.WakeAutoBuy()
@@ -583,7 +622,28 @@ function Buy.ClearMoneyGateStop(via)
     return true
 end
 
+function Buy.ResetAllowanceSpent()
+    local Watch = StockPiler3.Watch
+    if Watch and Watch.ResetAutoBuySpentBrass then
+        Watch.ResetAutoBuySpentBrass()
+    end
+    Buy.ClearMoneyGateStop("reset-spent")
+    Buy.InvalidateJobsCache()
+    LogBuy("allowance-spent-reset")
+    if StockPiler3.Ui and StockPiler3.Ui.MarkWatchUiDirty then
+        StockPiler3.Ui.MarkWatchUiDirty()
+    end
+    local VA = StockPiler3.VendorAdapter
+    if VA and VA.IsStoreOpen and VA.IsStoreOpen() == true then
+        if StockPiler3.Scheduler and StockPiler3.Scheduler.WakeAutoBuy then
+            StockPiler3.Scheduler.WakeAutoBuy()
+        end
+    end
+    return true
+end
+
 function Buy.OnMoneySettingsChanged()
+    -- Raising allowance (or lowering reserve) can unblock; never wipe spent here.
     Buy.ClearMoneyGateStop("money-chip")
     Buy.InvalidateJobsCache()
     local VA = StockPiler3.VendorAdapter
@@ -618,8 +678,24 @@ function Buy.CollectBuyJobs()
     local Caps = StockPiler3.TradeSkillCaps
     local skillHash = Caps and Caps.LevelsHash and Caps.LevelsHash() or ""
     local watchGen = StockPiler3.Watch and StockPiler3.Watch.GetGen and StockPiler3.Watch.GetGen() or 0
+    local skillUpHash = "0"
+    local SkillUp = StockPiler3.SkillUp
+    if SkillUp then
+        local parts = {}
+        if SkillUp.IsCultEnabled and SkillUp.IsCultEnabled() == true then
+            parts[#parts + 1] = "c:" .. tostring(SkillUp.TargetMaxSkill and SkillUp.TargetMaxSkill() or 0)
+        end
+        if SkillUp.IsApoEnabled and SkillUp.IsApoEnabled() == true then
+            parts[#parts + 1] = "a:" .. tostring(SkillUp.ApoTargetTier and SkillUp.ApoTargetTier() or 0)
+                .. "/" .. tostring(SkillUp.ApoContainerBuyTarget and SkillUp.ApoContainerBuyTarget() or 0)
+                .. "/" .. tostring(SkillUp.CountApoContainers and SkillUp.CountApoContainers() or 0)
+        end
+        if #parts > 0 then
+            skillUpHash = table.concat(parts, "|")
+        end
+    end
     local cacheKey = tostring(snapGen) .. ":" .. tostring(watchGen) .. ":" .. tostring(skillHash)
-        .. ":" .. tostring(Buy._allowPlantBuys and 1 or 0)
+        .. ":" .. tostring(Buy._allowPlantBuys and 1 or 0) .. ":" .. skillUpHash
     if type(Buy._jobsCache) == "table" and Buy._jobsCacheKey == cacheKey then
         return Buy._jobsCache
     end
@@ -643,11 +719,20 @@ function Buy.CollectBuyJobs()
         for i = 1, #jobs do
             local job = jobs[i]
             local growable = job and (job.growable == true or job.isGrowable == true)
-            if not growable then
+            if not growable or (job and job.skillUp == true) then
                 filtered[#filtered + 1] = job
             end
         end
         jobs = filtered
+    end
+
+    -- SkillUp Cult: buy matching main seeds when idle and bags are empty.
+    local SkillUp = StockPiler3.SkillUp
+    if SkillUp and SkillUp.CollectBuyJobs then
+        local skillJobs = SkillUp.CollectBuyJobs() or {}
+        for i = 1, #skillJobs do
+            jobs[#jobs + 1] = skillJobs[i]
+        end
     end
 
     Buy._jobsCache = jobs
@@ -703,7 +788,7 @@ function Buy.FindStoreMatch(job)
             if type(item) == "table" and not HasAltCurrency(item) then
                 if row.canbuy == false then
                     -- skip sold-out / gated rows
-                elseif StoreItemRejectedForBuy(item) then
+                elseif StoreItemRejectedForBuy(item, job) then
                     -- skip cult additives / growables
                 elseif MS.Matches(item, spec) == true
                     or (MS.ProductMatches and MS.ProductMatches(item, spec) == true)
@@ -765,7 +850,7 @@ function Buy.FindStoreMatch(job)
             local row = index.rows[i]
             local item = row and row.item
             if type(item) == "table" and not HasAltCurrency(item) and row.canbuy ~= false then
-                if StoreItemRejectedForBuy(item) then
+                if StoreItemRejectedForBuy(item, job) then
                     -- skip
                 else
                     local sUid = tonumber(item.uniqueID) or tonumber(item.id) or 0
@@ -797,7 +882,7 @@ function Buy.FindStoreMatch(job)
                 local row = rows[i]
                 local item = row and row.item or row
                 if type(item) == "table" and not HasAltCurrency(item) then
-                    if StoreItemRejectedForBuy(item) then
+                    if StoreItemRejectedForBuy(item, job) then
                         -- skip
                     else
                         return item, RowCost(row, item)
@@ -882,12 +967,12 @@ function Buy.IssueOne(opId)
         return done(false)
     end
 
-    -- Gate reserve/budget on live gold; spent is confirmed-only.
+    -- Gate reserve on live gold; allowance on persisted lifetime spent.
     local money = PlayerMoneyBrass()
     Buy._visitMoneyBrass = money
     local reserve = Buy.GetReserveGold() * (Buy.BRASS_PER_GOLD or 10000)
     local budget = Buy.GetBudgetGold() * (Buy.BRASS_PER_GOLD or 10000)
-    local spent = tonumber(Buy._visitSpentBrass) or 0
+    local spent = Buy.GetSpentBrass()
     local reserveBlock = false
     local budgetBlock = false
 
@@ -1110,16 +1195,18 @@ function Buy.DumpBuyPlan(opts)
     local jobs = Buy.CollectBuyJobs()
     Emit("=== buy plan ===", force)
     Emit(string.format(
-        "enabled=%s reserveGold=%d budgetGold=%d storeOpen=%s allowPlantBuys=%s",
+        "enabled=%s reserveGold=%d budgetGold=%d spentBrass=%d remainBrass=%d storeOpen=%s allowPlantBuys=%s",
         tostring(Buy.IsEnabled()),
         Buy.GetReserveGold(),
         Buy.GetBudgetGold(),
+        Buy.GetSpentBrass(),
+        Buy.GetAllowanceRemainingBrass(),
         tostring(StockPiler3.VendorAdapter and StockPiler3.VendorAdapter.IsStoreOpen
             and StockPiler3.VendorAdapter.IsStoreOpen()),
         tostring(Buy._allowPlantBuys)
     ), force)
     Emit(string.format(
-        "visit purchases=%d bought=%d spentBrass=%d stop=%s pending=%s money=%d",
+        "visit purchases=%d bought=%d visitSpentBrass=%d stop=%s pending=%s money=%d",
         tonumber(Buy._visitPurchases) or 0,
         tonumber(Buy._visitBought) or 0,
         tonumber(Buy._visitSpentBrass) or 0,

@@ -5,3 +5,6 @@ Thumbs.db
 *.bak
 *.tmp
 tools/out/
+GameData.Sound.txt
+Sound.txt
+

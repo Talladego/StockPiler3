@@ -476,9 +476,14 @@ function BL.CompletePendingCraftLearn(opts)
         end
         return false
     end
-    -- Engine SuccessChance is SoT: LOW = will definitely fail, INVALID = incomplete board.
-    -- Do not learn those fingerprints (even if bag noise looks like an outcome).
-    if opts.failed ~= true and not SuccessChanceAllowsLearn(pending.successChance) then
+    -- Engine SuccessChance is SoT for speculative learns (LOW = definite fail,
+    -- INVALID = incomplete). When the bag already gained potions, trust the
+    -- delta — SkillUp invent boards often latch LOW while crafts still succeed
+    -- (and ActionBar perform bypasses our engine-chance gate).
+    if opts.failed ~= true
+        and #outputs == 0
+        and not SuccessChanceAllowsLearn(pending.successChance)
+    then
         if StockPiler3.Debug and StockPiler3.Debug.LogOp then
             StockPiler3.Debug.LogOp(
                 "brewlearn",
@@ -486,6 +491,17 @@ function BL.CompletePendingCraftLearn(opts)
             )
         end
         return false
+    end
+    if opts.failed ~= true
+        and #outputs > 0
+        and not SuccessChanceAllowsLearn(pending.successChance)
+        and StockPiler3.Debug and StockPiler3.Debug.LogOp
+    then
+        StockPiler3.Debug.LogOp(
+            "brewlearn",
+            "learn despite SuccessChance=" .. tostring(pending.successChance)
+                .. " outputs=" .. tostring(#outputs)
+        )
     end
     if RS and RS.StoreLearnedRecipeSpec then
         ok = RS.StoreLearnedRecipeSpec(materials, outputs, {

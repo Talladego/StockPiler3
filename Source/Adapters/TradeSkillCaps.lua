@@ -1,12 +1,13 @@
 ----------------------------------------------------------------
--- StockPiler3 Adapters/TradeSkillCaps — cached cult/apo skill levels
+-- StockPiler3 Adapters/TradeSkillCaps — live cult/apo skill levels
+-- Read GameData on each call (SP2 style). Engine often leaves tradeSkills
+-- empty until TRADE_SKILL_UPDATED; never cache across that event.
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
 StockPiler3.TradeSkillCaps = StockPiler3.TradeSkillCaps or {}
 local Caps = StockPiler3.TradeSkillCaps
 
-Caps._cache = Caps._cache or nil
 Caps._skillsReady = Caps._skillsReady == true
 
 local function SkillId(name, fallback)
@@ -45,36 +46,14 @@ local function ReadLevel(skillId)
     return 0
 end
 
-local function BuildCache()
-    local cultId = SkillId("CULTIVATION", 3)
-    local apoId = SkillId("APOTHECARY", 4)
-    local cult = ReadLevel(cultId)
-    local apo = ReadLevel(apoId)
-    Caps._cache = {
-        cultId = cultId,
-        apoId = apoId,
-        cult = cult,
-        apo = apo,
-    }
-    if cult > 0 or apo > 0 then
-        Caps._skillsReady = true
-    end
-    return Caps._cache
-end
-
-local function EnsureCache()
-    if type(Caps._cache) ~= "table" then
-        return BuildCache()
-    end
-    return Caps._cache
-end
-
 function Caps.Invalidate()
-    Caps._cache = nil
+    -- No sticky level cache; kept for callers.
 end
 
 function Caps.Refresh()
-    return BuildCache()
+    if Caps.GetCultSkill() > 0 or Caps.GetApoSkill() > 0 then
+        Caps._skillsReady = true
+    end
 end
 
 function Caps.CultivationId()
@@ -85,27 +64,41 @@ function Caps.ApothecaryId()
     return SkillId("APOTHECARY", 4)
 end
 
-function Caps.Level(skillId)
+--- Abilities-window trade skill icon id (GetTradeskillIcon). 0 if unavailable.
+function Caps.GetTradeSkillIcon(skillId)
     skillId = tonumber(skillId) or 0
-    local c = EnsureCache()
-    if skillId == c.cultId then
-        return c.cult
+    if skillId <= 0 then
+        return 0
     end
-    if skillId == c.apoId then
-        return c.apo
+    if type(GetTradeskillIcon) == "function" then
+        local ok, icon = pcall(GetTradeskillIcon, skillId)
+        if ok == true then
+            return tonumber(icon) or 0
+        end
     end
+    return 0
+end
+
+function Caps.GetCultivationIcon()
+    return Caps.GetTradeSkillIcon(Caps.CultivationId())
+end
+
+function Caps.GetApothecaryIcon()
+    return Caps.GetTradeSkillIcon(Caps.ApothecaryId())
+end
+
+function Caps.Level(skillId)
     return ReadLevel(skillId)
 end
 
 function Caps.GetCultSkill()
-    return EnsureCache().cult
+    return ReadLevel(Caps.CultivationId())
 end
 
 function Caps.GetApoSkill()
-    return EnsureCache().apo
+    return ReadLevel(Caps.ApothecaryId())
 end
 
--- Aliases
 function Caps.CultivationLevel()
     return Caps.GetCultSkill()
 end
@@ -118,8 +111,7 @@ function Caps.AreTradeSkillsReady()
     if Caps._skillsReady == true then
         return true
     end
-    local c = EnsureCache()
-    if c.cult > 0 or c.apo > 0 then
+    if Caps.GetCultSkill() > 0 or Caps.GetApoSkill() > 0 then
         Caps._skillsReady = true
         return true
     end
@@ -128,11 +120,11 @@ end
 
 function Caps.MarkTradeSkillsReady()
     Caps._skillsReady = true
+    Caps.Refresh()
 end
 
 function Caps.ResetTradeSkillsReady()
     Caps._skillsReady = false
-    Caps.Invalidate()
 end
 
 function Caps.CanAutoGrow()
@@ -160,6 +152,5 @@ function Caps.CanAutoBuy()
 end
 
 function Caps.LevelsHash()
-    local c = EnsureCache()
-    return tostring(c.cult) .. ":" .. tostring(c.apo)
+    return tostring(Caps.GetCultSkill()) .. ":" .. tostring(Caps.GetApoSkill())
 end

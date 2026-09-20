@@ -449,19 +449,44 @@ function Items.AsItemData(uid)
     if type(row) ~= "table" then
         return nil
     end
+    local craftingBonus = {}
+    if type(row.bonuses) == "table" then
+        for ref, val in pairs(row.bonuses) do
+            local nref = tonumber(ref) or 0
+            if nref > 0 then
+                craftingBonus[#craftingBonus + 1] = {
+                    bonusReference = nref,
+                    bonusValue = tonumber(val) or 0,
+                }
+            end
+        end
+    end
+    local skillReq = tonumber(row.skillReq) or tonumber(row.skillLevel) or 0
+    if skillReq <= 0 and type(row.bonuses) == "table" then
+        skillReq = tonumber(row.bonuses[9]) or 0
+    end
     local out = {
         uniqueID = tonumber(row.uniqueID) or tonumber(uid) or 0,
         name = row.name,
         nameNarrow = row.nameNarrow,
         iconNum = tonumber(row.iconNum) or 0,
-        craftingSkillRequirement = tonumber(row.skillReq) or 0,
+        craftingSkillRequirement = skillReq,
+        skillReq = skillReq,
+        skillLevel = tonumber(row.skillLevel) or skillReq,
         tradeSkill = tonumber(row.tradeSkill) or 0,
         cultivationType = tonumber(row.cultivationType) or 0,
         itemType = tonumber(row.itemType) or 0,
         type = tonumber(row.itemType) or 0,
         iLevel = tonumber(row.iLevel) or 0,
+        level = tonumber(row.iLevel) or 0,
         rarity = tonumber(row.rarity),
-        craftingBonus = nil,
+        craftingBonus = craftingBonus,
+        power = tonumber(row.power) or (type(row.bonuses) == "table" and tonumber(row.bonuses[2])) or 0,
+        stability = tonumber(row.stability) or (type(row.bonuses) == "table" and tonumber(row.bonuses[1])) or 0,
+        duration = tonumber(row.duration) or (type(row.bonuses) == "table" and tonumber(row.bonuses[3])) or 0,
+        effectId = tonumber(row.effectId) or (type(row.bonuses) == "table" and tonumber(row.bonuses[6])) or nil,
+        role = row.role,
+        incomplete = row.incomplete == true,
     }
     if row.isRefinable ~= nil then
         out.isRefinable = row.isRefinable == true

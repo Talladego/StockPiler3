@@ -3,7 +3,7 @@
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
-StockPiler3.Version = L"0.3.89"
+StockPiler3.Version = L"0.3.128"
 
 local function T(key, tokens)
     if StockPiler3.T then
@@ -198,6 +198,17 @@ function StockPiler3.OnSlash(input)
         end
         return
     end
+    if lower == "skillplan" then
+        local SkillUp = StockPiler3.SkillUp
+        if SkillUp and SkillUp.DumpSkillPlan then
+            SkillUp.DumpSkillPlan(function(msg) EmitLog(msg) end)
+            Print(T("boot.skillplan_dumped"))
+        else
+            EmitLog("skillplan| dump unavailable")
+            Print(T("boot.skillplan_dumped"))
+        end
+        return
+    end
     if lower == "stats" then
         if StockPiler3.SeedMap and StockPiler3.SeedMap.DumpCraftCycleStats then
             StockPiler3.SeedMap.DumpCraftCycleStats(function(msg) EmitLog(msg) end)
@@ -205,6 +216,17 @@ function StockPiler3.OnSlash(input)
         else
             EmitLog("stats| craft-cycle dump unavailable")
             Print(T("boot.stats_dumped"))
+        end
+        return
+    end
+    if lower == "stats clear" or lower == "clearstats" then
+        local SkillUp = StockPiler3.SkillUp
+        if SkillUp and SkillUp.ClearRates and SkillUp.ClearRates() then
+            EmitLog("stats| skill-up rates cleared")
+            Print(T("boot.stats_cleared"))
+        else
+            EmitLog("stats| clear unavailable")
+            Print(T("boot.unknown_cmd"))
         end
         return
     end

@@ -85,6 +85,8 @@ local function ListEntriesFromKnowledge()
                                     multiplier = tonumber(stats.multiplier) or 0,
                                     superCrit = tonumber(stats.superCrit) or 0,
                                     yield = tonumber(stats.yield) or 0,
+                                    skillUpOrigin = potion.skillUpOrigin == true
+                                        or (type(recipe) == "table" and recipe.skillUpOrigin == true),
                                     potion = potion,
                                     recipe = recipe,
                                 }
@@ -301,6 +303,74 @@ local function PlantBonusValue(bonuses, ref)
     return tonumber(v) or 0
 end
 
+--- Prefer non-zero craft fingerprint fields from learned Account.items over thin bag shells.
+local function MergePlantSpec(preferred, fallback)
+    if type(preferred) ~= "table" then
+        return fallback
+    end
+    if type(fallback) ~= "table" then
+        return preferred
+    end
+    local out = {}
+    for k, v in pairs(fallback) do
+        out[k] = v
+    end
+    for k, v in pairs(preferred) do
+        out[k] = v
+    end
+    local pb = type(preferred.bonuses) == "table" and preferred.bonuses or {}
+    local fb = type(fallback.bonuses) == "table" and fallback.bonuses or {}
+    local bonuses = {}
+    for ref, val in pairs(fb) do
+        bonuses[ref] = val
+    end
+    for ref, val in pairs(pb) do
+        local n = tonumber(val)
+        if n == nil or n ~= 0 or bonuses[ref] == nil then
+            bonuses[ref] = val
+        end
+    end
+    out.bonuses = bonuses
+    local function pickNum(a, b)
+        a = tonumber(a) or 0
+        b = tonumber(b) or 0
+        if a ~= 0 then
+            return a
+        end
+        return b
+    end
+    out.power = pickNum(preferred.power, fallback.power)
+    out.stability = pickNum(preferred.stability, fallback.stability)
+    out.duration = pickNum(preferred.duration, fallback.duration)
+    out.skillLevel = pickNum(preferred.skillLevel, fallback.skillLevel)
+    out.effectId = pickNum(preferred.effectId, fallback.effectId)
+    out.slotType = pickNum(preferred.slotType, fallback.slotType)
+    out.tradeSkill = pickNum(preferred.tradeSkill, fallback.tradeSkill)
+    if preferred.role ~= nil and preferred.role ~= "" then
+        out.role = preferred.role
+    elseif fallback.role ~= nil then
+        out.role = fallback.role
+    end
+    if preferred.incomplete == false or fallback.incomplete == false then
+        out.incomplete = false
+    else
+        out.incomplete = preferred.incomplete == true or fallback.incomplete == true
+    end
+    return out
+end
+
+local function ItemDataHasCraftBonuses(itemData)
+    if type(itemData) ~= "table" or type(itemData.craftingBonus) ~= "table" then
+        return false
+    end
+    for _, bonus in pairs(itemData.craftingBonus) do
+        if type(bonus) == "table" and (tonumber(bonus.bonusReference) or 0) > 0 then
+            return true
+        end
+    end
+    return false
+end
+
 local function BuildPlantRecipeIndex()
     local byUid = {}
     local Know = StockPiler3.Knowledge
@@ -416,6 +486,11 @@ function Catalog.ListPlantEntries()
             return
         end
         local item = Items and Items.GetByUid and Items.GetByUid(plantUid) or nil
+        -- Learned fingerprint first (bag AsItemData historically stripped craftingBonus).
+        local learnedSpec = nil
+        if Items and Items.ToSpec then
+            learnedSpec = Items.ToSpec(plantUid)
+        end
         local itemData = nil
         if Items and Items.AsItemData then
             itemData = Items.AsItemData(plantUid)
@@ -430,19 +505,49 @@ function Catalog.ListPlantEntries()
         if Inv and Inv.GetSample then
             local sample = Inv.GetSample(plantUid)
             if type(sample) == "table" then
-                itemData = sample
+                -- Keep learned craftingBonus when bag sample is a thin shell.
+                if ItemDataHasCraftBonuses(sample) or not ItemDataHasCraftBonuses(itemData) then
+                    if type(itemData) ~= "table" then
+                        itemData = sample
+                    else
+                        local merged = {}
+                        for k, v in pairs(itemData) do
+                            merged[k] = v
+                        end
+                        for k, v in pairs(sample) do
+                            merged[k] = v
+                        end
+                        if ItemDataHasCraftBonuses(itemData) and not ItemDataHasCraftBonuses(sample) then
+                            merged.craftingBonus = itemData.craftingBonus
+                        end
+                        itemData = merged
+                    end
+                else
+                    -- Sample has no bonuses; keep learned itemData, overlay display fields.
+                    if type(itemData) == "table" then
+                        if sample.name ~= nil then
+                            itemData.name = sample.name
+                        end
+                        if (tonumber(sample.iconNum) or 0) > 0 then
+                            itemData.iconNum = sample.iconNum
+                        end
+                        if (tonumber(sample.rarity) or 0) > 0 then
+                            itemData.rarity = sample.rarity
+                        end
+                    else
+                        itemData = sample
+                    end
+                end
             end
         end
         if type(itemData) == "table" and Inv and Inv.ResolvePotionItemData then
             itemData = Inv.ResolvePotionItemData(nil, plantUid, itemData) or itemData
         end
-        local spec = nil
+        local liveSpec = nil
         if MS and MS.FromItemData and type(itemData) == "table" then
-            spec = MS.FromItemData(itemData)
+            liveSpec = MS.FromItemData(itemData)
         end
-        if type(spec) ~= "table" and Items and Items.ToSpec then
-            spec = Items.ToSpec(plantUid)
-        end
+        local spec = MergePlantSpec(learnedSpec, liveSpec)
         if type(spec) ~= "table" then
             return
         end
@@ -512,9 +617,36 @@ function Catalog.ListPlantEntries()
                 superCrit = PlantBonusValue(bonuses, B.SPECIAL_CHANCE or 14)
             end
         end
+        -- Also read top-level fields on the learned Items row (StoreItem stamps these).
+        if type(item) == "table" then
+            if power == 0 then
+                power = tonumber(item.power) or 0
+            end
+            if stability == 0 then
+                stability = tonumber(item.stability) or 0
+            end
+            if duration == 0 then
+                duration = tonumber(item.duration) or 0
+            end
+            if type(item.bonuses) == "table" then
+                if multiplier == 0 then
+                    multiplier = PlantBonusValue(item.bonuses, 4)
+                end
+                if superCrit == 0 then
+                    superCrit = PlantBonusValue(item.bonuses, 14)
+                end
+            end
+        end
         local apoLevel = tonumber(spec.skillLevel) or tonumber(spec.craftingSkillRequirement)
-            or tonumber(item and item.skillReq) or tonumber(itemData and itemData.craftingSkillRequirement)
+            or tonumber(item and item.skillLevel) or tonumber(item and item.skillReq)
+            or tonumber(itemData and itemData.craftingSkillRequirement)
             or tonumber(itemData and itemData.skillLevel) or 0
+        if apoLevel <= 0 and type(item) == "table" and type(item.bonuses) == "table" then
+            apoLevel = tonumber(item.bonuses[9]) or 0
+        end
+        if apoLevel <= 0 then
+            apoLevel = PlantBonusValue(bonuses, (B and B.CRAFTING_SKILL) or 9) or 0
+        end
         -- Prefer stamped learned effectId (from seed at harvest) over description matching.
         local effectId = 0
         if type(item) == "table" then

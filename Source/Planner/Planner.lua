@@ -192,6 +192,15 @@ local function SettingsHash()
         hash = hash + (Caps.GetCultSkill and Caps.GetCultSkill() or 0) * 11
         hash = hash + (Caps.GetApoSkill and Caps.GetApoSkill() or 0) * 13
     end
+    local SkillUp = StockPiler3.SkillUp
+    if SkillUp then
+        if SkillUp.IsCultEnabled and SkillUp.IsCultEnabled() == true then
+            hash = hash + 17
+        end
+        if SkillUp.IsApoEnabled and SkillUp.IsApoEnabled() == true then
+            hash = hash + 19
+        end
+    end
     return hash
 end
 
@@ -1763,6 +1772,9 @@ local function ReconcileAutoGrowStatus(row)
     if type(row) ~= "table" then
         return false
     end
+    if row.skillUp == true or row.addonOwned == true then
+        return false
+    end
     if row.kind == "plant" or row.isPlantWatch == true then
         return false
     end
@@ -2675,7 +2687,7 @@ end
 local function PolishWatchRowsStatus(rows)
     for i = 1, #rows do
         local row = rows[i]
-        if type(row) == "table" then
+        if type(row) == "table" and row.skillUp ~= true and row.addonOwned ~= true then
             StampBottleGap(row)
             local craftable = tonumber(row.craftable) or 0
             local have = tonumber(row.potionHave) or 0
@@ -3006,10 +3018,22 @@ local function BuildWatchRows(ctx)
     for i = 1, #plantRows do
         rows[#rows + 1] = plantRows[i]
     end
+    local SkillUp = StockPiler3.SkillUp
+    if SkillUp and SkillUp.BuildWatchStatusRows then
+        local skillRows = SkillUp.BuildWatchStatusRows() or {}
+        for i = 1, #skillRows do
+            local sr = skillRows[i]
+            if type(sr) == "table" then
+                rows[#rows + 1] = sr
+            end
+        end
+    end
     PerfEnd("Build.Status")
     PerfBegin("Build.Tips")
     for i = 1, #rows do
-        if rows[i].kind ~= "plant" and rows[i].isPlantWatch ~= true then
+        if rows[i].kind ~= "plant" and rows[i].isPlantWatch ~= true
+            and rows[i].skillUp ~= true and rows[i].addonOwned ~= true
+        then
             FillWatchRowTips(rows[i], demand)
         end
     end
@@ -3121,7 +3145,9 @@ local function PatchWatchRowsLiveCounts(rows, opts)
     local contestDirty = false
     for i = 1, #rows do
         local row = rows[i]
-        if type(row) == "table" and (row.kind == "plant" or row.isPlantWatch == true) then
+        if type(row) == "table" and (row.skillUp == true or row.addonOwned == true) then
+            -- Ephemeral SkillUp status rows — leave SkillUp-authored fields alone.
+        elseif type(row) == "table" and (row.kind == "plant" or row.isPlantWatch == true) then
             local uid = tonumber(row.uniqueID) or tonumber(row.plantUid) or 0
             if uid > 0 then
                 local have = tonumber(Inv.CountByUid(uid)) or 0

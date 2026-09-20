@@ -9,6 +9,7 @@ local Classify = StockPiler3.Classify
 -- ~27 short effect filter keys (stubs OK for UI combo).
 Classify.EFFECT_KEYS = {
     "str", "int", "wp", "bs", "tou", "armor", "absorb", "heal", "hot", "ap",
+    "rcorp", "rele", "rspi",
     "hytoucrit", "hystrmelee", "hywillheal", "hystrheal", "hyintmcrit",
     "hyaccrcrit", "hywoumelee", "hywoucrit", "hywoumcrit", "hywourcrit",
     "hywouheal", "hywoustr", "hyresist", "hywouarmpen", "hywouinit",
@@ -26,6 +27,9 @@ local EFFECT_SHORT = {
     heal = "Heal",
     hot = "HoT",
     ap = "AP",
+    rcorp = "Corp",
+    rele = "Ele",
+    rspi = "Spi",
     hytoucrit = "Tou+Crit",
     hystrmelee = "Str+Melee",
     hywillheal = "Will+Heal",
@@ -185,6 +189,22 @@ local function ClassifyFromDescription(description)
     if string.find(descLower, "absorbs", 1, true) or string.find(descLower, "magical barrier", 1, true) then
         return "absorb"
     end
+    -- Resist potions / plant text (before generic "increases" / "armor").
+    if string.find(descLower, "spirit resistance", 1, true)
+        or string.find(descLower, "spirit resist", 1, true)
+    then
+        return "rspi"
+    end
+    if string.find(descLower, "corporeal resistance", 1, true)
+        or string.find(descLower, "corporeal resist", 1, true)
+    then
+        return "rcorp"
+    end
+    if string.find(descLower, "elemental resistance", 1, true)
+        or string.find(descLower, "elemental resist", 1, true)
+    then
+        return "rele"
+    end
     if string.find(descLower, "increases", 1, true)
         or string.find(descLower, "create", 1, true)
         or string.find(descLower, "used to", 1, true)
@@ -221,6 +241,13 @@ local function ClassifyFromName(name)
     if string.find(n, "brilliance", 1, true) then return "int" end
     if string.find(n, "discipline", 1, true) then return "wp" end
     if string.find(n, "securing", 1, true) then return "armor" end
+    if string.find(n, "spirit screen", 1, true) or string.find(n, "spirit resist", 1, true) then
+        return "rspi"
+    end
+    if string.find(n, "corporeal", 1, true) then return "rcorp" end
+    if string.find(n, "elemental", 1, true) and string.find(n, "resist", 1, true) then
+        return "rele"
+    end
     return nil
 end
 

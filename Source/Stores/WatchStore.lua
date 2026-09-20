@@ -525,6 +525,42 @@ function Watch.GetAutoBuyBudgetGold()
     return math.floor(n)
 end
 
+--- Lifetime AutoBuy spend (brass) against autoBuyBudgetGold until manual reset.
+function Watch.GetAutoBuySpentBrass()
+    local row = CharacterRow(false)
+    local n = type(row) == "table" and tonumber(row.autoBuySpentBrass) or nil
+    if n == nil or n < 0 then
+        return 0
+    end
+    return math.floor(n)
+end
+
+function Watch.AddAutoBuySpentBrass(delta)
+    delta = tonumber(delta) or 0
+    if delta <= 0 then
+        return Watch.GetAutoBuySpentBrass()
+    end
+    local row = CharacterRow(true)
+    if type(row) ~= "table" then
+        return Watch.GetAutoBuySpentBrass()
+    end
+    local nextVal = (tonumber(row.autoBuySpentBrass) or 0) + math.floor(delta)
+    if nextVal < 0 then
+        nextVal = 0
+    end
+    row.autoBuySpentBrass = nextVal
+    return nextVal
+end
+
+function Watch.ResetAutoBuySpentBrass()
+    local row = CharacterRow(true)
+    if type(row) ~= "table" then
+        return 0
+    end
+    row.autoBuySpentBrass = 0
+    return 0
+end
+
 ----------------------------------------------------------------
 -- Plant watches (material stock floors; always below potion priority)
 ----------------------------------------------------------------
