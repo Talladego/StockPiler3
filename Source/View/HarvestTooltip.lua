@@ -7,10 +7,7 @@ StockPiler3.HarvestTooltip = StockPiler3.HarvestTooltip or {}
 local HarvestTooltip = StockPiler3.HarvestTooltip
 
 local function T(key, tokens)
-    if StockPiler3.T then
-        return StockPiler3.T(key, tokens)
-    end
-    return L"[" .. towstring(tostring(key or "")) .. L"]"
+    return StockPiler3.Util.T(key, tokens)
 end
 
 local function ReadyCount()
@@ -45,32 +42,27 @@ local function Fingerprint()
 end
 
 function HarvestTooltip.Show(mouseoverWindow, anchor)
-    mouseoverWindow = mouseoverWindow or (SystemData and SystemData.ActiveWindow and SystemData.ActiveWindow.name)
-    if mouseoverWindow == nil or mouseoverWindow == "" then
-        return
-    end
-    HarvestTooltip._liveWindow = mouseoverWindow
-    HarvestTooltip._liveAnchor = anchor or (Tooltips and Tooltips.ANCHOR_WINDOW_TOP)
-    HarvestTooltip._liveFp = Fingerprint()
-    Tooltips.CreateTextOnlyTooltip(mouseoverWindow, BuildTipText())
-    Tooltips.AnchorTooltip(HarvestTooltip._liveAnchor)
+    StockPiler3.ViewList.LiveTipShow(
+        HarvestTooltip,
+        BuildTipText,
+        Fingerprint,
+        mouseoverWindow,
+        anchor,
+        Tooltips and Tooltips.ANCHOR_WINDOW_TOP
+    )
 end
 
 function HarvestTooltip.ClearLive()
-    HarvestTooltip._liveWindow = nil
-    HarvestTooltip._liveFp = nil
+    StockPiler3.ViewList.LiveTipClear(HarvestTooltip)
 end
 
 function HarvestTooltip.MaybeRefresh()
-    local win = HarvestTooltip._liveWindow
-    if win == nil or win == "" then
-        return
-    end
-    local fp = Fingerprint()
-    if fp == HarvestTooltip._liveFp then
-        return
-    end
-    HarvestTooltip.Show(win, HarvestTooltip._liveAnchor)
+    StockPiler3.ViewList.LiveTipMaybeRefresh(
+        HarvestTooltip,
+        BuildTipText,
+        Fingerprint,
+        HarvestTooltip.Show
+    )
 end
 
 function HarvestTooltip.TickLive()

@@ -35,10 +35,7 @@ Refine._liveSeedBaseline = Refine._liveSeedBaseline or {}
 ----------------------------------------------------------------
 
 local function NowSec()
-    if type(GetGameTime) == "function" then
-        return tonumber(GetGameTime()) or 0
-    end
-    return 0
+    return StockPiler3.Util and StockPiler3.Util.NowSec and StockPiler3.Util.NowSec() or 0
 end
 
 local function LogRefine(msg)
@@ -688,7 +685,11 @@ function Refine.GetSeedBudget(seedUid)
         outstanding = tonumber(RP.GetOutstanding(seedUid)) or 0
     end
     local credit = live + ground + outstanding
-    local buffer = StockPiler3.Watch and StockPiler3.Watch.GetSeedBufferMin and StockPiler3.Watch.GetSeedBufferMin() or 5
+    local buffer = 0
+    local Watch = StockPiler3.Watch
+    if Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true then
+        buffer = Watch.GetSeedBufferMin and tonumber(Watch.GetSeedBufferMin()) or 5
+    end
     local headroom = math.max(0, buffer - credit)
     return {
         live = live,

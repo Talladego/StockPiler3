@@ -22,13 +22,7 @@ BL.CraftBonus = {
 BL._pendingCraft = nil
 
 local function ToNarrow(value)
-    if StockPiler3.Persistence and StockPiler3.Persistence.ToNarrow then
-        return StockPiler3.Persistence.ToNarrow(value)
-    end
-    if type(value) == "wstring" and type(WStringToString) == "function" then
-        return WStringToString(value) or ""
-    end
-    return tostring(value or "")
+    return StockPiler3.Util.ToNarrow(value)
 end
 
 local function IsPotionType(itemData)
@@ -262,10 +256,7 @@ end
 local BOARD_SNAPSHOT_TTL_SEC = 45
 
 local function NowSec()
-    if type(GetGameTime) == "function" then
-        return tonumber(GetGameTime()) or 0
-    end
-    return 0
+    return StockPiler3.Util and StockPiler3.Util.NowSec and StockPiler3.Util.NowSec() or 0
 end
 
 local function LatchSuccessChance()
@@ -595,11 +586,19 @@ function BL.CompletePendingCraftLearn(opts)
         )
     end
     local skillUpOrigin = pending.skillUpOrigin == true or LatchSkillUpOrigin()
+    -- SkillUp Apo invents throwaway boards — never stamp them into known potions.
+    -- Manual / watch brews do not latch session.skillUp, so they still learn.
+    if skillUpOrigin == true then
+        if StockPiler3.Debug and StockPiler3.Debug.LogOp then
+            StockPiler3.Debug.LogOp("brewlearn", "skip skillUpOrigin learn")
+        end
+        return true
+    end
     if RS and RS.StoreLearnedRecipeSpec then
         ok = RS.StoreLearnedRecipeSpec(materials, outputs, {
             mainConsumed = opts.mainConsumed,
             failed = opts.failed == true,
-            skillUpOrigin = skillUpOrigin,
+            skillUpOrigin = false,
         }) == true
     end
     return ok

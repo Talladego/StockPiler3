@@ -12,21 +12,7 @@ US._stallLatch = nil
 US._active = nil -- last pick { familyKey, haveReq, needReq, why }
 
 local function CharRow(create)
-    local P = StockPiler3.Persistence
-    if P and P.GetCharacterBucket then
-        return P.GetCharacterBucket(create == true)
-    end
-    return nil
-end
-
-local function NowSec()
-    if type(GetGameTime) == "function" then
-        local t = tonumber(GetGameTime()) or 0
-        if t > 0 then
-            return t
-        end
-    end
-    return tonumber(StockPiler3.FrameCounter) or 0
+    return StockPiler3.Util.CharacterRow(create == true)
 end
 
 function US.IsEnabled()
@@ -96,29 +82,20 @@ function US.ClimbCap(neededReq)
 end
 
 local function SeedBudget(seedUid)
-    seedUid = tonumber(seedUid) or 0
     local Refine = StockPiler3.Refine
-    if seedUid > 0 and Refine and Refine.GetSeedBudget then
+    if Refine and Refine.GetSeedBudget then
         local b = Refine.GetSeedBudget(seedUid)
         if type(b) == "table" then
             return b
         end
     end
-    local Watch = StockPiler3.Watch
-    local buffer = 0
-    if Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true then
-        buffer = Watch.GetSeedBufferMin and tonumber(Watch.GetSeedBufferMin()) or 5
-    end
-    local live = 0
-    local Inv = StockPiler3.Inventory
-    if seedUid > 0 and Inv and Inv.CountByUid then
-        live = tonumber(Inv.CountByUid(seedUid)) or 0
-    end
     return {
-        live = live,
-        credit = live,
-        headroom = math.max(0, buffer - live),
-        bufferMin = buffer,
+        live = 0,
+        ground = 0,
+        outstanding = 0,
+        credit = 0,
+        headroom = 0,
+        bufferMin = 0,
     }
 end
 
@@ -985,10 +962,9 @@ local function RebuildWatchStatusCache()
     end
     local targets = CollectUpgradeTargets()
     if #targets < 1 then
-        local curWhy = type(US._active) == "table" and tostring(US._active.why or "") or ""
-        if curWhy ~= "planting" and curWhy ~= "refining" then
-            US._active = nil
-        end
+        -- Climb done / no targets: always clear latch. Keeping planting/refining
+        -- here made ApplySeedBufferStatus re-paint upgrading_seed via GetActiveStatus.
+        US._active = nil
         return
     end
     for i = 1, #targets do

@@ -7,13 +7,7 @@ StockPiler3.Additives = StockPiler3.Additives or {}
 local AD = StockPiler3.Additives
 
 local function ToNarrow(text)
-    if StockPiler3.Persistence and StockPiler3.Persistence.ToNarrow then
-        return StockPiler3.Persistence.ToNarrow(text)
-    end
-    if type(text) == "wstring" and type(WStringToString) == "function" then
-        return WStringToString(text) or ""
-    end
-    return tostring(text or "")
+    return StockPiler3.Util.ToNarrow(text)
 end
 
 local function CultTypes()

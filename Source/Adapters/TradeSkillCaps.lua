@@ -46,10 +46,6 @@ local function ReadLevel(skillId)
     return 0
 end
 
-function Caps.Invalidate()
-    -- No sticky level cache; kept for callers.
-end
-
 function Caps.Refresh()
     if Caps.GetCultSkill() > 0 or Caps.GetApoSkill() > 0 then
         Caps._skillsReady = true
@@ -99,14 +95,6 @@ function Caps.GetApoSkill()
     return ReadLevel(Caps.ApothecaryId())
 end
 
-function Caps.CultivationLevel()
-    return Caps.GetCultSkill()
-end
-
-function Caps.ApothecaryLevel()
-    return Caps.GetApoSkill()
-end
-
 function Caps.AreTradeSkillsReady()
     if Caps._skillsReady == true then
         return true
@@ -136,14 +124,6 @@ function Caps.CanApothecary()
 end
 
 function Caps.CanBrewPotions()
-    return Caps.CanApothecary()
-end
-
-function Caps.HasCultivation()
-    return Caps.CanAutoGrow()
-end
-
-function Caps.HasApothecary()
     return Caps.CanApothecary()
 end
 

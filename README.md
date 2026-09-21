@@ -2,6 +2,16 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
+**Version 0.3.147** — Fix Watch Status stuck on upgrading_seed after climb ends (live flippable + clear UpgradeSeed latch).
+
+**Version 0.3.146** — SkillUp Apo crafts are not recorded as known potions (Account SV scrubbed offline).
+
+**Version 0.3.145** — Fix Harvest/Brew macro drag leaving grey tint on emptied hotbar slots.
+
+**Version 0.3.144** — Plants tab shows Clear watches (clears plant watches only).
+
+**Version 0.3.143** — Dedup: Core/Util + ViewList shared helpers; Refine-owned seed budget; dead stub prune.
+
 **Version 0.3.142** — Tooltip pad: level/renown/itemSet/description so CreateItemTooltip no longer nil-compares or LabelSetText-fails on thin DB shells.
 
 **Version 0.3.141** — Root-cause: BrewLearn latches session recipe and rejects negative-stability learns; VendorAdapter stores only Cult/Apo mats (no migrate scrubber).
@@ -57,7 +67,7 @@ Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macr
 
 ### Potions
 
-Learned recipe catalog (one row per fingerprint). Watch / Forget / recipe tips. **Hide Skill up** (default on) hides potions stamped `skillUpOrigin` from SkillUp Apo brews.
+Learned recipe catalog (one row per fingerprint). Watch / Forget / recipe tips. SkillUp Apo crafts are not recorded. **Hide Skill up** (default on) still hides any legacy `skillUpOrigin` rows.
 
 ### Watch
 
@@ -96,7 +106,7 @@ Ideal path from Cult 1 + Apo 1: one level-1 main seed → plant → harvest → 
 - Stabilizer: **Arboreal Resin only**. Board must be engine HIGH (stability sum > 0).
 - Resin short → refine leftover mains below Apo floor first, then surplus of the exact-floor brew main (keep ≥1). Same seed-buffer rules as potion watches.
 - Vial AutoBuy stocks one remaining tier band using SkillUp-only rate samples (`/sp3 stats`); vials may pre-buy while the brew main is held for seed buffer.
-- Recipes from SkillUp brew are stamped `skillUpOrigin` (manual brew while Level up Apo is on is not).
+- Recipes from SkillUp brew are not recorded (manual brew while Level up Apo is on still learns).
 
 ### Stats
 
@@ -149,6 +159,11 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.147 | Live-flip upgrading_seed; clear UpgradeSeed _active when climb ends |
+| 0.3.146 | SkillUp crafts not recorded; offline Account SV skillUpOrigin scrub |
+| 0.3.145 | Vacate Harvest/Brew slots: reset BASE_ICON tint + clear craft binds |
+| 0.3.144 | Plants tab Clear watches (plant watches only) |
+| 0.3.143 | Dedup Util/ViewList; Refine seed budget; dead stub prune |
 | 0.3.142 | Tooltip pad level/renown/itemSet/description |
 | 0.3.141 | BrewLearn session latch + reject unstable; vendor craft-only |
 | 0.3.140 | Hide Skill up stamp + scrub unstable recipes |

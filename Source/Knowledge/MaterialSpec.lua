@@ -14,10 +14,7 @@ StockPiler3.MaterialSpec = StockPiler3.MaterialSpec or {}
 local MS = StockPiler3.MaterialSpec
 
 local function T(key, tokens)
-    if StockPiler3.T then
-        return StockPiler3.T(key, tokens)
-    end
-    return L"[" .. towstring(tostring(key or "")) .. L"]"
+    return StockPiler3.Util.T(key, tokens)
 end
 
 local function CultivationTypes()
@@ -386,13 +383,7 @@ local function IsMaterialSpec(t)
 end
 
 local function ToNarrow(text)
-    if StockPiler3.Persistence and StockPiler3.Persistence.ToNarrow then
-        return StockPiler3.Persistence.ToNarrow(text)
-    end
-    if type(text) == "wstring" and type(WStringToString) == "function" then
-        return WStringToString(text) or ""
-    end
-    return tostring(text or "")
+    return StockPiler3.Util.ToNarrow(text)
 end
 
 -- Infer EFFECT when craftingBonus omits ref 6 (common on heal/stat mains).

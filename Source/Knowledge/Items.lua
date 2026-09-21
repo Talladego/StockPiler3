@@ -7,13 +7,7 @@ StockPiler3.Items = StockPiler3.Items or {}
 local Items = StockPiler3.Items
 
 local function ToNarrow(value)
-    if StockPiler3.Persistence and StockPiler3.Persistence.ToNarrow then
-        return StockPiler3.Persistence.ToNarrow(value)
-    end
-    if type(value) == "wstring" and type(WStringToString) == "function" then
-        return WStringToString(value) or ""
-    end
-    return tostring(value or "")
+    return StockPiler3.Util.ToNarrow(value)
 end
 
 local function ItemsTable()

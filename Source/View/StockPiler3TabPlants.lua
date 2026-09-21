@@ -5,10 +5,7 @@
 StockPiler3TabPlants = {}
 
 local function T(key, tokens)
-    if StockPiler3.T then
-        return StockPiler3.T(key, tokens)
-    end
-    return L"[" .. towstring(tostring(key or "")) .. L"]"
+    return StockPiler3.Util.T(key, tokens)
 end
 
 StockPiler3TabPlants.listData = {}
@@ -44,10 +41,7 @@ local SORT_HEADERS = {
 }
 
 local function ToNarrow(text)
-    if StockPiler3.Persistence and StockPiler3.Persistence.ToNarrow then
-        return StockPiler3.Persistence.ToNarrow(text)
-    end
-    return tostring(text or "")
+    return StockPiler3.Util.ToNarrow(text)
 end
 
 local function GetSettings()
@@ -59,49 +53,20 @@ local function GetSettings()
 end
 
 local function ItemRarityNameColor(itemData)
-    if itemData and DataUtils and DataUtils.GetItemRarityColor then
-        local ok, color = pcall(DataUtils.GetItemRarityColor, itemData)
-        if ok and type(color) == "table" then
-            return tonumber(color.r) or 255, tonumber(color.g) or 255, tonumber(color.b) or 255
-        end
-    end
-    return 255, 255, 255
+    return StockPiler3.ViewList.ItemRarityNameColor(itemData)
 end
 
 local function FormatSignedStat(n)
-    n = tonumber(n) or 0
-    if n == 0 then
-        return T("ui.dash")
-    end
-    if n > 0 then
-        return towstring("+" .. tostring(n))
-    end
-    return towstring(tostring(n))
+    return StockPiler3.ViewList.FormatSignedStat(n, { zeroAsDash = true })
 end
 
 -- Match Potions tab: SPECIAL_CHANCE is already a percent points value (1 → "1%").
 local function FormatPercentStat(n)
-    n = tonumber(n) or 0
-    if n == 0 then
-        return T("ui.dash")
-    end
-    return towstring(tostring(n) .. "%")
+    return StockPiler3.ViewList.FormatPercentStat(n)
 end
 
 local function EffectTextForRow(effectKey)
-    if type(effectKey) == "string" and effectKey ~= "" then
-        local RS = StockPiler3.RecipeSpec
-        if RS and RS.NormalizeEffectKeyForUi then
-            effectKey = RS.NormalizeEffectKeyForUi(effectKey) or effectKey
-        end
-        if StockPiler3.Classify and StockPiler3.Classify.EffectShortLabel then
-            local label = StockPiler3.Classify.EffectShortLabel(effectKey)
-            if label ~= nil and label ~= L"" then
-                return label
-            end
-        end
-    end
-    return T("ui.dash")
+    return StockPiler3.ViewList.EffectTextForRow(effectKey, { emptyDash = true })
 end
 
 local function IconMarkup(iconNum)
@@ -186,45 +151,19 @@ local function SortRows(rows)
 end
 
 local function EffectCycle()
-    local keys = { "" }
-    if StockPiler3.Classify and StockPiler3.Classify.EffectFilterKeys then
-        local list = StockPiler3.Classify.EffectFilterKeys()
-        for i = 1, #list do
-            keys[#keys + 1] = list[i]
-        end
-    end
-    return keys
+    return StockPiler3.ViewList.EffectFilterCycle()
 end
 
 local function SyncEffectComboSelection()
-    local w = "SP3TabPlantsEffectCombo"
-    if not DoesWindowExist(w) then
-        return
-    end
-    local cycle = EffectCycle()
-    local cur = (GetSettings().plantEffectFilter) or ""
-    local selected = 1
-    for i = 1, #cycle do
-        if cycle[i] == cur then
-            selected = i
-            break
-        end
-    end
-    ComboBoxSetSelectedMenuItem(w, selected)
+    StockPiler3.ViewList.SyncEffectCombo("SP3TabPlantsEffectCombo", (GetSettings().plantEffectFilter) or "")
 end
 
 local function InitEffectCombo()
-    local w = "SP3TabPlantsEffectCombo"
-    if not DoesWindowExist(w) then
-        return
-    end
-    ComboBoxClearMenuItems(w)
-    ComboBoxAddMenuItem(w, T("potions.all_effects"))
-    local cycle = EffectCycle()
-    for i = 2, #cycle do
-        ComboBoxAddMenuItem(w, EffectTextForRow(cycle[i]))
-    end
-    SyncEffectComboSelection()
+    StockPiler3.ViewList.InitEffectCombo(
+        "SP3TabPlantsEffectCombo",
+        (GetSettings().plantEffectFilter) or "",
+        EffectTextForRow
+    )
 end
 
 local function UpdateSortHeaderLabels()
@@ -255,21 +194,11 @@ end
 local function UpdateSortHeaders()
     UpdateSortHeaderLabels()
     local s = GetSettings()
-    local col = s.plantSortColumn or "name"
-    local asc = s.plantSortAscending ~= false
-    for key, win in pairs(SORT_HEADERS) do
-        if DoesWindowExist(win) then
-            local up = win .. "UpArrow"
-            local down = win .. "DownArrow"
-            if key == col then
-                WindowSetShowing(up, asc)
-                WindowSetShowing(down, not asc)
-            else
-                WindowSetShowing(up, false)
-                WindowSetShowing(down, false)
-            end
-        end
-    end
+    StockPiler3.ViewList.UpdateSortArrows(
+        SORT_HEADERS,
+        s.plantSortColumn or "name",
+        s.plantSortAscending ~= false
+    )
 end
 
 local function BuildVisibleList()
@@ -428,23 +357,14 @@ function StockPiler3TabPlants.UpdateRows()
                         blocked = StockPiler3.Watch.CanEnablePlantWatch(data.plantKey) ~= true
                         data.watchBlocked = blocked
                     end
-                    if ButtonSetCheckButtonFlag then
-                        ButtonSetCheckButtonFlag(rowName .. "Watch", true)
-                    end
-                    ButtonSetPressedFlag(rowName .. "Watch", data.watched == true and not blocked)
-                    if ButtonSetDisabledFlag then
-                        ButtonSetDisabledFlag(rowName .. "Watch", blocked)
-                    end
+                    StockPiler3.ViewList.PaintWatchCheckbox(
+                        rowName .. "Watch",
+                        data.watched == true,
+                        blocked
+                    )
                 end
                 if DoesWindowExist(rowName .. "Icon") then
-                    if data.iconNum and data.iconNum > 0 then
-                        local tex, x, y = GetIconData(data.iconNum)
-                        DynamicImageSetTexture(rowName .. "Icon", tex, x, y)
-                        DynamicImageSetTextureScale(rowName .. "Icon", ICON_SCALE)
-                        WindowSetShowing(rowName .. "Icon", true)
-                    else
-                        WindowSetShowing(rowName .. "Icon", false)
-                    end
+                    StockPiler3.ViewList.SetIconTexture(rowName .. "Icon", data.iconNum, ICON_SCALE)
                 end
                 if DoesWindowExist(rowName .. "Name") then
                     LabelSetText(rowName .. "Name", data.name or L"")
@@ -546,9 +466,6 @@ function StockPiler3TabPlants.OnEffectComboChanged()
     local cycle = EffectCycle()
     s.plantEffectFilter = cycle[sel] or ""
     StockPiler3TabPlants.Refresh()
-end
-
-function StockPiler3TabPlants.OnToggleUnused()
 end
 
 function StockPiler3TabPlants.OnMouseOverIcon()
@@ -654,10 +571,7 @@ function StockPiler3TabPlants.OnMouseOverRecipe()
 end
 
 function StockPiler3TabPlants.OnMouseOverForget()
-    if Tooltips and Tooltips.CreateTextOnlyTooltip then
-        Tooltips.CreateTextOnlyTooltip(SystemData.ActiveWindow.name, T("tip.plants.forget"))
-        Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_RIGHT)
-    end
+    StockPiler3.ViewList.ShowTextTip(SystemData.ActiveWindow.name, T("tip.plants.forget"))
 end
 
 function StockPiler3TabPlants.ConfirmForgetPlant()
@@ -688,17 +602,8 @@ function StockPiler3TabPlants.OnForgetRow()
     local name = ToNarrow(data.name)
     StockPiler3TabPlants._pendingForgetUid = uid
     StockPiler3TabPlants._pendingForgetLabel = name
-    if type(DialogManager) == "table" and type(DialogManager.MakeTwoButtonDialog) == "function" then
-        local yes = GetString and GetString(StringTables.Default.LABEL_YES) or T("ui.yes")
-        local no = GetString and GetString(StringTables.Default.LABEL_NO) or T("ui.no")
-        DialogManager.MakeTwoButtonDialog(
-            T("plants.forget_confirm", { name = towstring(name) }),
-            yes,
-            StockPiler3TabPlants.ConfirmForgetPlant,
-            no,
-            nil
-        )
-        return
-    end
-    StockPiler3TabPlants.ConfirmForgetPlant()
+    StockPiler3.ViewList.ConfirmTwoButton(
+        T("plants.forget_confirm", { name = towstring(name) }),
+        StockPiler3TabPlants.ConfirmForgetPlant
+    )
 end

@@ -11,10 +11,7 @@ local RecipeTooltip = StockPiler3.RecipeTooltip
 local COLOR_STATS = { 220, 180, 60 }
 
 local function T(key, tokens)
-    if StockPiler3.T then
-        return StockPiler3.T(key, tokens)
-    end
-    return L"[" .. towstring(tostring(key or "")) .. L"]"
+    return StockPiler3.Util.T(key, tokens)
 end
 
 RecipeTooltip.SEP_LINE = T("recipe.sep")
@@ -115,10 +112,6 @@ function RecipeTooltip.AppendSeparator(rows)
         return
     end
     rows[#rows + 1] = { text = RecipeTooltip.SEP_LINE or T("recipe.sep"), kind = "separator" }
-end
-
-function RecipeTooltip.ColorForKind(kind, role)
-    return RecipeTooltipColor(kind, role)
 end
 
 --- Shared colored text-only tooltip (Status / Craftable / Recipe use the same kinds).

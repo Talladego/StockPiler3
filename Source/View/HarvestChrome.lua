@@ -10,17 +10,11 @@ local HARVEST_WIN = "StockPiler3WindowHarvest"
 local HARVEST_ACTION_WIN = "StockPiler3WindowHarvestAction"
 
 local function T(key, tokens)
-    if StockPiler3.T then
-        return StockPiler3.T(key, tokens)
-    end
-    return L"[" .. towstring(tostring(key or "")) .. L"]"
+    return StockPiler3.Util.T(key, tokens)
 end
 
 local function TryCall(context, fn, ...)
-    if StockPiler3.Debug and StockPiler3.Debug.TryCall then
-        return StockPiler3.Debug.TryCall(context, fn, ...)
-    end
-    return pcall(fn, ...)
+    return StockPiler3.Util.TryCall(context, fn, ...)
 end
 
 local function RestoreHarvestChrome(windowName)

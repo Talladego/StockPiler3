@@ -8,10 +8,7 @@ StockPiler3.Macro = StockPiler3.Macro or {}
 local Macro = StockPiler3.Macro
 
 local function T(key, tokens)
-    if StockPiler3.T then
-        return StockPiler3.T(key, tokens)
-    end
-    return L"[" .. towstring(tostring(key or "")) .. L"]"
+    return StockPiler3.Util.T(key, tokens)
 end
 
 local MACRO_NAME = L"StockPiler3 Harvest"
@@ -50,10 +47,7 @@ local function Print(msg)
 end
 
 local function TryCall(context, fn, ...)
-    if StockPiler3.Debug and StockPiler3.Debug.TryCall then
-        return StockPiler3.Debug.TryCall(context, fn, ...)
-    end
-    return pcall(fn, ...)
+    return StockPiler3.Util.TryCall(context, fn, ...)
 end
 
 local function BindCacheKey(button)
@@ -120,11 +114,20 @@ local function forceGreyMacroIcon(button)
     end
 end
 
+local function resetMacroIconTint(button)
+    local icon = button and button.m_Windows and button.m_Windows[ACTION_BUTTON_BASE_ICON]
+    if icon and type(icon.SetTintColor) == "function" then
+        icon:SetTintColor(255, 255, 255)
+    end
+end
+
 local function setButtonEnabledVisual(button, canUse)
     canUse = canUse == true
     if type(button.UpdateEnabledState) == "function" then
         button:UpdateEnabledState(canUse, true, false)
-        if not canUse then
+        if canUse then
+            resetMacroIconTint(button)
+        else
             forceGreyMacroIcon(button)
         end
         return
@@ -505,6 +508,19 @@ local function clearBrewGameActionForButton(button)
     return ok == true
 end
 
+--- Stock UpdateEnabledState skips tint reset when iconType is USE_EMPTY_ICON and the
+--- slot is disabled — our forceGrey tint then sticks on Blank-Action-Bar-Icon-Slot
+--- after Harvest/Brew is dragged away. WarTriage only tints current macro slots and
+--- does not hook UpdateEnabledState, so it rarely leaves this residue.
+local function restoreVacatedMacroSlot(button)
+    if not button then
+        return
+    end
+    resetMacroIconTint(button)
+    clearHarvestGameActionForButton(button)
+    clearBrewGameActionForButton(button)
+end
+
 local function bindBrewGameAction(button)
     if not button or not button.m_Name or WindowSetGameActionData == nil then
         return false
@@ -842,7 +858,13 @@ local function installSetActionDataHook()
     end
     local orgSetActionData = ActionButton.SetActionData
     ActionButton.SetActionData = function(self, actionType, actionId)
+        local wasOurs = Macro.IsMacroButton(self) or Macro.IsBrewMacroButton(self)
         orgSetActionData(self, actionType, actionId)
+        local isOurs = Macro.IsMacroButton(self) or Macro.IsBrewMacroButton(self)
+        if wasOurs and not isOurs then
+            restoreVacatedMacroSlot(self)
+            return
+        end
         applySetActionDataAppearance(self, actionType, actionId)
     end
     setActionDataHooked = true
@@ -896,23 +918,9 @@ local function handleMacroHarvestActivation(flags)
         return "cursor"
     end
     local Grow = StockPiler3.Grow
-    if Grow and Grow.CanHarvestNow then
-        if Grow.CanHarvestNow() ~= true then
-            clearPickupIfMouse(flags)
-            return "blocked"
-        end
-    else
-        local ready = Grow and Grow.CountReadyHarvestPlots and Grow.CountReadyHarvestPlots() or 0
-        if (tonumber(ready) or 0) <= 0 then
-            clearPickupIfMouse(flags)
-            return "blocked"
-        end
-        if StockPiler3.Brew and StockPiler3.Brew.BlocksHarvest
-            and StockPiler3.Brew.BlocksHarvest() == true
-        then
-            clearPickupIfMouse(flags)
-            return "blocked"
-        end
+    if not (Grow and Grow.CanHarvestNow) or Grow.CanHarvestNow() ~= true then
+        clearPickupIfMouse(flags)
+        return "blocked"
     end
     if Grow and Grow.PrepareHarvestPlot then
         if Grow.PrepareHarvestPlot(true) ~= true then

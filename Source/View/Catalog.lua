@@ -7,16 +7,7 @@ StockPiler3.Catalog = StockPiler3.Catalog or {}
 local Catalog = StockPiler3.Catalog
 
 local function ToNarrow(value)
-    if StockPiler3.Persistence and StockPiler3.Persistence.ToNarrow then
-        return StockPiler3.Persistence.ToNarrow(value)
-    end
-    if type(value) == "wstring" and type(WStringToString) == "function" then
-        local ok, text = pcall(WStringToString, value)
-        if ok and type(text) == "string" then
-            return text
-        end
-    end
-    return tostring(value or "")
+    return StockPiler3.Util.ToNarrow(value)
 end
 
 local function PotionRecipeKeys(potion)
@@ -134,6 +125,13 @@ end
 function Catalog.ClearWatchList()
     if StockPiler3.Watch and StockPiler3.Watch.ClearAll then
         return StockPiler3.Watch.ClearAll()
+    end
+    return 0
+end
+
+function Catalog.ClearPlantWatchList()
+    if StockPiler3.Watch and StockPiler3.Watch.ClearAllPlantWatches then
+        return StockPiler3.Watch.ClearAllPlantWatches()
     end
     return 0
 end
@@ -269,23 +267,6 @@ function Catalog.ForgetPotionRecipeLink(outputUid, recipeSpecKey)
         StockPiler3.Knowledge.BumpGen()
     end
     return true
-end
-
-function Catalog.ForgetLearnedRecipeSpec(key)
-    key = tostring(key or "")
-    if key == "" then
-        return false
-    end
-    local RS = StockPiler3.RecipeSpec
-    if RS and RS.ParsePotionRecipeKey then
-        local parsed = RS.ParsePotionRecipeKey(key)
-        if type(parsed) == "table" and parsed.isComposite == true
-            and type(parsed.recipeSpecKey) == "string" and parsed.recipeSpecKey ~= ""
-        then
-            return Catalog.ForgetPotionRecipeLink(parsed.outputUid, parsed.recipeSpecKey)
-        end
-    end
-    return false
 end
 
 ----------------------------------------------------------------
@@ -795,13 +776,6 @@ end
 function Catalog.GetPlantWatch(plantKey)
     if StockPiler3.Watch and StockPiler3.Watch.GetPlantWatch then
         return StockPiler3.Watch.GetPlantWatch(plantKey)
-    end
-    return { enabled = false, targetStock = 40, autoGrow = true }
-end
-
-function Catalog.EnsurePlantWatch(plantKey)
-    if StockPiler3.Watch and StockPiler3.Watch.EnsurePlantWatch then
-        return StockPiler3.Watch.EnsurePlantWatch(plantKey)
     end
     return { enabled = false, targetStock = 40, autoGrow = true }
 end

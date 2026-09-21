@@ -21,7 +21,8 @@
 --   Resin short → refine leftover mains below Apo floor first (L1/L25
 --   when brewing T50, etc.), then surplus of the exact-floor brew main
 --   (keep ≥1 for brew). All buffer-safe (PlantBrewSurplus).
---   Learned potions stamped skillUpOrigin (Hide Skill up on Potions tab).
+--   SkillUp crafts are not recorded as known potions (BrewLearn skips
+--   session.skillUp learns). Hide Skill up still filters any legacy rows.
 --   Cult AutoGrow assists at Apo tier even at Cult 200 / Cult SkillUp off.
 ----------------------------------------------------------------
 
@@ -459,31 +460,22 @@ function SkillUp.PickBestBagSeed()
     return best
 end
 
---- Seed budget helpers — same semantics as Grow/Refine watch seed-buffer.
+--- Seed budget — Refine.GetSeedBudget (bag + ground + outstanding).
 local function SeedBudget(seedUid)
-    seedUid = tonumber(seedUid) or 0
     local Refine = StockPiler3.Refine
-    if seedUid > 0 and Refine and Refine.GetSeedBudget then
+    if Refine and Refine.GetSeedBudget then
         local b = Refine.GetSeedBudget(seedUid)
         if type(b) == "table" then
             return b
         end
     end
-    local Watch = StockPiler3.Watch
-    local buffer = 0
-    if Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true then
-        buffer = Watch.GetSeedBufferMin and tonumber(Watch.GetSeedBufferMin()) or 5
-    end
-    local live = 0
-    local Inv = StockPiler3.Inventory
-    if seedUid > 0 and Inv and Inv.CountByUid then
-        live = tonumber(Inv.CountByUid(seedUid)) or 0
-    end
     return {
-        live = live,
-        credit = live,
-        headroom = math.max(0, buffer - live),
-        bufferMin = buffer,
+        live = 0,
+        ground = 0,
+        outstanding = 0,
+        credit = 0,
+        headroom = 0,
+        bufferMin = 0,
     }
 end
 
@@ -1142,10 +1134,7 @@ SkillUp.SKILL_RATES_SCHEMA = 2
 SkillUp.APO_VIAL_BUY_CAP = 300
 
 local function NowSec()
-    if type(GetGameTime) == "function" then
-        return tonumber(GetGameTime()) or 0
-    end
-    return 0
+    return StockPiler3.Util and StockPiler3.Util.NowSec and StockPiler3.Util.NowSec() or 0
 end
 
 local function RatesTable()

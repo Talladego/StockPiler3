@@ -10,10 +10,7 @@ Watch._gen = 0
 
 --- Per-character settings bucket (autoGrowEnabled, watches, AutoBuy, etc.).
 function Watch.CharacterRow(create)
-    if StockPiler3.Persistence and StockPiler3.Persistence.GetCharacterBucket then
-        return StockPiler3.Persistence.GetCharacterBucket(create ~= false)
-    end
-    return nil
+    return StockPiler3.Util.CharacterRow(create)
 end
 
 -- Alias: some call sites expect GetCharacter for settings access.
@@ -288,26 +285,6 @@ function Watch.ScrubPristineDisabledStubs()
             and (tonumber(watch.targetStock) or 40) == 40
             and watch.autoGrow ~= true
         then
-            row.watches[key] = nil
-            n = n + 1
-        end
-    end
-    if n > 0 then
-        Watch.BumpGen()
-    end
-    return n
-end
-
---- Remove all disabled watch rows (optional cleanup; not used on list refresh —
---- unchecked watches may still hold targetStock / autoGrow).
-function Watch.ScrubDisabledStubs()
-    local row = CharacterRow(false)
-    if type(row) ~= "table" or type(row.watches) ~= "table" then
-        return 0
-    end
-    local n = 0
-    for key, watch in pairs(row.watches) do
-        if type(watch) ~= "table" or watch.enabled ~= true then
             row.watches[key] = nil
             n = n + 1
         end
@@ -621,6 +598,25 @@ function Watch.ClearAll()
         end
         -- Drop enabled watches and disabled list stubs alike.
         row.watches = {}
+    end
+    Watch.BumpGen()
+    if StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Invalidate then
+        StockPiler3.PlanSnapshot.Invalidate()
+    end
+    return enabledN
+end
+
+--- Drop all plant watches (enabled + disabled stubs). Returns prior enabled count.
+function Watch.ClearAllPlantWatches()
+    local row = CharacterRow(true)
+    local enabledN = 0
+    if type(row) == "table" and type(row.plantWatches) == "table" then
+        for _, watch in pairs(row.plantWatches) do
+            if type(watch) == "table" and watch.enabled == true then
+                enabledN = enabledN + 1
+            end
+        end
+        row.plantWatches = {}
     end
     Watch.BumpGen()
     if StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Invalidate then

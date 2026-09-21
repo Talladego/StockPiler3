@@ -41,23 +41,11 @@ local INFERTILE_SEED_UID = {
 ----------------------------------------------------------------
 
 local function ToNarrow(text)
-    if StockPiler3.Persistence and StockPiler3.Persistence.ToNarrow then
-        return StockPiler3.Persistence.ToNarrow(text)
-    end
-    if type(text) == "wstring" and type(WStringToString) == "function" then
-        return WStringToString(text) or ""
-    end
-    return tostring(text or "")
+    return StockPiler3.Util.ToNarrow(text)
 end
 
 local function NowSec()
-    if type(GetGameTime) == "function" then
-        local t = tonumber(GetGameTime()) or 0
-        if t > 0 then
-            return t
-        end
-    end
-    return tonumber(StockPiler3.FrameCounter) or 0
+    return StockPiler3.Util and StockPiler3.Util.NowSec and StockPiler3.Util.NowSec() or 0
 end
 
 local function GrowsTable()

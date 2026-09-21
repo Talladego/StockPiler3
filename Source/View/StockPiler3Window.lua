@@ -5,10 +5,7 @@
 StockPiler3Window = {}
 
 local function T(key, tokens)
-    if StockPiler3.T then
-        return StockPiler3.T(key, tokens)
-    end
-    return L"[" .. towstring(tostring(key or "")) .. L"]"
+    return StockPiler3.Util.T(key, tokens)
 end
 
 StockPiler3Window.TABS_POTIONS = 1
@@ -80,21 +77,29 @@ function StockPiler3Window.SyncActionReadiness(opts)
         and WindowGetShowing("StockPiler3Window") == true
     local onWatch = StockPiler3Window.SelectedTab == StockPiler3Window.TABS_WATCH
     local onPotions = StockPiler3Window.SelectedTab == StockPiler3Window.TABS_POTIONS
+    local onPlants = StockPiler3Window.SelectedTab == StockPiler3Window.TABS_PLANTS
+    local showClearWatches = onPotions or onPlants
 
     local canHarvest = StockPiler3.Grow and StockPiler3.Grow.CanHarvestNow
         and StockPiler3.Grow.CanHarvestNow() == true
     local canBrew = StockPiler3.Brew and StockPiler3.Brew.CanBrewNow
         and StockPiler3.Brew.CanBrewNow() == true
     local enabledWatches = 0
-    if StockPiler3.Watch and StockPiler3.Watch.CountEnabled then
+    if onPlants then
+        if StockPiler3.Watch and StockPiler3.Watch.CountEnabledPlantWatches then
+            enabledWatches = tonumber(StockPiler3.Watch.CountEnabledPlantWatches()) or 0
+        end
+    elseif StockPiler3.Watch and StockPiler3.Watch.CountEnabled then
         enabledWatches = tonumber(StockPiler3.Watch.CountEnabled()) or 0
     end
     local canClearWatches = enabledWatches > 0
 
-    local appearanceKey = tostring(canHarvest) .. ":" .. tostring(canBrew) .. ":" .. tostring(canClearWatches)
+    local appearanceKey = tostring(canHarvest) .. ":" .. tostring(canBrew) .. ":"
+        .. tostring(canClearWatches) .. ":" .. tostring(showClearWatches)
     local unchanged = StockPiler3Window._footerWindowOpen == windowOpen
         and StockPiler3Window._footerOnWatch == onWatch
         and StockPiler3Window._footerOnPotions == onPotions
+        and StockPiler3Window._footerOnPlants == onPlants
         and StockPiler3Window._footerCanHarvest == canHarvest
         and StockPiler3Window._footerCanBrew == canBrew
         and StockPiler3Window._footerCanClearWatches == canClearWatches
@@ -115,8 +120,8 @@ function StockPiler3Window.SyncActionReadiness(opts)
 
     if windowOpen then
         if DoesWindowExist(CLEAR_WATCHES_WIN) then
-            WindowSetShowing(CLEAR_WATCHES_WIN, onPotions)
-            if onPotions and ButtonSetDisabledFlag then
+            WindowSetShowing(CLEAR_WATCHES_WIN, showClearWatches)
+            if showClearWatches and ButtonSetDisabledFlag then
                 ButtonSetDisabledFlag(CLEAR_WATCHES_WIN, not canClearWatches)
             end
         end
@@ -146,6 +151,7 @@ function StockPiler3Window.SyncActionReadiness(opts)
     StockPiler3Window._footerWindowOpen = windowOpen
     StockPiler3Window._footerOnWatch = onWatch
     StockPiler3Window._footerOnPotions = onPotions
+    StockPiler3Window._footerOnPlants = onPlants
     StockPiler3Window._footerCanHarvest = canHarvest
     StockPiler3Window._footerCanBrew = canBrew
     StockPiler3Window._footerCanClearWatches = canClearWatches
@@ -360,21 +366,55 @@ function StockPiler3Window.OnClose()
 end
 
 function StockPiler3Window.ConfirmClearWatches()
+    local onPlants = StockPiler3Window.SelectedTab == StockPiler3Window.TABS_PLANTS
     local n = 0
-    if StockPiler3.Catalog and StockPiler3.Catalog.ClearWatchList then
-        n = tonumber(StockPiler3.Catalog.ClearWatchList()) or 0
-    end
-    if StockPiler3.Ui and StockPiler3.Ui.Print then
-        StockPiler3.Ui.Print(T("ui.watches_cleared", { count = tostring(n) }))
+    if onPlants then
+        if StockPiler3.Catalog and StockPiler3.Catalog.ClearPlantWatchList then
+            n = tonumber(StockPiler3.Catalog.ClearPlantWatchList()) or 0
+        end
+        if StockPiler3.Ui and StockPiler3.Ui.Print then
+            StockPiler3.Ui.Print(T("ui.plant_watches_cleared", { count = tostring(n) }))
+        end
+        if StockPiler3TabPlants and StockPiler3TabPlants.Refresh then
+            StockPiler3TabPlants.Refresh()
+        end
+    else
+        if StockPiler3.Catalog and StockPiler3.Catalog.ClearWatchList then
+            n = tonumber(StockPiler3.Catalog.ClearWatchList()) or 0
+        end
+        if StockPiler3.Ui and StockPiler3.Ui.Print then
+            StockPiler3.Ui.Print(T("ui.watches_cleared", { count = tostring(n) }))
+        end
+        if StockPiler3TabPotions and StockPiler3TabPotions.Refresh then
+            StockPiler3TabPotions.Refresh()
+        end
     end
     if StockPiler3TabWatch and StockPiler3TabWatch.Refresh then
-        StockPiler3TabWatch.Refresh()
+        StockPiler3TabWatch.Refresh({ forcePlan = true })
     end
     StockPiler3Window.RefreshFooterButtons()
 end
 
 function StockPiler3Window.OnClearWatches()
+    local onPlants = StockPiler3Window.SelectedTab == StockPiler3Window.TABS_PLANTS
     local count = 0
+    if onPlants then
+        if StockPiler3.Watch and StockPiler3.Watch.CountEnabledPlantWatches then
+            count = tonumber(StockPiler3.Watch.CountEnabledPlantWatches()) or 0
+        end
+        if count <= 0 then
+            if StockPiler3.Ui and StockPiler3.Ui.Print then
+                StockPiler3.Ui.Print(T("ui.no_plant_watches"))
+            end
+            StockPiler3Window.RefreshFooterButtons()
+            return
+        end
+        StockPiler3.ViewList.ConfirmTwoButton(
+            T("ui.clear_plant_watches_confirm", { count = tostring(count) }),
+            StockPiler3Window.ConfirmClearWatches
+        )
+        return
+    end
     if StockPiler3.Watch and StockPiler3.Watch.CountEnabled then
         count = tonumber(StockPiler3.Watch.CountEnabled()) or 0
     end
@@ -385,24 +425,18 @@ function StockPiler3Window.OnClearWatches()
         StockPiler3Window.RefreshFooterButtons()
         return
     end
-    if type(DialogManager) == "table" and type(DialogManager.MakeTwoButtonDialog) == "function" then
-        local yes = GetString and GetString(StringTables.Default.LABEL_YES) or T("ui.yes")
-        local no = GetString and GetString(StringTables.Default.LABEL_NO) or T("ui.no")
-        DialogManager.MakeTwoButtonDialog(
-            T("ui.clear_watches_confirm", { count = tostring(count) }),
-            yes,
-            StockPiler3Window.ConfirmClearWatches,
-            no,
-            nil
-        )
-        return
-    end
-    StockPiler3Window.ConfirmClearWatches()
+    StockPiler3.ViewList.ConfirmTwoButton(
+        T("ui.clear_watches_confirm", { count = tostring(count) }),
+        StockPiler3Window.ConfirmClearWatches
+    )
 end
 
 function StockPiler3Window.OnMouseOverClearWatches()
-    Tooltips.CreateTextOnlyTooltip(SystemData.ActiveWindow.name, T("ui.clear_watches_tip"))
-    Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_RIGHT)
+    local tip = T("ui.clear_watches_tip")
+    if StockPiler3Window.SelectedTab == StockPiler3Window.TABS_PLANTS then
+        tip = T("ui.clear_plant_watches_tip")
+    end
+    StockPiler3.ViewList.ShowTextTip(SystemData.ActiveWindow.name, tip)
 end
 
 function StockPiler3Window.OnHarvestPrepare()

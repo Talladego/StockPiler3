@@ -14,17 +14,11 @@ local PLANT_CHAT_META_TTL_SEC = 30
 local PENDING_EMPTY_GRACE_SEC = 5.0
 
 local function NowSec()
-    if type(GetGameTime) == "function" then
-        return tonumber(GetGameTime()) or 0
-    end
-    return 0
+    return StockPiler3.Util and StockPiler3.Util.NowSec and StockPiler3.Util.NowSec() or 0
 end
 
 local function TryQuiet(label, fn, ...)
-    if StockPiler3.Debug and StockPiler3.Debug.TryCallQuiet then
-        return StockPiler3.Debug.TryCallQuiet(label, fn, ...)
-    end
-    return pcall(fn, ...)
+    return StockPiler3.Util.TryCallQuiet(label, fn, ...)
 end
 
 local function ToWString(value)
@@ -342,19 +336,7 @@ CC._harvestOkStickyAt = 0
 CC._chatRegistered = false
 
 local function ToNarrow(value)
-    if StockPiler3.Persistence and StockPiler3.Persistence.ToNarrow then
-        return StockPiler3.Persistence.ToNarrow(value) or ""
-    end
-    if type(value) == "string" then
-        return value
-    end
-    if type(value) == "wstring" and type(WStringToString) == "function" then
-        local ok, text = pcall(WStringToString, value)
-        if ok and type(text) == "string" then
-            return text
-        end
-    end
-    return tostring(value or "")
+    return StockPiler3.Util.ToNarrow(value)
 end
 
 local function NormalizeChat(text)

@@ -14,10 +14,7 @@ BA._warmMain = nil
 BA._warmCraft = nil
 
 local function TryQuiet(label, fn, ...)
-    if StockPiler3.Debug and StockPiler3.Debug.TryCallQuiet then
-        return StockPiler3.Debug.TryCallQuiet(label, fn, ...)
-    end
-    return pcall(fn, ...)
+    return StockPiler3.Util.TryCallQuiet(label, fn, ...)
 end
 
 local function ItemPresent(item)

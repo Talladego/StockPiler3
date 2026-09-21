@@ -7,10 +7,7 @@ StockPiler3TabWatch.listData = {}
 StockPiler3TabWatch.displayOrder = {}
 
 local function T(key, tokens)
-    if StockPiler3.T then
-        return StockPiler3.T(key, tokens)
-    end
-    return L"[" .. towstring(tostring(key or "")) .. L"]"
+    return StockPiler3.Util.T(key, tokens)
 end
 
 local TAB_ROOT = "SP3TabWatch"
@@ -33,10 +30,7 @@ local TARGET_MAX = 200
 local syncingUi = false
 
 local function CharRow(create)
-    if StockPiler3.Persistence and StockPiler3.Persistence.GetCharacterBucket then
-        return StockPiler3.Persistence.GetCharacterBucket(create ~= false)
-    end
-    return nil
+    return StockPiler3.Util.CharacterRow(create)
 end
 
 local function CanAutoGrowUi()
@@ -107,22 +101,7 @@ local function Clamp(n, lo, hi)
 end
 
 local function SetIconTexture(iconWin, iconNum)
-    if not DoesWindowExist(iconWin) then
-        return
-    end
-    if iconNum and iconNum > 0 and type(GetIconData) == "function" then
-        local ok, texture, x, y = pcall(GetIconData, iconNum)
-        if ok and texture and texture ~= "" then
-            DynamicImageSetTexture(iconWin, texture, x or 0, y or 0)
-            if type(DynamicImageSetTextureScale) == "function" then
-                DynamicImageSetTextureScale(iconWin, ICON_SCALE)
-            end
-            WindowSetShowing(iconWin, true)
-            return
-        end
-    end
-    DynamicImageSetTexture(iconWin, "", 0, 0)
-    WindowSetShowing(iconWin, false)
+    StockPiler3.ViewList.SetIconTexture(iconWin, iconNum, ICON_SCALE)
 end
 
 local function ApplyStatusColor(labelWin, statusKey)
@@ -1452,16 +1431,7 @@ local function TipTradeSkill(skillId)
 end
 
 local function ToNarrow(v)
-    if StockPiler3.Persistence and StockPiler3.Persistence.ToNarrow then
-        return StockPiler3.Persistence.ToNarrow(v) or ""
-    end
-    if type(v) == "wstring" or (type(v) == "userdata" and type(WStringToString) == "function") then
-        local ok, s = pcall(WStringToString, v)
-        if ok and type(s) == "string" then
-            return s
-        end
-    end
-    return tostring(v or "")
+    return StockPiler3.Util.ToNarrow(v)
 end
 
 local function RgbDef(rgb)

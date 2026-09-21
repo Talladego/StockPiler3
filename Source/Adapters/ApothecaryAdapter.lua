@@ -7,17 +7,11 @@ StockPiler3.ApothecaryAdapter = StockPiler3.ApothecaryAdapter or {}
 local AA = StockPiler3.ApothecaryAdapter
 
 local function TryCall(label, fn, ...)
-    if StockPiler3.Debug and StockPiler3.Debug.TryCall then
-        return StockPiler3.Debug.TryCall(label, fn, ...)
-    end
-    return pcall(fn, ...)
+    return StockPiler3.Util.TryCall(label, fn, ...)
 end
 
 local function TryQuiet(label, fn, ...)
-    if StockPiler3.Debug and StockPiler3.Debug.TryCallQuiet then
-        return StockPiler3.Debug.TryCallQuiet(label, fn, ...)
-    end
-    return pcall(fn, ...)
+    return StockPiler3.Util.TryCallQuiet(label, fn, ...)
 end
 
 local function RemoveEntry(apo, slot, backpack, seen)
@@ -39,8 +33,9 @@ local function RemoveEntry(apo, slot, backpack, seen)
 end
 
 function AA.TradeSkill()
-    if GameData and GameData.TradeSkills and GameData.TradeSkills.APOTHECARY then
-        return GameData.TradeSkills.APOTHECARY
+    local Caps = StockPiler3.TradeSkillCaps
+    if Caps and Caps.ApothecaryId then
+        return Caps.ApothecaryId()
     end
     return 4
 end

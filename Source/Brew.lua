@@ -50,10 +50,7 @@ local ROLE_LOAD_ORDER = {
 ----------------------------------------------------------------
 
 local function NowSec()
-    if type(GetGameTime) == "function" then
-        return tonumber(GetGameTime()) or 0
-    end
-    return 0
+    return StockPiler3.Util and StockPiler3.Util.NowSec and StockPiler3.Util.NowSec() or 0
 end
 
 local function LogBrew(msg)

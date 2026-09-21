@@ -62,10 +62,7 @@ local ROLE_PICK_ORDER = {
 ----------------------------------------------------------------
 
 local function NowSec()
-    if type(GetGameTime) == "function" then
-        return tonumber(GetGameTime()) or 0
-    end
-    return 0
+    return StockPiler3.Util and StockPiler3.Util.NowSec and StockPiler3.Util.NowSec() or 0
 end
 
 local function LogGrow(msg)
@@ -2023,10 +2020,7 @@ function Grow.NotifyHarvestOutcome(plotNum, opts)
         end
     end
     local function T(key, tokens)
-        if StockPiler3.T then
-            return StockPiler3.T(key, tokens)
-        end
-        return towstring(tostring(key or ""))
+        return StockPiler3.Util.T(key, tokens)
     end
     if opts.critFail == true then
         NotifyChat(T("grow.harvest_crit_fail", { plot = tostring(plotNum) }))

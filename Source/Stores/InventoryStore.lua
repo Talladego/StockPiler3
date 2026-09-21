@@ -289,11 +289,6 @@ function Inv.OnSlotUpdated(bagType, slot, bagTable)
     return true
 end
 
---- Bridge / hitch labels historically say ApplySlots; same entry as ApplySlotUpdates.
-function Inv.ApplySlots(bagType, updatedSlots, reason)
-    return Inv.ApplySlotUpdates(bagType, updatedSlots, reason)
-end
-
 function Inv.ForceFullRefresh()
     Inv._dirtyFull = true
     Inv.MarkDirty({ full = true, reason = "force" })

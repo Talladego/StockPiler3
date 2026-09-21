@@ -58,13 +58,7 @@ local function PerfMark(name)
 end
 
 local function ToNarrow(v)
-    if v == nil then
-        return ""
-    end
-    if type(v) == "wstring" then
-        return tostring(WStringToString and WStringToString(v) or v)
-    end
-    return tostring(v)
+    return StockPiler3.Util.ToNarrow(v)
 end
 
 local function RecipeSpec()
@@ -123,10 +117,7 @@ local function CurrentSnapGen()
 end
 
 local function CharacterRow()
-    if StockPiler3.Persistence and StockPiler3.Persistence.GetCharacterBucket then
-        return StockPiler3.Persistence.GetCharacterBucket(false)
-    end
-    return nil
+    return StockPiler3.Util.CharacterRow(false)
 end
 
 local function CanBrewPotionsSkill()
@@ -1841,10 +1832,9 @@ local function ApplySeedBufferStatus(row)
             climb = US.StatusForPlant and US.StatusForPlant(row.plantUid, row.spec) or nil
         end
         if type(climb) ~= "table" and US.StatusForWatch then
+            -- Potion rows without plantUid: only paint a climb that still has
+            -- live targets (StatusForWatch). Do not fall back to stale _active.
             climb = US.StatusForWatch()
-        end
-        if type(climb) ~= "table" then
-            climb = US.GetActiveStatus and US.GetActiveStatus() or nil
         end
     end
     if type(climb) == "table" and (climb.why == "planting" or climb.why == "refining"
@@ -2297,6 +2287,7 @@ local function ApplyLiveWatchStatus(row, recipe, deficit, have, craftable, targe
         or key == "ready_to_craft_shared"
         or key == "potion_stocked"
         or key == "need_seeds"
+        or key == "upgrading_seed"
         or key == "restocking"
         or key == "buy_ingredients"
         or key == "enable_autogrow"
@@ -2380,6 +2371,7 @@ local function ApplyLiveWatchStatus(row, recipe, deficit, have, craftable, targe
 
     if deficit <= 0 then
         if SeedBufferShort(recipe, potionKey, row) then
+            -- upgrading_seed ~= need_seeds → re-apply (climb-end → need_seeds / refresh).
             if key ~= "need_seeds" then
                 ApplySeedBufferStatus(row)
             end
@@ -2420,10 +2412,15 @@ local function ApplyLiveWatchStatus(row, recipe, deficit, have, craftable, targe
         end
         return
     end
-    -- Seed buffer cleared (or AutoGrow off so SeedBufferShort is false): do not force
-    -- Restocking while master AutoGrow is still off — Enable AutoGrow instead.
-    if key == "need_seeds" and not SeedBufferShort(recipe, potionKey, row) then
+    -- Seed buffer / climb cleared (or AutoGrow off so SeedBufferShort is false):
+    -- leave need_seeds / upgrading_seed via materials / Ready / Buy paths.
+    if (key == "need_seeds" or key == "upgrading_seed") and not SeedBufferShort(recipe, potionKey, row) then
         DemoteToMaterialsShort()
+        return
+    end
+    -- Climb ended but buffer still short: refresh → need_seeds (or keep climbing).
+    if key == "upgrading_seed" and SeedBufferShort(recipe, potionKey, row) then
+        ApplySeedBufferStatus(row)
         return
     end
     -- Restocking + buffer short: only flip to Seed buffer when grow path exists
@@ -3280,11 +3277,13 @@ local function PatchWatchRowsLiveCounts(rows, opts)
                 if syncSnapshot and newKey ~= prevKey then
                     PatchPlanSnapshotLiveStatus(row)
                 end
-                if (prevKey == "need_seeds" or prevKey == "ready_to_craft"
+                if (prevKey == "need_seeds" or prevKey == "upgrading_seed"
+                        or prevKey == "ready_to_craft"
                         or prevKey == "ready_to_craft_shared"
                         or prevKey == "potion_stocked")
                     and newKey ~= prevKey
                     and (newKey == "restocking" or newKey == "need_seeds"
+                        or newKey == "upgrading_seed"
                         or newKey == "buy_ingredients" or newKey == "enable_autogrow")
                 then
                     local Grow = StockPiler3.Grow
@@ -3294,11 +3293,13 @@ local function PatchWatchRowsLiveCounts(rows, opts)
                 end
                 if newKey ~= prevKey
                     and (newKey == "restocking" or newKey == "need_seeds"
+                        or newKey == "upgrading_seed"
                         or newKey == "ready_to_craft_shared"
                         or newKey == "buy_ingredients"
                         or prevKey == "ready_to_craft_shared"
                         or prevKey == "buy_ingredients"
-                        or prevKey == "restocking" or prevKey == "need_seeds")
+                        or prevKey == "restocking" or prevKey == "need_seeds"
+                        or prevKey == "upgrading_seed")
                 then
                     InvalidateFocusCaches()
                 end

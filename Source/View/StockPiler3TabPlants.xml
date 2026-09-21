@@ -107,9 +107,6 @@
                             <AbsPoint x="351" y="96" />
                         </Anchor>
                     </Anchors>
-                    <EventHandlers>
-                        <EventHandler event="OnLButtonUp" function="StockPiler3TabPlants.OnToggleUnused" />
-                    </EventHandlers>
                 </Button>
                 <Label name="$parentFilterUnusedLabel" font="font_default_text_small" maxchars="24" textalign="leftcenter" handleinput="false">
                     <Size>

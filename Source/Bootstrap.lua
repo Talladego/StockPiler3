@@ -3,13 +3,10 @@
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
-StockPiler3.Version = L"0.3.142"
+StockPiler3.Version = L"0.3.147"
 
 local function T(key, tokens)
-    if StockPiler3.T then
-        return StockPiler3.T(key, tokens)
-    end
-    return L"[" .. towstring(tostring(key or "")) .. L"]"
+    return StockPiler3.Util.T(key, tokens)
 end
 
 local function EmitLog(msg)

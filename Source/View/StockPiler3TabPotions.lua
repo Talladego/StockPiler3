@@ -5,10 +5,7 @@
 StockPiler3TabPotions = {}
 
 local function T(key, tokens)
-    if StockPiler3.T then
-        return StockPiler3.T(key, tokens)
-    end
-    return L"[" .. towstring(tostring(key or "")) .. L"]"
+    return StockPiler3.Util.T(key, tokens)
 end
 
 StockPiler3TabPotions.listData = {}
@@ -44,10 +41,7 @@ local SORT_HEADERS = {
 }
 
 local function ToNarrow(text)
-    if StockPiler3.Persistence and StockPiler3.Persistence.ToNarrow then
-        return StockPiler3.Persistence.ToNarrow(text)
-    end
-    return tostring(text or "")
+    return StockPiler3.Util.ToNarrow(text)
 end
 
 local function GetSettings()
@@ -58,44 +52,19 @@ local function GetSettings()
 end
 
 local function EffectTextForRow(effectKey)
-    if type(effectKey) ~= "string" or effectKey == "" then
-        return L""
-    end
-    if StockPiler3.Classify and StockPiler3.Classify.EffectShortLabel then
-        return StockPiler3.Classify.EffectShortLabel(effectKey)
-    end
-    return towstring(string.upper(effectKey))
+    return StockPiler3.ViewList.EffectTextForRow(effectKey)
 end
 
 local function ItemRarityNameColor(itemData)
-    if itemData and DataUtils and DataUtils.GetItemRarityColor then
-        local ok, color
-        if StockPiler3.Debug and StockPiler3.Debug.TryCallQuiet then
-            ok, color = StockPiler3.Debug.TryCallQuiet("DataUtils.GetItemRarityColor", DataUtils.GetItemRarityColor, itemData)
-        else
-            ok, color = pcall(DataUtils.GetItemRarityColor, itemData)
-        end
-        if ok and type(color) == "table" then
-            return tonumber(color.r) or 255, tonumber(color.g) or 255, tonumber(color.b) or 255
-        end
-    end
-    return 255, 255, 255
+    return StockPiler3.ViewList.ItemRarityNameColor(itemData)
 end
 
 local function FormatSignedStat(value)
-    value = tonumber(value) or 0
-    if value > 0 then
-        return towstring("+" .. tostring(value))
-    end
-    return towstring(tostring(value))
+    return StockPiler3.ViewList.FormatSignedStat(value)
 end
 
 local function FormatPercentStat(value)
-    value = tonumber(value) or 0
-    if value == 0 then
-        return T("ui.dash")
-    end
-    return towstring(tostring(value) .. "%")
+    return StockPiler3.ViewList.FormatPercentStat(value)
 end
 
 local function FormatYieldStat(value)
@@ -307,45 +276,19 @@ local function SortRows(rows)
 end
 
 local function EffectCycle()
-    local keys = { "" }
-    if StockPiler3.Classify and StockPiler3.Classify.EffectFilterKeys then
-        local list = StockPiler3.Classify.EffectFilterKeys()
-        for i = 1, #list do
-            keys[#keys + 1] = list[i]
-        end
-    end
-    return keys
+    return StockPiler3.ViewList.EffectFilterCycle()
 end
 
 local function SyncEffectComboSelection()
-    local w = "SP3TabPotionsEffectCombo"
-    if not DoesWindowExist(w) then
-        return
-    end
-    local cycle = EffectCycle()
-    local cur = (GetSettings().potionEffectFilter) or ""
-    local selected = 1
-    for i = 1, #cycle do
-        if cycle[i] == cur then
-            selected = i
-            break
-        end
-    end
-    ComboBoxSetSelectedMenuItem(w, selected)
+    StockPiler3.ViewList.SyncEffectCombo("SP3TabPotionsEffectCombo", (GetSettings().potionEffectFilter) or "")
 end
 
 local function InitEffectCombo()
-    local w = "SP3TabPotionsEffectCombo"
-    if not DoesWindowExist(w) then
-        return
-    end
-    ComboBoxClearMenuItems(w)
-    ComboBoxAddMenuItem(w, T("potions.all_effects"))
-    local cycle = EffectCycle()
-    for i = 2, #cycle do
-        ComboBoxAddMenuItem(w, EffectTextForRow(cycle[i]))
-    end
-    SyncEffectComboSelection()
+    StockPiler3.ViewList.InitEffectCombo(
+        "SP3TabPotionsEffectCombo",
+        (GetSettings().potionEffectFilter) or "",
+        EffectTextForRow
+    )
 end
 
 local function UpdateSortHeaderLabels()
@@ -376,21 +319,11 @@ end
 local function UpdateSortHeaders()
     UpdateSortHeaderLabels()
     local s = GetSettings()
-    local col = s.potionSortColumn or "name"
-    local asc = s.potionSortAscending ~= false
-    for key, win in pairs(SORT_HEADERS) do
-        if DoesWindowExist(win) then
-            local up = win .. "UpArrow"
-            local down = win .. "DownArrow"
-            if key == col then
-                WindowSetShowing(up, asc)
-                WindowSetShowing(down, not asc)
-            else
-                WindowSetShowing(up, false)
-                WindowSetShowing(down, false)
-            end
-        end
-    end
+    StockPiler3.ViewList.UpdateSortArrows(
+        SORT_HEADERS,
+        s.potionSortColumn or "name",
+        s.potionSortAscending ~= false
+    )
 end
 
 local function ResolvePotionItemData(uid)
@@ -557,27 +490,7 @@ local function BuildVisibleList()
 end
 
 local function SetIconTexture(iconWin, iconNum)
-    if not DoesWindowExist(iconWin) then
-        return
-    end
-    if iconNum and iconNum > 0 and type(GetIconData) == "function" then
-        local ok, texture, x, y
-        if StockPiler3.Debug and StockPiler3.Debug.TryCallQuiet then
-            ok, texture, x, y = StockPiler3.Debug.TryCallQuiet("GetIconData", GetIconData, iconNum)
-        else
-            ok, texture, x, y = pcall(GetIconData, iconNum)
-        end
-        if ok and texture and texture ~= "" then
-            DynamicImageSetTexture(iconWin, texture, x or 0, y or 0)
-            if type(DynamicImageSetTextureScale) == "function" then
-                DynamicImageSetTextureScale(iconWin, ICON_SCALE)
-            end
-            WindowSetShowing(iconWin, true)
-            return
-        end
-    end
-    DynamicImageSetTexture(iconWin, "", 0, 0)
-    WindowSetShowing(iconWin, false)
+    StockPiler3.ViewList.SetIconTexture(iconWin, iconNum, ICON_SCALE)
 end
 
 local function RowDataFromActiveChild()
@@ -673,16 +586,12 @@ function StockPiler3TabPotions.UpdateRows()
             if data then
                 WindowSetShowing(rowName, true)
                 DefaultColor.SetListRowTint(rowName .. "Background", rowIndex, false)
-                ButtonSetCheckButtonFlag(rowName .. "Watch", true)
                 local blocked = data.watchBlocked == true
                 if StockPiler3.Watch and StockPiler3.Watch.CanEnablePotionWatch then
                     blocked = StockPiler3.Watch.CanEnablePotionWatch(data.potionKey or data.id) ~= true
                     data.watchBlocked = blocked
                 end
-                ButtonSetPressedFlag(rowName .. "Watch", data.watched == true and not blocked)
-                if ButtonSetDisabledFlag then
-                    ButtonSetDisabledFlag(rowName .. "Watch", blocked)
-                end
+                StockPiler3.ViewList.PaintWatchCheckbox(rowName .. "Watch", data.watched == true, blocked)
                 SetIconTexture(rowName .. "Icon", data.iconNum)
                 LabelSetText(rowName .. "Name", data.name or L"")
                 LabelSetTextColor(
@@ -878,22 +787,12 @@ function StockPiler3TabPotions.OnForgetRow()
     StockPiler3TabPotions._pendingForgetRecipeKey = recipeSpecKey
     StockPiler3TabPotions._pendingForgetKey = data.potionKey
     StockPiler3TabPotions._pendingForgetLabel = label
-    if type(DialogManager) == "table" and type(DialogManager.MakeTwoButtonDialog) == "function" then
-        local yes = GetString and GetString(StringTables.Default.LABEL_YES) or T("ui.yes")
-        local no = GetString and GetString(StringTables.Default.LABEL_NO) or T("ui.no")
-        DialogManager.MakeTwoButtonDialog(
-            T("potions.forget_confirm", { name = label }),
-            yes,
-            StockPiler3TabPotions.ConfirmForgetRecipe,
-            no,
-            nil
-        )
-        return
-    end
-    StockPiler3TabPotions.ConfirmForgetRecipe()
+    StockPiler3.ViewList.ConfirmTwoButton(
+        T("potions.forget_confirm", { name = label }),
+        StockPiler3TabPotions.ConfirmForgetRecipe
+    )
 end
 
 function StockPiler3TabPotions.OnMouseOverForget()
-    Tooltips.CreateTextOnlyTooltip(SystemData.ActiveWindow.name, T("potions.forget_tip"))
-    Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_RIGHT)
+    StockPiler3.ViewList.ShowTextTip(SystemData.ActiveWindow.name, T("potions.forget_tip"))
 end

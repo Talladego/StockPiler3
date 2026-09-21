@@ -13,30 +13,29 @@ VA._matchIndexGen = 0
 VA._storeRefreshDue = false
 
 local function TryQuiet(context, fn, ...)
-    if StockPiler3.Debug and StockPiler3.Debug.TryCallQuiet then
-        return StockPiler3.Debug.TryCallQuiet(context, fn, ...)
-    end
-    if type(fn) ~= "function" then
-        return false, nil
-    end
-    return pcall(fn, ...)
+    return StockPiler3.Util.TryCallQuiet(context, fn, ...)
 end
 
 local function TryCall(context, fn, ...)
-    if StockPiler3.Debug and StockPiler3.Debug.TryCall then
-        return StockPiler3.Debug.TryCall(context, fn, ...)
-    end
-    return pcall(fn, ...)
+    return StockPiler3.Util.TryCall(context, fn, ...)
 end
 
 --- Persist new store rows only (Touch once per new uid batch — no per-page spam).
 --- Only Cultivation / Apothecary craft mats — never mounts, dyes, junk.
 local function ApothecarySkillId()
-    return (GameData and GameData.TradeSkills and GameData.TradeSkills.APOTHECARY) or 4
+    local Caps = StockPiler3.TradeSkillCaps
+    if Caps and Caps.ApothecaryId then
+        return Caps.ApothecaryId()
+    end
+    return 4
 end
 
 local function CultivationSkillId()
-    return (GameData and GameData.TradeSkills and GameData.TradeSkills.CULTIVATION) or 3
+    local Caps = StockPiler3.TradeSkillCaps
+    if Caps and Caps.CultivationId then
+        return Caps.CultivationId()
+    end
+    return 3
 end
 
 local function CraftingFamilyBonus(item)

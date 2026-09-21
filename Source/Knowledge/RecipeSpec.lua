@@ -30,13 +30,7 @@ local CRAFT_BONUS = {
 ----------------------------------------------------------------
 
 local function ToNarrow(text)
-    if StockPiler3.Persistence and StockPiler3.Persistence.ToNarrow then
-        return StockPiler3.Persistence.ToNarrow(text)
-    end
-    if type(text) == "wstring" and type(WStringToString) == "function" then
-        return WStringToString(text) or ""
-    end
-    return tostring(text or "")
+    return StockPiler3.Util.ToNarrow(text)
 end
 
 --- Prefer Account tables directly so migrate/hydrate never re-enter EnsureAccount.
@@ -69,10 +63,7 @@ local function PotionsTable()
 end
 
 local function CharacterRow()
-    if StockPiler3.Persistence and StockPiler3.Persistence.GetCharacterBucket then
-        return StockPiler3.Persistence.GetCharacterBucket(false)
-    end
-    return nil
+    return StockPiler3.Util.CharacterRow(false)
 end
 
 local function MS()
@@ -704,9 +695,6 @@ local function GrowReserveForSpec(spec)
         end
         if seedUid <= 0 and SM.PickBestSeedUid then
             seedUid = tonumber(SM.PickBestSeedUid(plantOrSeedUid)) or 0
-        end
-        if seedUid <= 0 and SM.ResolveSeedUidForSpec then
-            seedUid = tonumber(SM.ResolveSeedUidForSpec(spec)) or 0
         end
         if seedUid <= 0 and SM.GetSeedUidsForPlant then
             local uids = SM.GetSeedUidsForPlant(plantOrSeedUid)
@@ -1933,6 +1921,13 @@ function RS.StoreLearnedRecipeSpec(materials, outputs, opts)
         outputs = {}
     end
     opts = type(opts) == "table" and opts or {}
+    -- Defense: SkillUp learns must not enter Account.recipes / potions.
+    if opts.skillUpOrigin == true then
+        if StockPiler3.Debug and StockPiler3.Debug.LogOp then
+            StockPiler3.Debug.LogOp("recipe", "reject StoreLearned skillUpOrigin")
+        end
+        return false
+    end
     local recipes = RecipesTable()
     if type(recipes) ~= "table" then
         return false

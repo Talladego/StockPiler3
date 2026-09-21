@@ -7,10 +7,7 @@ StockPiler3.Ui = StockPiler3.Ui or {}
 local Ui = StockPiler3.Ui
 
 local function T(key, tokens)
-    if StockPiler3.T then
-        return StockPiler3.T(key, tokens)
-    end
-    return L"[" .. towstring(tostring(key or "")) .. L"]"
+    return StockPiler3.Util.T(key, tokens)
 end
 
 Ui.WATCH_UI_MIN_INTERVAL_SEC = 5.0

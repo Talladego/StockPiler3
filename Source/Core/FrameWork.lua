@@ -19,10 +19,7 @@ FW._lastComplete = FW._lastComplete or {}
 FW._frameBudget = FW.DEFAULT_FRAME_BUDGET
 
 local function TryCall(context, fn, ...)
-    if StockPiler3.Debug and StockPiler3.Debug.TryCallQuiet then
-        return StockPiler3.Debug.TryCallQuiet(context, fn, ...)
-    end
-    return pcall(fn, ...)
+    return StockPiler3.Util.TryCallQuiet(context, fn, ...)
 end
 
 local function RemoveFromOrder(id)

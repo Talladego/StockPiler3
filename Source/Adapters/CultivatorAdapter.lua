@@ -10,10 +10,7 @@ local CA = StockPiler3.CultivatorAdapter
 local PLOT_UNLOCK_SKILL = { 1, 50, 100, 150 }
 
 local function TryCall(label, fn, ...)
-    if StockPiler3.Debug and StockPiler3.Debug.TryCall then
-        return StockPiler3.Debug.TryCall(label, fn, ...)
-    end
-    return pcall(fn, ...)
+    return StockPiler3.Util.TryCall(label, fn, ...)
 end
 
 local function StageEmpty()
@@ -74,8 +71,9 @@ out[ct] = {
 end
 
 function CA.TradeSkill()
-    if GameData and GameData.TradeSkills and GameData.TradeSkills.CULTIVATION then
-        return GameData.TradeSkills.CULTIVATION
+    local Caps = StockPiler3.TradeSkillCaps
+    if Caps and Caps.CultivationId then
+        return Caps.CultivationId()
     end
     return 3
 end

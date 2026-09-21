@@ -7,10 +7,7 @@ StockPiler3.BrewTooltip = StockPiler3.BrewTooltip or {}
 local BrewTooltip = StockPiler3.BrewTooltip
 
 local function T(key, tokens)
-    if StockPiler3.T then
-        return StockPiler3.T(key, tokens)
-    end
-    return L"[" .. towstring(tostring(key or "")) .. L"]"
+    return StockPiler3.Util.T(key, tokens)
 end
 
 local function SessionBrewName(session)
@@ -107,15 +104,14 @@ local function Fingerprint()
 end
 
 function BrewTooltip.Show(mouseoverWindow, anchor)
-    mouseoverWindow = mouseoverWindow or (SystemData and SystemData.ActiveWindow and SystemData.ActiveWindow.name)
-    if mouseoverWindow == nil or mouseoverWindow == "" then
-        return
-    end
-    BrewTooltip._liveWindow = mouseoverWindow
-    BrewTooltip._liveAnchor = anchor or (Tooltips and Tooltips.ANCHOR_WINDOW_TOP)
-    BrewTooltip._liveFp = Fingerprint()
-    Tooltips.CreateTextOnlyTooltip(mouseoverWindow, BuildTipText())
-    Tooltips.AnchorTooltip(BrewTooltip._liveAnchor)
+    StockPiler3.ViewList.LiveTipShow(
+        BrewTooltip,
+        BuildTipText,
+        Fingerprint,
+        mouseoverWindow,
+        anchor,
+        Tooltips and Tooltips.ANCHOR_WINDOW_TOP
+    )
 end
 
 function BrewTooltip.ShowRow(mouseoverWindow, row, anchor)
@@ -139,20 +135,16 @@ function BrewTooltip.ShowRow(mouseoverWindow, row, anchor)
 end
 
 function BrewTooltip.ClearLive()
-    BrewTooltip._liveWindow = nil
-    BrewTooltip._liveFp = nil
+    StockPiler3.ViewList.LiveTipClear(BrewTooltip)
 end
 
 function BrewTooltip.MaybeRefresh()
-    local win = BrewTooltip._liveWindow
-    if win == nil or win == "" then
-        return
-    end
-    local fp = Fingerprint()
-    if fp == BrewTooltip._liveFp then
-        return
-    end
-    BrewTooltip.Show(win, BrewTooltip._liveAnchor)
+    StockPiler3.ViewList.LiveTipMaybeRefresh(
+        BrewTooltip,
+        BuildTipText,
+        Fingerprint,
+        BrewTooltip.Show
+    )
 end
 
 function BrewTooltip.TickLive()
