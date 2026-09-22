@@ -533,11 +533,19 @@ function Inv.NormalizeItemDataForTooltip(itemData)
         data.maxEquip = 0
     end
     if tonumber(data.iLevel) == nil then
-        data.iLevel = tonumber(data.level) or 0
+        data.iLevel = 0
     end
-    -- DataUtils.RenownIsEnoughForItem / LevelIsEnoughForItem compare > 0 (nil throws).
+    -- Character rank requirement for LABEL_MINIMUM_RANK_X. Never invent from iLevel
+    -- (crafting mats use iLevel/skillReq = 200; bag tooltips keep level=0).
     if tonumber(data.level) == nil then
-        data.level = tonumber(data.iLevel) or 0
+        data.level = 0
+    end
+    -- Undo prior EnrichFromLearned that copied skill/iLevel into level (false red Rank).
+    local csr = tonumber(data.craftingSkillRequirement) or 0
+    local il = tonumber(data.iLevel) or 0
+    local lv = tonumber(data.level) or 0
+    if csr > 0 and lv > 0 and (lv == il or lv == csr) then
+        data.level = 0
     end
     if tonumber(data.renown) == nil then
         data.renown = 0
@@ -637,11 +645,10 @@ local function EnrichFromLearned(uid, item)
     if type(learned) ~= "table" then
         return item
     end
-    local lvl = tonumber(item.iLevel) or tonumber(item.level) or 0
-    local learnedLvl = tonumber(learned.iLevel) or tonumber(learned.level) or 0
+    local lvl = tonumber(item.iLevel) or 0
+    local learnedLvl = tonumber(learned.iLevel) or 0
     if lvl <= 0 and learnedLvl > 0 then
         item.iLevel = learnedLvl
-        item.level = learnedLvl
     end
     local req = tonumber(item.craftingSkillRequirement) or tonumber(item.skillReq) or 0
     local learnedReq = tonumber(learned.craftingSkillRequirement) or tonumber(learned.skillReq) or 0
@@ -650,10 +657,10 @@ local function EnrichFromLearned(uid, item)
         item.skillReq = learnedReq
         item.skillLevel = learnedReq
     end
-    -- Potion Lvl column falls back to skillReq when iLevel was never stored.
+    -- Potion Lvl column uses iLevel; do not write item.level (that is character rank
+    -- for Minimum Rank on CreateItemTooltip - bag keeps level=0 on mats).
     if (tonumber(item.iLevel) or 0) <= 0 and learnedReq > 0 then
         item.iLevel = learnedReq
-        item.level = learnedReq
     end
     if (tonumber(item.rarity) or 0) <= 0 and (tonumber(learned.rarity) or 0) > 0 then
         item.rarity = learned.rarity

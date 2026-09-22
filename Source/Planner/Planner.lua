@@ -1556,14 +1556,20 @@ local function CollectAutoGrowSeedLines()
                                     local seedUids = SM.GetSeedUidsForPlant and SM.GetSeedUidsForPlant(plantUid) or {}
                                     seedUid = tonumber(SM.PickBestSeedUid(plantUid, seedUids, spec)) or 0
                                 end
-                                if plantUid > 0 then
+                                -- Same fallback as GrowReserveForSpec: linked seed even when
+                                -- not in bags (PickBestSeedUid requires a bag sample).
+                                if seedUid <= 0 and plantUid > 0 and SM.GetSeedUidsForPlant then
+                                    local seedUids = SM.GetSeedUidsForPlant(plantUid)
+                                    seedUid = type(seedUids) == "table" and (tonumber(seedUids[1]) or 0) or 0
+                                end
+                                if plantUid > 0 and seedUid > 0 then
                                     seen[productKey] = true
                                     lines[#lines + 1] = {
                                         spec = spec,
                                         specKey = productKey,
                                         seedUid = seedUid,
                                         plantUid = plantUid,
-                                        seed = seed,
+                                        seed = seed or { uniqueID = seedUid, plantUid = plantUid },
                                     }
                                 end
                             end
@@ -1943,6 +1949,19 @@ end
 
 --- After live patches / toggle: Enable AutoGrow <-> Restocking must track current toggles.
 --- Also demotes Seed buffer -> Enable AutoGrow when master/per-watch AutoGrow turns off.
+--- Plant stock waits only while potion watches still need Cult grow (soft gate).
+--- Optional rows: in-build potion rows so we do not read a stale PlanSnapshot.
+local function PlantWatchesAwaitPotions(rows)
+    local Watch = StockPiler3.Watch
+    if Watch and Watch.EnabledPotionWatchesNeedCultGrow then
+        return Watch.EnabledPotionWatchesNeedCultGrow(rows) == true
+    end
+    if not (Watch and Watch.AllEnabledPotionWatchesStocked) then
+        return false
+    end
+    return Watch.AllEnabledPotionWatchesStocked() ~= true
+end
+
 local function ReconcileAutoGrowStatus(row)
     if type(row) ~= "table" then
         return false
@@ -1969,10 +1988,18 @@ local function ReconcileAutoGrowStatus(row)
             row.statusKey = "enable_autogrow"
             row.statusText = T("plan.status.enable_autogrow")
             row.statusLines = nil
-        elseif key == "enable_autogrow" then
-            row.statusKey = "restocking"
-            row.statusText = T("plan.status.restocking")
-            row.statusLines = nil
+        elseif key == "enable_autogrow" or key == "waiting_potions" or key == "restocking" then
+            if PlantWatchesAwaitPotions() then
+                row.statusKey = "waiting_potions"
+                row.statusText = T("plan.status.waiting_potions")
+                row.statusLines = {
+                    T("tip.watch.plant_waiting_potions"),
+                }
+            else
+                row.statusKey = "restocking"
+                row.statusText = T("plan.status.restocking")
+                row.statusLines = nil
+            end
         end
         return tostring(row.statusKey or "") ~= prev
     end
@@ -2018,6 +2045,8 @@ local function ReconcileAutoGrowStatusesForRows(rows)
     return changed
 end
 
+local StampRowSeedBufferUids
+
 local function ApplySeedBufferStatus(row)
     local buffer = 5
     local Watch = StockPiler3.Watch
@@ -2030,17 +2059,55 @@ local function ApplySeedBufferStatus(row)
     if US and US.IsEnabled and US.IsEnabled() == true then
         if row.isPlantWatch == true or row.kind == "plant" or (tonumber(row.plantUid) or 0) > 0 then
             climb = US.StatusForPlant and US.StatusForPlant(row.plantUid, row.spec) or nil
-        end
-        if type(climb) ~= "table" then
-            -- Potion rows: all live genus climbs (Spumepetal + Fusk, etc.).
-            if US.ListClimbStatuses then
-                climbs = US.ListClimbStatuses()
+        else
+            -- Potion rows: only climbs for THIS watch's seeds/plants - never
+            -- ListClimbStatuses()[1] (was painting "Upgrading fusk" on every short row).
+            StampRowSeedBufferUids(row)
+            local seedSet = {}
+            local plantSet = {}
+            local uids = row.seedBufferSeedUids
+            if type(uids) == "table" then
+                for i = 1, #uids do
+                    local u = tonumber(uids[i]) or 0
+                    if u > 0 then
+                        seedSet[u] = true
+                    end
+                end
             end
-            if type(climbs) == "table" and #climbs > 0 then
-                climb = climbs[1]
-            elseif US.StatusForWatch then
-                -- Prefer live targets; do not fall back to stale _active alone.
-                climb = US.StatusForWatch()
+            local tips = row.statusTipSlots
+            if type(tips) == "table" then
+                for i = 1, #tips do
+                    local tip = tips[i]
+                    if type(tip) == "table" then
+                        local su = tonumber(tip.seedUid) or 0
+                        local pu = tonumber(tip.plantUid) or 0
+                        if su > 0 then
+                            seedSet[su] = true
+                        end
+                        if pu > 0 then
+                            plantSet[pu] = true
+                        end
+                    end
+                end
+            end
+            local all = US.ListClimbStatuses and US.ListClimbStatuses() or nil
+            if type(all) == "table" and #all > 0 then
+                climbs = {}
+                for i = 1, #all do
+                    local c = all[i]
+                    if type(c) == "table" then
+                        local su = tonumber(c.seedUid) or 0
+                        local pu = tonumber(c.plantUid) or 0
+                        if (su > 0 and seedSet[su] == true) or (pu > 0 and plantSet[pu] == true) then
+                            climbs[#climbs + 1] = c
+                        end
+                    end
+                end
+                if #climbs > 0 then
+                    climb = climbs[1]
+                else
+                    climbs = nil
+                end
             end
         end
     end
@@ -2108,7 +2175,7 @@ end
 --- All growable seed UIDs for this watch (recipe slots + tip). Shared mats across
 --- watches must appear here so a short cushion demotes every sharing row.
 --- Hot path: tip / prior stamp first; ResolveSeedForSpec only on cold miss.
-local function StampRowSeedBufferUids(row)
+StampRowSeedBufferUids = function(row)
     if type(row) ~= "table" then
         return
     end
@@ -3088,7 +3155,7 @@ local function PlantSeedBufferShort(seedUid, plantUid, spec)
     return have < buffer
 end
 
-local function ApplyPlantWatchStatus(row)
+local function ApplyPlantWatchStatus(row, potionRows)
     if type(row) ~= "table" then
         return
     end
@@ -3123,12 +3190,21 @@ local function ApplyPlantWatchStatus(row)
         return
     end
     row.seedBufferShort = false
+    -- plant_stock waits while potions still need Cult grow (buy/brew do not block).
+    if PlantWatchesAwaitPotions(potionRows) then
+        row.statusKey = "waiting_potions"
+        row.statusText = T("plan.status.waiting_potions")
+        row.statusLines = {
+            T("tip.watch.plant_waiting_potions"),
+        }
+        return
+    end
     row.statusKey = "restocking"
     row.statusText = T("plan.status.restocking")
     row.statusLines = nil
 end
 
-local function BuildPlantWatchRows()
+local function BuildPlantWatchRows(potionRows)
     local rows = {}
     local Watch = StockPiler3.Watch
     local plantWatches = Watch and Watch.GetPlantWatches and Watch.GetPlantWatches() or {}
@@ -3250,7 +3326,7 @@ local function BuildPlantWatchRows()
                 hasRecipe = false,
                 recipe = nil,
             }
-            ApplyPlantWatchStatus(row)
+            ApplyPlantWatchStatus(row, potionRows)
             rows[#rows + 1] = row
         end
     end
@@ -3299,7 +3375,7 @@ local function BuildWatchRows(ctx)
         rows[#rows + 1] = row
     end
     PolishWatchRowsStatus(rows)
-    local plantRows = BuildPlantWatchRows()
+    local plantRows = BuildPlantWatchRows(rows)
     for i = 1, #plantRows do
         rows[#rows + 1] = plantRows[i]
     end
@@ -3534,7 +3610,7 @@ local function PatchWatchRowsLiveCounts(rows, opts)
                 local deficit = math.max(0, min - have)
                 row.potionDeficit = deficit
                 row.targetText = towstring(tostring(min))
-                ApplyPlantWatchStatus(row)
+                ApplyPlantWatchStatus(row, rows)
                 local newKey = tostring(row.statusKey or "")
                 if syncSnapshot and (newKey ~= prevKey or row.statusText ~= prevText) then
                     PatchPlanSnapshotLiveStatus(row)
@@ -3572,8 +3648,10 @@ local function PatchWatchRowsLiveCounts(rows, opts)
                             row.craftsPossible = CountCraftsPossibleMemo(recipe)
                             row.craftableText = towstring(tostring(craftable))
                             StampRowCraftMatIndex(row)
+                            -- Only stamp when recounted. Stamping on a selective miss
+                            -- locked Restocking until /sp3 dumpall force-built.
+                            row._craftableSnapGen = snapGen
                         end
-                        row._craftableSnapGen = snapGen
                     end
                 end
                 StampBottleGap(row)
@@ -3621,6 +3699,28 @@ local function PatchWatchRowsLiveCounts(rows, opts)
                         or prevKey == "upgrading_seed")
                 then
                     InvalidateFocusCaches()
+                end
+            end
+        end
+    end
+    -- Plants were painted before potions in the loop; re-apply soft gate after potion statuses.
+    for i = 1, #rows do
+        local row = rows[i]
+        if type(row) == "table" and (row.kind == "plant" or row.isPlantWatch == true) then
+            local key = tostring(row.statusKey or "")
+            if key == "waiting_potions" or key == "restocking" then
+                local prevKey = key
+                local prevText = row.statusText
+                ApplyPlantWatchStatus(row, rows)
+                local newKey = tostring(row.statusKey or "")
+                if syncSnapshot and (newKey ~= prevKey or row.statusText ~= prevText) then
+                    PatchPlanSnapshotLiveStatus(row)
+                end
+                if newKey ~= prevKey then
+                    local Grow = StockPiler3.Grow
+                    if Grow and Grow.MarkPlantJobDirty then
+                        Grow.MarkPlantJobDirty()
+                    end
                 end
             end
         end
@@ -3961,6 +4061,18 @@ function Planner.InvalidateHaveCacheAfterQuiet()
     Planner._specHaveWarmedSnap = nil
     Planner._demandCacheKey = nil
     Planner._warmHaveSlice = nil
+    -- Live craftable must recount after plant/harvest quiet; otherwise Watch can
+    -- sit on Restocking with stale craftable=0 until a force Build (/sp3 dumpall).
+    local PS = StockPiler3.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    if type(plan) == "table" and type(plan.rows) == "table" then
+        for i = 1, #plan.rows do
+            local row = plan.rows[i]
+            if type(row) == "table" then
+                row._craftableSnapGen = -1
+            end
+        end
+    end
 end
 
 function Planner.BottleGap(target, stock, craftable)
@@ -4618,6 +4730,8 @@ function Planner.DumpGrowPlan(emit)
                     nilReason = "no-demand-short"
                 elseif not anyGrowableShort then
                     -- Flasks / butcher / resin only - grow correctly handed off.
+                    -- plant_stock may still run (soft gate); GetPlantJob above would
+                    -- have returned a job if so — nil here means plant floors also idle.
                     nilReason = anyBuyOnlyShort and "buy-only-short" or "no-growable-short"
                 elseif not anyPlantUid then
                     nilReason = "no-plant-uid"

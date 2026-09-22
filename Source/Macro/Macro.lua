@@ -1,7 +1,8 @@
 ----------------------------------------------------------------
--- StockPiler3 Macro - ActionBar Harvest / Brew macros
+-- StockPiler3 Macro - ActionBar Harvest / Brew / Craft macros
 -- (WarTriage / GatherButton / SP1 pattern). Macros only; does
 -- not hijack stock Cultivating / Apothecary craft skills.
+-- Craft: latched dual Harvest/Brew (soft harvest / brew session).
 ----------------------------------------------------------------
 
 StockPiler3.Macro = StockPiler3.Macro or {}
@@ -19,6 +20,12 @@ local BREW_MACRO_NAME = L"StockPiler3 Brew"
 local BREW_MACRO_TEXT = L"/script StockPiler3.Macro.BrewClick()"
 local BREW_MACRO_ICON = 10985 -- abi_de_elixirofmaddenedspeed.dds (+ _disabled)
 
+local CRAFT_MACRO_NAME = L"StockPiler3 Craft"
+local CRAFT_MACRO_TEXT = L"/script StockPiler3.Macro.CraftClick()"
+-- Start + idle-after-harvest: same mushroom as Harvest (greyed when idle).
+local CRAFT_MACRO_ICON_HARVEST = MACRO_ICON
+local CRAFT_MACRO_ICON_BREW = BREW_MACRO_ICON
+
 local actionButtonHooksInstalled = false
 local setActionDataHooked = false
 local updateEnabledStateHooked = false
@@ -31,8 +38,12 @@ local ACTION_BUTTON_BASE_ICON = 0
 
 Macro.MacroId = 0
 Macro.BrewMacroId = 0
+Macro.CraftMacroId = 0
 Macro.MacroWarningState = { missing = false, unplaced = false, full = false }
 Macro.BrewMacroWarningState = { missing = false, unplaced = false, full = false }
+Macro.CraftMacroWarningState = { missing = false, unplaced = false, full = false }
+-- Last latched harvest/brew icon for Craft (idle keeps this, greyed). Session memory only.
+Macro._craftIconMode = "harvest"
 
 local function D(msg)
     if StockPiler3.Debug and StockPiler3.Debug.D then
@@ -227,6 +238,14 @@ function Macro.GetBrewMacroId()
     return slot
 end
 
+function Macro.GetCraftMacroId()
+    local slot = FindMacroSlot(CRAFT_MACRO_NAME, CRAFT_MACRO_TEXT, Macro.CraftMacroId)
+    if slot then
+        Macro.CraftMacroId = slot
+    end
+    return slot
+end
+
 function Macro.GetMacroSlots(macroId)
     macroId = tonumber(macroId) or 0
     local slots = {}
@@ -253,35 +272,46 @@ end
 local function InvalidateSlotCache()
     Macro._cachedHarvestSlots = nil
     Macro._cachedBrewSlots = nil
+    Macro._cachedCraftSlots = nil
     Macro._slotCacheFp = nil
     Macro._cachedHarvestId = nil
     Macro._cachedBrewId = nil
+    Macro._cachedCraftId = nil
 end
 
---- Stable fingerprint of harvest/brew hotbar placements (sorted slot ids).
---- Caches slot lists so Refresh does not walk ActionBars 4x per apply.
+--- Stable fingerprint of harvest/brew/craft hotbar placements (sorted slot ids).
+--- Caches slot lists so Refresh does not walk ActionBars repeatedly per apply.
 local function SlotFingerprint()
     local harvestId = tonumber(Macro.GetMacroId()) or 0
     local brewId = tonumber(Macro.GetBrewMacroId()) or 0
+    local craftId = tonumber(Macro.GetCraftMacroId()) or 0
     local hSlots
     local bSlots
+    local cSlots
     if Macro._slotCacheFp ~= nil
         and Macro._cachedHarvestId == harvestId
         and Macro._cachedBrewId == brewId
+        and Macro._cachedCraftId == craftId
         and type(Macro._cachedHarvestSlots) == "table"
         and type(Macro._cachedBrewSlots) == "table"
+        and type(Macro._cachedCraftSlots) == "table"
     then
         hSlots = Macro._cachedHarvestSlots
         bSlots = Macro._cachedBrewSlots
+        cSlots = Macro._cachedCraftSlots
     else
         hSlots = Macro.GetMacroSlots(harvestId)
         bSlots = Macro.GetMacroSlots(brewId)
+        cSlots = Macro.GetMacroSlots(craftId)
         table.sort(hSlots)
         table.sort(bSlots)
+        table.sort(cSlots)
         Macro._cachedHarvestSlots = hSlots
         Macro._cachedBrewSlots = bSlots
+        Macro._cachedCraftSlots = cSlots
         Macro._cachedHarvestId = harvestId
         Macro._cachedBrewId = brewId
+        Macro._cachedCraftId = craftId
     end
     local parts = { "h", tostring(harvestId) }
     for i = 1, #hSlots do
@@ -291,6 +321,11 @@ local function SlotFingerprint()
     parts[#parts + 1] = tostring(brewId)
     for i = 1, #bSlots do
         parts[#parts + 1] = tostring(bSlots[i])
+    end
+    parts[#parts + 1] = "c"
+    parts[#parts + 1] = tostring(craftId)
+    for i = 1, #cSlots do
+        parts[#parts + 1] = tostring(cSlots[i])
     end
     local fp = table.concat(parts, ",")
     Macro._slotCacheFp = fp
@@ -310,6 +345,9 @@ local function CachedSlotsForMacro(macroId)
     if macroId > 0 and macroId == Macro._cachedBrewId then
         return Macro._cachedBrewSlots or {}
     end
+    if macroId > 0 and macroId == Macro._cachedCraftId then
+        return Macro._cachedCraftSlots or {}
+    end
     return Macro.GetMacroSlots(macroId)
 end
 
@@ -320,9 +358,34 @@ local function SetMacroSlot(slot, name, text, iconId, kind)
     end
     if kind == "brew" then
         Macro.BrewMacroId = slot
+    elseif kind == "craft" then
+        Macro.CraftMacroId = slot
     else
         Macro.MacroId = slot
     end
+end
+
+local function CraftIconIdForMode(iconMode)
+    if iconMode == "brew" then
+        return CRAFT_MACRO_ICON_BREW
+    end
+    return CRAFT_MACRO_ICON_HARVEST
+end
+
+--- Apply Craft macro icon only when latch harvest↔brew changes (never on idle alone).
+local function EnsureCraftMacroIcon(iconMode)
+    iconMode = (iconMode == "brew") and "brew" or "harvest"
+    local slot = Macro.GetCraftMacroId()
+    if not slot then
+        return false
+    end
+    if Macro._craftIconApplied == iconMode then
+        return false
+    end
+    SetMacroSlot(slot, CRAFT_MACRO_NAME, CRAFT_MACRO_TEXT, CraftIconIdForMode(iconMode), "craft")
+    Macro._craftIconApplied = iconMode
+    Macro._craftIconMode = iconMode
+    return true
 end
 
 function Macro.UpdateMacro()
@@ -389,6 +452,154 @@ function Macro.UpdateBrewMacro()
         Macro.BrewMacroWarningState.full = true
     end
     return false
+end
+
+function Macro.UpdateCraftMacro()
+    local macros = GetMacroTable()
+    local limit = NumMacroSlots()
+    local iconMode = Macro._craftIconMode or "harvest"
+    local iconId = CraftIconIdForMode(iconMode)
+
+    local existing = Macro.GetCraftMacroId()
+    if existing then
+        -- Keep latched icon; do not reset to harvest on every init refresh.
+        if Macro._craftIconApplied ~= iconMode then
+            SetMacroSlot(existing, CRAFT_MACRO_NAME, CRAFT_MACRO_TEXT, iconId, "craft")
+            Macro._craftIconApplied = iconMode
+        end
+        Macro.CraftMacroWarningState.full = false
+        Macro.CraftMacroWarningState.missing = false
+        return true
+    end
+
+    for slot = 1, limit do
+        local macro = macros[slot]
+        if type(macro) == "table" and MacroText(macro) == L"" and (macro.name == nil or macro.name == L"") then
+            Macro._craftIconMode = "harvest"
+            SetMacroSlot(slot, CRAFT_MACRO_NAME, CRAFT_MACRO_TEXT, CRAFT_MACRO_ICON_HARVEST, "craft")
+            Macro._craftIconApplied = "harvest"
+            Print(T("macro.craft_created", {
+                icon = tostring(CRAFT_MACRO_ICON_HARVEST),
+                slot = tostring(slot),
+            }))
+            Macro.CraftMacroWarningState.full = false
+            Macro.CraftMacroWarningState.missing = false
+            return true
+        end
+    end
+
+    if not Macro.CraftMacroWarningState.full then
+        Print(T("macro.craft_full"))
+        Macro.CraftMacroWarningState.full = true
+    end
+    return false
+end
+
+local function SoftHarvestReady()
+    local Caps = StockPiler3.TradeSkillCaps
+    if Caps and Caps.CanAutoGrow and Caps.CanAutoGrow() ~= true then
+        return false, 0
+    end
+    local Grow = StockPiler3.Grow
+    if not (Grow and Grow.GetReadyHarvestPlots) then
+        return false, 0
+    end
+    local plots = Grow.GetReadyHarvestPlots()
+    local n = (type(plots) == "table" and #plots) or 0
+    return n > 0, n
+end
+
+local function BrewSessionSticky()
+    local Brew = StockPiler3.Brew
+    if not Brew then
+        return false, "idle", nil
+    end
+    if Brew._loadSource == "manual" then
+        return false, "idle", nil
+    end
+    local session = Brew.GetSession and Brew.GetSession()
+    if type(session) ~= "table" then
+        return false, "idle", nil
+    end
+    local phase = tostring(session.phase or "idle")
+    if phase ~= "loading" and phase ~= "loaded" then
+        return false, phase, nil
+    end
+    local name = session.name
+    if name == nil or name == L"" then
+        name = nil
+    end
+    return true, phase, name
+end
+
+--- Latched Craft mode: brew session → soft harvest → CanBrewNow → idle.
+--- opts.canHarvest / opts.canBrew: reuse enable-sync values when provided.
+--- opts.readonly: tip path - do not mutate _craftIconMode.
+function Macro.ResolveCraftMode(opts)
+    opts = type(opts) == "table" and opts or {}
+    local canHarvest = opts.canHarvest
+    if canHarvest == nil then
+        canHarvest = canHarvestMacro()
+    else
+        canHarvest = canHarvest == true
+    end
+    local canBrew = opts.canBrew
+    if canBrew == nil then
+        canBrew = canBrewMacro()
+    else
+        canBrew = canBrew == true
+    end
+
+    local soft, readyPlots = SoftHarvestReady()
+    local brewSticky, brewPhase, brewName = BrewSessionSticky()
+    if not brewSticky then
+        brewPhase = "idle"
+    end
+
+    local mode = "idle"
+    if brewSticky then
+        mode = "brew"
+    elseif soft then
+        mode = "harvest"
+    elseif canBrew then
+        mode = "brew"
+    end
+
+    local iconMode = Macro._craftIconMode or "harvest"
+    if opts.readonly ~= true then
+        if mode == "harvest" or mode == "brew" then
+            iconMode = mode
+            Macro._craftIconMode = mode
+        end
+    else
+        if mode == "harvest" or mode == "brew" then
+            iconMode = mode
+        end
+    end
+
+    local craftCanUse = false
+    if mode == "harvest" then
+        craftCanUse = canHarvest
+    elseif mode == "brew" then
+        craftCanUse = canBrew
+    end
+
+    local snap = {
+        mode = mode,
+        iconMode = iconMode,
+        readyPlots = readyPlots,
+        canHarvest = canHarvest,
+        canBrew = canBrew,
+        craftCanUse = craftCanUse,
+        brewPhase = brewPhase,
+        brewName = brewName,
+        softHarvest = soft == true,
+        brewSticky = brewSticky == true,
+    }
+    if opts.readonly ~= true then
+        Macro._craftSnap = snap
+    end
+    return snap
 end
 
 local function CultivationTradeSkill()
@@ -586,6 +797,14 @@ function Macro.IsBrewMacroButton(button)
     return macroId ~= nil and button.m_ActionId == macroId
 end
 
+function Macro.IsCraftMacroButton(button)
+    if not button or button.m_ActionType ~= GameData.PlayerActions.DO_MACRO then
+        return false
+    end
+    local macroId = Macro.GetCraftMacroId()
+    return macroId ~= nil and button.m_ActionId == macroId
+end
+
 --- Fire PERFORM_CRAFTING via a placed Harvest macro Action window.
 function Macro.FireHarvestGameAction()
     if type(WindowGameAction) ~= "function" or not ActionBars or not ActionBars.BarAndButtonIdFromSlot then
@@ -606,6 +825,40 @@ function Macro.FireHarvestGameAction()
         return ok == true
     end
     local macroId = Macro.GetMacroId()
+    if not macroId then
+        return false
+    end
+    local slots = Macro.GetMacroSlots(macroId) or {}
+    for i = 1, #slots do
+        local hbar, buttonId = ActionBars:BarAndButtonIdFromSlot(slots[i])
+        local button = hbar and hbar.m_Buttons and hbar.m_Buttons[buttonId]
+        if tryButton(button) then
+            return true
+        end
+    end
+    return false
+end
+
+--- Fire Cultivation PERFORM_CRAFTING via a placed Craft macro Action window.
+function Macro.FireCraftHarvestGameAction()
+    if type(WindowGameAction) ~= "function" or not ActionBars or not ActionBars.BarAndButtonIdFromSlot then
+        return false
+    end
+    local function tryButton(button)
+        if not button or not button.m_Name then
+            return false
+        end
+        local actionName = button.m_Name .. "Action"
+        if not DoesWindowExist(actionName) then
+            return false
+        end
+        if not bindHarvestGameActionForButton(button, { force = true }) then
+            return false
+        end
+        local ok = TryCall("WindowGameAction", WindowGameAction, actionName)
+        return ok == true
+    end
+    local macroId = Macro.GetCraftMacroId()
     if not macroId then
         return false
     end
@@ -669,6 +922,34 @@ function Macro.ApplyBrewButtonAppearance(button, opts)
     end
 end
 
+function Macro.ApplyCraftButtonAppearance(button, opts)
+    if not button then
+        return
+    end
+    opts = type(opts) == "table" and opts or {}
+    local snap = opts.snap
+    if type(snap) ~= "table" then
+        snap = Macro.ResolveCraftMode({
+            canHarvest = opts.canHarvest,
+            canBrew = opts.canBrew,
+        })
+    end
+    local iconMode = snap.iconMode or Macro._craftIconMode or "harvest"
+    EnsureCraftMacroIcon(iconMode)
+    local canUse = snap.craftCanUse == true
+    setButtonEnabledVisual(button, canUse)
+    if canUse and snap.mode == "harvest" then
+        clearBrewGameActionForButton(button)
+        bindHarvestGameActionForButton(button)
+    elseif canUse and snap.mode == "brew" then
+        clearHarvestGameActionForButton(button)
+        bindBrewGameActionForButton(button)
+    else
+        clearHarvestGameActionForButton(button)
+        clearBrewGameActionForButton(button)
+    end
+end
+
 --- Coalesce hotbar enable sync (footer/cultivation storms). Drain via DrainEnabledSync.
 function Macro.RequestEnabledSync(canHarvest, canBrew)
     Macro._enabledSyncPending = true
@@ -726,7 +1007,15 @@ function Macro.RefreshMacroButtonAppearance(opts)
     else
         canBrew = canBrew == true
     end
+    local craftSnap = Macro.ResolveCraftMode({
+        canHarvest = canHarvest,
+        canBrew = canBrew,
+    })
+    local craftMode = tostring(craftSnap.mode or "idle")
+    local craftIconMode = tostring(craftSnap.iconMode or Macro._craftIconMode or "harvest")
+    local craftCanUse = craftSnap.craftCanUse == true
     local appearanceKey = tostring(canHarvest) .. ":" .. tostring(canBrew)
+        .. ":" .. craftMode .. ":" .. craftIconMode .. ":" .. tostring(craftCanUse)
     if Macro._lastAppearanceKey == appearanceKey then
         return
     end
@@ -734,15 +1023,28 @@ function Macro.RefreshMacroButtonAppearance(opts)
     local prevKey = Macro._lastAppearanceKey
     local applyHarvest = true
     local applyBrew = true
+    local applyCraft = true
     if type(prevKey) == "string" then
-        local ph, pb = string.match(prevKey, "^([^:]+):([^:]+)$")
-        if ph ~= nil and pb ~= nil then
+        local ph, pb, pcm, pim, pcu = string.match(
+            prevKey,
+            "^([^:]+):([^:]+):([^:]+):([^:]+):([^:]+)$"
+        )
+        if ph ~= nil then
             applyHarvest = tostring(canHarvest) ~= ph
             applyBrew = tostring(canBrew) ~= pb
-            if not applyHarvest and not applyBrew then
+            applyCraft = craftMode ~= pcm
+                or craftIconMode ~= pim
+                or tostring(craftCanUse) ~= pcu
+            if not applyHarvest and not applyBrew and not applyCraft then
                 applyHarvest = true
                 applyBrew = true
+                applyCraft = true
             end
+        else
+            -- Legacy two-field key from older builds: refresh all.
+            applyHarvest = true
+            applyBrew = true
+            applyCraft = true
         end
     end
 
@@ -756,11 +1058,19 @@ function Macro.RefreshMacroButtonAppearance(opts)
         -- Forced wants for UpdateEnabledState hook (avoid re-CanBrewNow per button).
         Macro._refreshCanHarvest = canHarvest
         Macro._refreshCanBrew = canBrew
+        Macro._refreshCraftCanUse = craftCanUse
+        Macro._refreshCraftSnap = craftSnap
 
         local macroId = Macro.GetMacroId()
         local brewId = Macro.GetBrewMacroId()
+        local craftId = Macro.GetCraftMacroId()
         local harvestOpts = { canUse = canHarvest }
         local brewOpts = { canUse = canBrew }
+        local craftOpts = {
+            snap = craftSnap,
+            canHarvest = canHarvest,
+            canBrew = canBrew,
+        }
 
         if applyHarvest and macroId then
             local slots = CachedSlotsForMacro(macroId)
@@ -799,11 +1109,36 @@ function Macro.RefreshMacroButtonAppearance(opts)
                 end
             end
         end
+
+        if applyCraft and craftId then
+            -- Icon swap (harvest↔brew) once inside Apply; idle keeps last icon.
+            EnsureCraftMacroIcon(craftIconMode)
+            local slots = CachedSlotsForMacro(craftId)
+            if #slots == 0 then
+                if not Macro.CraftMacroWarningState.unplaced then
+                    Print(T("macro.craft_unplaced", {
+                        icon = tostring(CraftIconIdForMode(craftIconMode)),
+                    }))
+                    Macro.CraftMacroWarningState.unplaced = true
+                end
+            else
+                Macro.CraftMacroWarningState.unplaced = false
+                for i = 1, #slots do
+                    local hbar, buttonId = ActionBars:BarAndButtonIdFromSlot(slots[i])
+                    local button = hbar and hbar.m_Buttons and hbar.m_Buttons[buttonId]
+                    if button then
+                        Macro.ApplyCraftButtonAppearance(button, craftOpts)
+                    end
+                end
+            end
+        end
         RememberSlotFingerprint()
     end)
     Macro._refreshingAppearance = false
     Macro._refreshCanHarvest = nil
     Macro._refreshCanBrew = nil
+    Macro._refreshCraftCanUse = nil
+    Macro._refreshCraftSnap = nil
     if Perf and Perf.End then
         Perf.End("Macro.Appearance")
     end
@@ -840,12 +1175,17 @@ local function applySetActionDataAppearance(button, actionType, actionId)
     end
     local harvestId = Macro.GetMacroId()
     local brewId = Macro.GetBrewMacroId()
+    local craftId = Macro.GetCraftMacroId()
     if harvestId ~= nil and actionId == harvestId then
         Macro.ApplyButtonAppearance(button)
         return
     end
     if brewId ~= nil and actionId == brewId then
         Macro.ApplyBrewButtonAppearance(button)
+        return
+    end
+    if craftId ~= nil and actionId == craftId then
+        Macro.ApplyCraftButtonAppearance(button)
     end
 end
 
@@ -858,9 +1198,13 @@ local function installSetActionDataHook()
     end
     local orgSetActionData = ActionButton.SetActionData
     ActionButton.SetActionData = function(self, actionType, actionId)
-        local wasOurs = Macro.IsMacroButton(self) or Macro.IsBrewMacroButton(self)
+        local wasOurs = Macro.IsMacroButton(self)
+            or Macro.IsBrewMacroButton(self)
+            or Macro.IsCraftMacroButton(self)
         orgSetActionData(self, actionType, actionId)
-        local isOurs = Macro.IsMacroButton(self) or Macro.IsBrewMacroButton(self)
+        local isOurs = Macro.IsMacroButton(self)
+            or Macro.IsBrewMacroButton(self)
+            or Macro.IsCraftMacroButton(self)
         if wasOurs and not isOurs then
             restoreVacatedMacroSlot(self)
             return
@@ -885,7 +1229,15 @@ local function installUpdateEnabledStateHook()
     ActionButton.UpdateEnabledState = function(self, isSlotEnabled, isTargetValid, isBlocked)
         local forced = false
         local want = false
-        if Macro.IsBrewMacroButton(self) then
+        if Macro.IsCraftMacroButton(self) then
+            forced = true
+            if Macro._refreshingAppearance == true and Macro._refreshCraftCanUse ~= nil then
+                want = Macro._refreshCraftCanUse == true
+            else
+                local snap = Macro.ResolveCraftMode({ readonly = true })
+                want = snap.craftCanUse == true
+            end
+        elseif Macro.IsBrewMacroButton(self) then
             forced = true
             if Macro._refreshingAppearance == true and Macro._refreshCanBrew ~= nil then
                 want = Macro._refreshCanBrew == true
@@ -958,7 +1310,53 @@ local function installActionButtonHooks()
 
     local orgOnLButtonUp = ActionButton.OnLButtonUp
     ActionButton.OnLButtonUp = function(self, flags, x, y)
-        if Macro.IsMacroButton(self) then
+        if Macro.IsCraftMacroButton(self) then
+            local snap = Macro.ResolveCraftMode()
+            if snap.mode == "harvest" then
+                if snap.craftCanUse ~= true then
+                    clearHarvestGameActionForButton(self)
+                    clearBrewGameActionForButton(self)
+                    clearPickupIfMouse(flags)
+                    return
+                end
+                bindHarvestGameActionForButton(self, { force = true })
+                local result = handleMacroHarvestActivation(flags)
+                if result == "cursor" or result == "go" then
+                    if orgOnLButtonUp then
+                        orgOnLButtonUp(self, flags, x, y)
+                    end
+                    return
+                end
+                if result == "blocked" then
+                    return
+                end
+            elseif snap.mode == "brew" then
+                local result = handleMacroBrewActivation(flags)
+                if result == "cursor" then
+                    if orgOnLButtonUp then
+                        orgOnLButtonUp(self, flags, x, y)
+                    end
+                    return
+                end
+                if result == "go" then
+                    Macro._brewFired = true
+                    Macro._brewFiredAt = (type(GetGameTime) == "function" and tonumber(GetGameTime())) or 0
+                    if StockPiler3.Brew and StockPiler3.Brew.FirePerform then
+                        StockPiler3.Brew.FirePerform()
+                    end
+                    return
+                end
+                if result == "blocked" then
+                    -- Load click returns blocked after BeginLoadJob - correct.
+                    return
+                end
+            else
+                clearHarvestGameActionForButton(self)
+                clearBrewGameActionForButton(self)
+                clearPickupIfMouse(flags)
+                return
+            end
+        elseif Macro.IsMacroButton(self) then
             if not canHarvestMacro() then
                 clearHarvestGameActionForButton(self)
                 clearPickupIfMouse(flags)
@@ -1012,19 +1410,34 @@ local function installMacroTooltipHook()
     Tooltips.CreateMacroTooltip = function(macroData, mouseoverWindow, anchor, extraText)
         local harvestId = Macro.GetMacroId()
         local brewId = Macro.GetBrewMacroId()
+        local craftId = Macro.GetCraftMacroId()
         local isHarvest = false
         local isBrew = false
+        local isCraft = false
         if type(macroData) == "table" then
-            if harvestId and (macroData.slot == harvestId or macroData.index == harvestId or macroData.macroIndex == harvestId) then
-                isHarvest = true
-            elseif macroData.name == MACRO_NAME or MacroText(macroData) == MACRO_TEXT then
-                isHarvest = true
+            if craftId and (macroData.slot == craftId or macroData.index == craftId or macroData.macroIndex == craftId) then
+                isCraft = true
+            elseif macroData.name == CRAFT_MACRO_NAME or MacroText(macroData) == CRAFT_MACRO_TEXT then
+                isCraft = true
             end
-            if brewId and (macroData.slot == brewId or macroData.index == brewId or macroData.macroIndex == brewId) then
-                isBrew = true
-            elseif macroData.name == BREW_MACRO_NAME or MacroText(macroData) == BREW_MACRO_TEXT then
-                isBrew = true
+            if not isCraft then
+                if harvestId and (macroData.slot == harvestId or macroData.index == harvestId or macroData.macroIndex == harvestId) then
+                    isHarvest = true
+                elseif macroData.name == MACRO_NAME or MacroText(macroData) == MACRO_TEXT then
+                    isHarvest = true
+                end
+                if brewId and (macroData.slot == brewId or macroData.index == brewId or macroData.macroIndex == brewId) then
+                    isBrew = true
+                elseif macroData.name == BREW_MACRO_NAME or MacroText(macroData) == BREW_MACRO_TEXT then
+                    isBrew = true
+                end
             end
+        end
+        if isCraft then
+            if StockPiler3.CraftTooltip and StockPiler3.CraftTooltip.Show then
+                StockPiler3.CraftTooltip.Show(mouseoverWindow, anchor or Tooltips.ANCHOR_WINDOW_TOP)
+            end
+            return
         end
         if isHarvest then
             if StockPiler3.HarvestTooltip and StockPiler3.HarvestTooltip.Show then
@@ -1130,6 +1543,56 @@ function Macro.BrewClick()
     end
 end
 
+function Macro.CraftClick()
+    Macro.ExpireBrewFiredGuard()
+    if Macro._brewFired == true then
+        Macro._brewFired = false
+        Macro._brewFiredAt = nil
+        return
+    end
+    local snap = Macro.ResolveCraftMode()
+    if snap.mode == "harvest" then
+        if snap.craftCanUse ~= true then
+            return
+        end
+        local Grow = StockPiler3.Grow
+        if not Grow then
+            return
+        end
+        if Grow.PrepareHarvestPlot and Grow.PrepareHarvestPlot(true) ~= true then
+            return
+        end
+        if Macro.FireCraftHarvestGameAction() then
+            return
+        end
+        -- Fallback: harvest macro slots / chrome / direct harvest.
+        if Macro.FireHarvestGameAction() then
+            return
+        end
+        if StockPiler3.HarvestChrome and StockPiler3.HarvestChrome.FireHarvestAction then
+            StockPiler3.HarvestChrome.FireHarvestAction()
+            return
+        end
+        if Grow.HarvestClick then
+            Grow.HarvestClick()
+        end
+        return
+    end
+    if snap.mode == "brew" then
+        if snap.craftCanUse ~= true then
+            return
+        end
+        local Brew = StockPiler3.Brew
+        if not Brew or not Brew.TryBrewClick then
+            return
+        end
+        local result = Brew.TryBrewClick()
+        if result == "go" and Brew.FirePerform then
+            Brew.FirePerform()
+        end
+    end
+end
+
 --- Drop sticky _brewFired if BrewClick never ran after OnLButtonUp FirePerform.
 function Macro.ExpireBrewFiredGuard()
     if Macro._brewFired ~= true then
@@ -1147,6 +1610,7 @@ function Macro.Initialize()
     if Macro._initialized then
         Macro.UpdateMacro()
         Macro.UpdateBrewMacro()
+        Macro.UpdateCraftMacro()
         Macro.RefreshMacroButtonAppearance()
         return
     end
@@ -1156,11 +1620,13 @@ function Macro.Initialize()
     installMacroTooltipHook()
     Macro.UpdateMacro()
     Macro.UpdateBrewMacro()
+    Macro.UpdateCraftMacro()
     Macro.RegisterHotbarEventHandler()
     Macro.RefreshMacroButtonAppearance()
     Macro._initialized = true
     D("Initialize harvestId=" .. tostring(Macro.GetMacroId())
-        .. " brewId=" .. tostring(Macro.GetBrewMacroId()))
+        .. " brewId=" .. tostring(Macro.GetBrewMacroId())
+        .. " craftId=" .. tostring(Macro.GetCraftMacroId()))
 end
 
 function Macro.Shutdown()

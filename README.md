@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.186** — Upgrade Seed climb for watched potions (multi-family), seed resolve that stays on the plant’s skill tier, harvest Special Moment chat, and quieter cult-storm FPS.
+**Version 0.3.209** — Soft plant_stock gate, Craft tip, Plants SCrit isolation, Special Moment TTL (#7).
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -30,7 +30,7 @@ Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macr
 
 ### Potions
 
-Learned recipe catalog (one row per fingerprint). Watch / Forget / recipe tips. SkillUp Apo crafts are not recorded. **Hide Skill up** (default on) still hides any legacy `skillUpOrigin` rows.
+Learned recipe catalog (one row per fingerprint). Watch / Forget / recipe tips. SkillUp Apo crafts are not recorded; any leftover `skillUpOrigin` rows stay hidden.
 
 ### Watch
 
@@ -111,7 +111,7 @@ Offline climb-link repair (client shut down): `tools/_repair_climb_links_sv.py` 
 
 ## Macros
 
-Creates **StockPiler3 Harvest** and **StockPiler3 Brew**. Drag to a hotbar. Does not hijack stock craft skills. Ignores SP1/SP2 macro names.
+Creates **StockPiler3 Harvest**, **StockPiler3 Brew**, and **StockPiler3 Craft**. Drag to a hotbar. Craft is context-aware (harvest vs brew): latched icon (starts as Harvest, grey when idle), smart tooltip shows the next click and any follow-up. Does not hijack stock craft skills. Ignores SP1/SP2 macro names.
 
 ## Design
 
@@ -132,6 +132,29 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.209 | Drop every-load recipe-subset scrub; allowlist plant EFFECT migrate latch |
+| 0.3.208 | Plants SCrit: apo plant SPECIAL_CHANCE only; never copy cult seed Super-Crit |
+| 0.3.207 | Plants tab: hide nameless refine/grow uid stubs; DB enrich before list |
+| 0.3.206 | Plants tab: Stab/Ext/Mult effect labels; CraftItemInfo fill-gap + seed Super-Crit |
+| 0.3.205 | Craft macro tip: per-plot seed (icon/tier), TotalTimer, additives |
+| 0.3.204 | Soft plant_stock: fall through to plant floors while potions are buy/brew short |
+| 0.3.203 | Soft plant_stock gate: allow plant floors when potions are buy/ready; wait only on Cult need |
+| 0.3.202 | Plant watches: Waiting - potions first (not Restocking) while potion watches are short |
+| 0.3.201 | Watch tips: stop writing iLevel into item.level (false red Minimum Rank on mats) |
+| 0.3.200 | Planner: forward-declare StampRowSeedBufferUids (fix nil call from ApplySeedBufferStatus) |
+| 0.3.199 | Upgrade Seed: count in-ground target seeds (no false 0→200 need_buy); climb status only for this watch's seeds |
+| 0.3.198 | Seed resolve: trust refine/grow link when seed not in bags; seed-buffer lines skip uid=0 (fixes craftable=0 + no plant) |
+| 0.3.197 | AutoBuy: post-buy gap + shorter no-spend cooldown; fix late-confirm double-count; stay armed while cooling |
+| 0.3.196 | AutoBuy chat: late bag/money confirm after false buy-no-spend (pending timeout vs bag coalesce) |
+| 0.3.195 | Idle AutoGrow: nil plant-job cache + upgrade-targets snap cache (no 5s PickPlant spikes) |
+| 0.3.194 | Craft macro: dual Harvest/Brew latch, icon swap, smart next/follow-up tooltip |
+| 0.3.193 | Watch: reorder buffer/Upgrade seeds/Combat pause; merge Level up into one checkbox |
+| 0.3.192 | Potions: remove Hide Skill up checkbox; always hide unwatched legacy skillUpOrigin |
+| 0.3.191 | Upgrade Seed stall notify: once per episode; silence climbing flicker |
+| 0.3.190 | Upgrade Seed: L1 seeds plant into empties when bag==buffer (was stuck need_buy) |
+| 0.3.189 | Special Moment sticky: 5s TTL + clear on UnregisterChat (#7) |
+| 0.3.188 | Watch live craftable: do not stamp snap after selective miss; quiet-end invalidates craftable |
+| 0.3.187 | Seed-buffer / upgrade-seed-buffer: do not refine-to-settle while that seed is still in plots |
 | 0.3.186 | Seed resolve / seed-buffer: never prefer owned L1 over plant skill-matched seed |
 | 0.3.185 | Watch tip: multi-family climb notes on Have/Need slots; row lists genera |
 | 0.3.184 | Harvest chat: Special Moment + announce every plant product |

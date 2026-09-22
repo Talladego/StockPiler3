@@ -16,8 +16,7 @@ local ADDITIVES_WIN = "SP3TabWatchAdditives"
 local AUTOBUY_WIN = "SP3TabWatchAutoBuy"
 local SEED_BUFFER_ENABLE_WIN = "SP3TabWatchSeedBufferEnable"
 local COMBAT_PAUSE_WIN = "SP3TabWatchCombatPause"
-local SKILLUP_CULT_WIN = "SP3TabWatchSkillUpCult"
-local SKILLUP_APO_WIN = "SP3TabWatchSkillUpApo"
+local SKILLUP_SKILLS_WIN = "SP3TabWatchSkillUpSkills"
 local UPGRADE_SEEDS_WIN = "SP3TabWatchUpgradeSeeds"
 
 local COLOR_OK = { 80, 200, 80 }
@@ -627,28 +626,20 @@ local function UpdateSkillUpCheckboxes()
     local SkillUp = StockPiler3.SkillUp
     local cultVis = SkillUp and SkillUp.IsCultVisible and SkillUp.IsCultVisible() == true
     local apoVis = SkillUp and SkillUp.IsApoVisible and SkillUp.IsApoVisible() == true
+    local show = cultVis == true or apoVis == true
     local cultOn = SkillUp and SkillUp.IsCultEnabled and SkillUp.IsCultEnabled() == true
     local apoOn = SkillUp and SkillUp.IsApoEnabled and SkillUp.IsApoEnabled() == true
+    local on = (cultVis == true and cultOn == true) or (apoVis == true and apoOn == true)
 
-    if DoesWindowExist(SKILLUP_CULT_WIN) then
-        WindowSetShowing(SKILLUP_CULT_WIN, cultVis == true)
+    if DoesWindowExist(SKILLUP_SKILLS_WIN) then
+        WindowSetShowing(SKILLUP_SKILLS_WIN, show)
         syncingUi = true
-        ButtonSetCheckButtonFlag(SKILLUP_CULT_WIN, true)
-        ButtonSetPressedFlag(SKILLUP_CULT_WIN, cultVis == true and cultOn == true)
+        ButtonSetCheckButtonFlag(SKILLUP_SKILLS_WIN, true)
+        ButtonSetPressedFlag(SKILLUP_SKILLS_WIN, show and on)
         syncingUi = false
     end
-    if DoesWindowExist("SP3TabWatchSkillUpCultLabel") then
-        WindowSetShowing("SP3TabWatchSkillUpCultLabel", cultVis == true)
-    end
-    if DoesWindowExist(SKILLUP_APO_WIN) then
-        WindowSetShowing(SKILLUP_APO_WIN, apoVis == true)
-        syncingUi = true
-        ButtonSetCheckButtonFlag(SKILLUP_APO_WIN, true)
-        ButtonSetPressedFlag(SKILLUP_APO_WIN, apoVis == true and apoOn == true)
-        syncingUi = false
-    end
-    if DoesWindowExist("SP3TabWatchSkillUpApoLabel") then
-        WindowSetShowing("SP3TabWatchSkillUpApoLabel", apoVis == true)
+    if DoesWindowExist("SP3TabWatchSkillUpSkillsLabel") then
+        WindowSetShowing("SP3TabWatchSkillUpSkillsLabel", show)
     end
 end
 
@@ -839,11 +830,8 @@ function StockPiler3TabWatch.Initialize()
     if DoesWindowExist("SP3TabWatchBudgetReset") then
         ButtonSetText("SP3TabWatchBudgetReset", T("watch.budget_reset"))
     end
-    if DoesWindowExist("SP3TabWatchSkillUpCultLabel") then
-        LabelSetText("SP3TabWatchSkillUpCultLabel", T("watch.skillup_cult"))
-    end
-    if DoesWindowExist("SP3TabWatchSkillUpApoLabel") then
-        LabelSetText("SP3TabWatchSkillUpApoLabel", T("watch.skillup_apo"))
+    if DoesWindowExist("SP3TabWatchSkillUpSkillsLabel") then
+        LabelSetText("SP3TabWatchSkillUpSkillsLabel", T("watch.skillup_skills"))
     end
     if DoesWindowExist("SP3TabWatchUpgradeSeedsLabel") then
         LabelSetText("SP3TabWatchUpgradeSeedsLabel", T("watch.upgrade_seeds"))
@@ -1221,20 +1209,25 @@ function StockPiler3TabWatch.OnToggleCombatPause()
     AfterSoftMoneySetting()
 end
 
-function StockPiler3TabWatch.OnToggleSkillUpCult()
+function StockPiler3TabWatch.OnToggleSkillUpSkills()
     if syncingUi then
         return
     end
     local SkillUp = StockPiler3.SkillUp
-    if not (SkillUp and SkillUp.IsCultVisible and SkillUp.IsCultVisible() == true) then
+    local cultVis = SkillUp and SkillUp.IsCultVisible and SkillUp.IsCultVisible() == true
+    local apoVis = SkillUp and SkillUp.IsApoVisible and SkillUp.IsApoVisible() == true
+    if cultVis ~= true and apoVis ~= true then
         UpdateSkillUpCheckboxes()
         return
     end
-    local on = ButtonGetPressedFlag(SKILLUP_CULT_WIN) == true
-    if SkillUp.SetCultEnabled then
+    local on = ButtonGetPressedFlag(SKILLUP_SKILLS_WIN) == true
+    if cultVis == true and SkillUp.SetCultEnabled then
         SkillUp.SetCultEnabled(on)
     end
-    NotifySettings(T("watch.skillup_cult_state", { state = OnOff(on) }))
+    if apoVis == true and SkillUp.SetApoEnabled then
+        SkillUp.SetApoEnabled(on)
+    end
+    NotifySettings(T("watch.skillup_skills_state", { state = OnOff(on) }))
     AfterWatchSettingsChanged()
     UpdateSkillUpCheckboxes()
     StockPiler3TabWatch.Refresh({ forcePlan = true })
@@ -1244,25 +1237,6 @@ function StockPiler3TabWatch.OnToggleSkillUpCult()
     if StockPiler3.Buy and StockPiler3.Buy.InvalidateJobsCache then
         StockPiler3.Buy.InvalidateJobsCache()
     end
-end
-
-function StockPiler3TabWatch.OnToggleSkillUpApo()
-    if syncingUi then
-        return
-    end
-    local SkillUp = StockPiler3.SkillUp
-    if not (SkillUp and SkillUp.IsApoVisible and SkillUp.IsApoVisible() == true) then
-        UpdateSkillUpCheckboxes()
-        return
-    end
-    local on = ButtonGetPressedFlag(SKILLUP_APO_WIN) == true
-    if SkillUp.SetApoEnabled then
-        SkillUp.SetApoEnabled(on)
-    end
-    NotifySettings(T("watch.skillup_apo_state", { state = OnOff(on) }))
-    AfterWatchSettingsChanged()
-    UpdateSkillUpCheckboxes()
-    StockPiler3TabWatch.Refresh({ forcePlan = true })
 end
 
 local function AdjustSeedBuffer(flags, dir)
@@ -1801,6 +1775,10 @@ local function BuildStatusTooltipRows(data)
                 else
                     statusNote = T("plan.status.need_seeds")
                 end
+            elseif statusKey == "waiting_potions" then
+                haveColor = RgbDef(COLOR_WARN)
+                noteKind = "warning"
+                statusNote = T("watch.note.waiting_potions")
             elseif statusKey == "restocking" then
                 -- Match potion tip plant-slot warn tint while AutoGrow can progress.
                 haveColor = RgbDef(COLOR_WARN)
@@ -2205,12 +2183,8 @@ function StockPiler3TabWatch.OnMouseOverCombatPause()
     Tip(T("tip.watch.combat_pause"))
 end
 
-function StockPiler3TabWatch.OnMouseOverSkillUpCult()
-    Tip(T("tip.watch.skillup_cult"))
-end
-
-function StockPiler3TabWatch.OnMouseOverSkillUpApo()
-    Tip(T("tip.watch.skillup_apo"))
+function StockPiler3TabWatch.OnMouseOverSkillUpSkills()
+    Tip(T("tip.watch.skillup_skills"))
 end
 
 function StockPiler3TabWatch.OnMouseOverSeedBufferEnable()

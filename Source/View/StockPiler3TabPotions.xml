@@ -98,29 +98,6 @@
                         <EventHandler event="OnSelChanged" function="StockPiler3TabPotions.OnEffectComboChanged" />
                     </EventHandlers>
                 </ComboBox>
-                <Button name="$parentFilterKnownRecipe" inherits="EA_Button_DefaultCheckBox">
-                    <Size>
-                        <AbsPoint x="20" y="20" />
-                    </Size>
-                    <Anchors>
-                        <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="351" y="96" />
-                        </Anchor>
-                    </Anchors>
-                    <EventHandlers>
-                        <EventHandler event="OnLButtonUp" function="StockPiler3TabPotions.OnToggleKnownRecipeFilter" />
-                    </EventHandlers>
-                </Button>
-                <Label name="$parentFilterKnownRecipeLabel" font="font_default_text_small" maxchars="24" textalign="leftcenter" handleinput="false">
-                    <Size>
-                        <AbsPoint x="120" y="28" />
-                    </Size>
-                    <Anchors>
-                        <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="375" y="92" />
-                        </Anchor>
-                    </Anchors>
-                </Label>
 
                 <!-- Headers: x/width must match StockPiler3PotionRow (chrome spans Watch..Forget). -->
                 <Button name="$parentSortWatch" inherits="StockPiler3_SortHeader" id="8">

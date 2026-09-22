@@ -11,6 +11,8 @@ local US = StockPiler3.UpgradeSeed
 
 US._stallLatch = nil
 US._active = nil -- last pick { familyKey, haveReq, needReq, why }
+US._upgradeTargetsCache = nil
+US._upgradeTargetsKey = nil
 
 local function CharRow(create)
     return StockPiler3.Util.CharacterRow(create == true)
@@ -31,6 +33,7 @@ function US.SetEnabled(enabled)
         return false
     end
     row.upgradeSeedsEnabled = enabled == true
+    US.InvalidateUpgradeTargetsCache()
     local Watch = StockPiler3.Watch
     if Watch and Watch.BumpGen then
         Watch.BumpGen()
@@ -143,7 +146,8 @@ function US.SeedDeficit(seedUid, mode)
 end
 
 --- How many bag seeds may be planted without dipping the keep cushion.
---- opts.mode "climb" (default): L1 keeps full buffer; intermediate rungs keep 0.
+--- opts.mode "climb" (default): L1 prefers buffer but never stalls empty plots;
+--- intermediate rungs keep 0 (not vendor-restocked).
 --- opts.mode "skillup": plant up to headroom when buffer-short, else fill empties.
 --- opts.intermediate: climb-only - treat as non-vendor intermediate rung.
 function US.PlantableSurplus(seedUid, bagSeeds, empty, opts)
@@ -164,18 +168,21 @@ function US.PlantableSurplus(seedUid, bagSeeds, empty, opts)
         end
         return math.min(bagSeeds, empty)
     end
-    -- Climb: L1 / cold-start keep full seed buffer (vendor can restock).
-    -- Intermediate climb rungs keep 0 - those seeds are not at the vendor; holding
+    -- Climb: intermediate rungs keep 0 - those seeds are not at the vendor; holding
     -- even 1 seed with empty plots stalls the climb (seen: have=50, plantable=0).
     if buffer <= 0 or opts.intermediate == true then
         return math.min(bagSeeds, empty)
     end
+    -- L1 / vendor floor: prefer surplus above the seed buffer so AutoBuy can
+    -- restock. If AutoBuy only filled the cushion (e.g. plots were full then),
+    -- still plant into empties — otherwise Majestic Goldweed stays need_buy
+    -- forever with 5 L1 seeds and open plots.
     local live = tonumber(budget.live) or bagSeeds
     local surplus = live - buffer
-    if surplus < 1 then
-        return 0
+    if surplus >= 1 then
+        return math.min(bagSeeds, empty, surplus)
     end
-    return math.min(bagSeeds, empty, surplus)
+    return math.min(bagSeeds, empty)
 end
 
 local function SeedBudget(seedUid)
@@ -271,6 +278,8 @@ end
 --- Have the target-tier seed/plant for this climb need?
 --- Only the needReq rung counts - owned lower-tier seeds must not end the climb
 --- (ResolveSeedForSpec prefers bag seeds and would falsely "arrive" at L25).
+--- In-ground target seeds count: bag-only checks left "Upgrading fusk 0->200 /
+--- need_buy" after AutoGrow planted L200 for the seed buffer.
 local function HaveTargetRung(ladder, needReq, plantUid, seedUid)
     needReq = tonumber(needReq) or 0
     local Inv = StockPiler3.Inventory
@@ -279,10 +288,23 @@ local function HaveTargetRung(ladder, needReq, plantUid, seedUid)
     end
     plantUid = tonumber(plantUid) or 0
     seedUid = tonumber(seedUid) or 0
+    local Grow = StockPiler3.Grow
 
     local function haveUid(uid)
         uid = tonumber(uid) or 0
-        return uid > 0 and (tonumber(Inv.CountByUid(uid)) or 0) >= 1
+        if uid <= 0 then
+            return false
+        end
+        if (tonumber(Inv.CountByUid(uid)) or 0) >= 1 then
+            return true
+        end
+        if Grow and Grow.CountSeedPlotCredit then
+            return (tonumber(Grow.CountSeedPlotCredit(uid)) or 0) >= 1
+        end
+        if Grow and Grow.CountInGroundSeeds then
+            return (tonumber(Grow.CountInGroundSeeds(uid)) or 0) >= 1
+        end
+        return false
     end
 
     if type(ladder) == "table" and type(ladder.rungs) == "table" and needReq >= 1 then
@@ -562,11 +584,48 @@ local function CollectUpgradeTargets()
     return out
 end
 
+local function UpgradeTargetsCacheKey()
+    local Inv = StockPiler3.Inventory
+    local Watch = StockPiler3.Watch
+    local snapGen = 0
+    local watchGen = 0
+    if Inv and Inv.GetSnapGen then
+        snapGen = tonumber(Inv.GetSnapGen()) or 0
+    end
+    if Watch and Watch.GetGen then
+        watchGen = tonumber(Watch.GetGen()) or 0
+    end
+    -- Cult floor gates ClimbCap; include so skill-ups invalidate without bag churn.
+    local cult = 0
+    if US.GetCultSkill then
+        cult = math.floor((tonumber(US.GetCultSkill()) or 0) / 25)
+    end
+    return tostring(snapGen) .. ":" .. tostring(watchGen) .. ":" .. tostring(cult)
+        .. ":" .. tostring(US.IsEnabled() == true)
+end
+
+function US.InvalidateUpgradeTargetsCache()
+    US._upgradeTargetsCache = nil
+    US._upgradeTargetsKey = nil
+end
+
+--- Snap/watch-keyed cache over CollectUpgradeTargets (NeedsRefineFirst / PickPlantJob / status).
+local function GetUpgradeTargets()
+    local key = UpgradeTargetsCacheKey()
+    if US._upgradeTargetsKey == key and type(US._upgradeTargetsCache) == "table" then
+        return US._upgradeTargetsCache
+    end
+    local out = CollectUpgradeTargets()
+    US._upgradeTargetsCache = out
+    US._upgradeTargetsKey = key
+    return out
+end
+
 function US.NeedsRefineFirst()
     if US.IsEnabled() ~= true then
         return false
     end
-    local targets = CollectUpgradeTargets()
+    local targets = GetUpgradeTargets()
     local anyRefine = false
     local anyPlantable = false
     for i = 1, #targets do
@@ -604,7 +663,7 @@ function US.ShouldHoldEmptyPlots(climb)
     if why ~= "climbing" and why ~= "need_buy" and why ~= "no_family" then
         return false
     end
-    local targets = CollectUpgradeTargets()
+    local targets = GetUpgradeTargets()
     for i = 1, #targets do
         local t = targets[i]
         local plantable = TargetPlantableCount(t)
@@ -632,7 +691,7 @@ function US.PickPlantJob()
         return nil
     end
     local SM = StockPiler3.SeedMap
-    local targets = CollectUpgradeTargets()
+    local targets = GetUpgradeTargets()
     local refineActive = nil
     local stallActive = nil
     local plantCandidates = {}
@@ -697,7 +756,16 @@ function US.PickPlantJob()
                 -- Do not plant a lower rung while higher-tier plants sit in bag
                 -- (L1 Fusk 3010030 filled all plots while Cloudy Fusk waited to refine).
                 local plantGoesBackward = upgradePlantReq > ownedReq
+                local plotCredit = 0
+                local Grow = StockPiler3.Grow
+                if Grow and Grow.CountSeedPlotCredit then
+                    plotCredit = tonumber(Grow.CountSeedPlotCredit(seedUid)) or 0
+                elseif Grow and Grow.CountInGroundSeeds then
+                    plotCredit = tonumber(Grow.CountInGroundSeeds(seedUid)) or 0
+                end
+                -- In-ground seeds are refundable; settle buffer only after harvest outcome.
                 if buffer > 0 and headroom > 0 and refinable > 0
+                    and plotCredit < 1
                     and (not intermediate or bagSeeds < 1)
                 then
                     if StockPiler3.Refine and StockPiler3.Refine.MarkRefineDue then
@@ -912,7 +980,7 @@ function US.AppendRefineIntents(intents, appendFn)
     if US.IsEnabled() ~= true then
         return
     end
-    local targets = CollectUpgradeTargets()
+    local targets = GetUpgradeTargets()
     local SM = StockPiler3.SeedMap
     for i = 1, #targets do
         local t = targets[i]
@@ -957,16 +1025,25 @@ function US.AppendRefineIntents(intents, appendFn)
                     return
                 end
             end
-            -- Buffer refine for owned climb seed.
+            -- Buffer refine for owned climb seed (only after plots clear for this seed).
             if type(owned) == "table" and (tonumber(owned.seedUid) or 0) > 0 then
                 local seedUid = tonumber(owned.seedUid) or 0
                 local plantUid = tonumber(owned.plantUid) or 0
+                local Refine = StockPiler3.Refine
+                local settleDeferred = false
+                if Refine and Refine.SeedBufferSettleDeferred then
+                    settleDeferred = Refine.SeedBufferSettleDeferred(seedUid) == true
+                else
+                    local Grow = StockPiler3.Grow
+                    if Grow and Grow.CountSeedPlotCredit then
+                        settleDeferred = (tonumber(Grow.CountSeedPlotCredit(seedUid)) or 0) > 0
+                    end
+                end
                 local budget = SeedBudget(seedUid)
                 local headroom = tonumber(budget.headroom) or 0
-                if headroom > 0 and plantUid > 0 then
+                if headroom > 0 and plantUid > 0 and settleDeferred ~= true then
                     local Items = StockPiler3.Items
                     local spec = Items and Items.ToSpec and Items.ToSpec(plantUid) or nil
-                    local Refine = StockPiler3.Refine
                     local refinable = 0
                     if Refine and Refine.CountRefinablePlants then
                         refinable = tonumber(Refine.CountRefinablePlants(plantUid, spec)) or 0
@@ -997,7 +1074,7 @@ function US.CollectBuyJobs()
         return jobs
     end
     local SM = StockPiler3.SeedMap
-    local targets = CollectUpgradeTargets()
+    local targets = GetUpgradeTargets()
     local seenBuy = {}
     for i = 1, #targets do
         local t = targets[i]
@@ -1069,8 +1146,14 @@ function US.MaybeNotifyStall()
         return
     end
     local why = tostring(active.why or "")
-    if why == "planting" or why == "refining" then
+    -- Progress: clear latch so a later real stall can warn once.
+    if why == "planting" then
         US._stallLatch = nil
+        return
+    end
+    -- Refining / waiting on plots: not a user-action stall. Keep any latch so
+    -- need_buy <-> climbing <-> refining flicker cannot spam chat.
+    if why == "refining" or why == "climbing" then
         return
     end
     local reason = why
@@ -1083,12 +1166,15 @@ function US.MaybeNotifyStall()
             reason = "autobuy_off"
         else
             local VA = StockPiler3.VendorAdapter
-            if not (VA and VA.IsStoreOpen and VA.IsStoreOpen() == true) then
-                reason = "need_vendor"
+            if VA and VA.IsStoreOpen and VA.IsStoreOpen() == true then
+                -- Vendor open / AutoBuy can run - not a stall warn.
+                return
             end
+            reason = "need_vendor"
         end
     end
-    if US._stallLatch == reason then
+    -- One chat warn per stall episode (any reason). Reason flips must not re-fire.
+    if US._stallLatch ~= nil then
         return
     end
     US._stallLatch = reason
@@ -1106,7 +1192,9 @@ function US.MaybeNotifyStall()
     else
         msg = L"<icon02486> Upgrade seed stalled."
     end
-    if StockPiler3.Debug and StockPiler3.Debug.Print then
+    if StockPiler3.Debug and StockPiler3.Debug.Notify then
+        StockPiler3.Debug.Notify(msg)
+    elseif StockPiler3.Debug and StockPiler3.Debug.Print then
         StockPiler3.Debug.Print(msg)
     end
     if type(PlaySound) == "function" and GameData and GameData.Sound
@@ -1123,6 +1211,7 @@ function US.GetActiveStatus()
 end
 
 --- Best owned seed/plant skillReq on a ladder at or below climbCap.
+--- Counts bag and in-ground seeds (plot credit) so status matches seed-buffer plant.
 local function BestOwnedReqOnLadder(ladder, climbCap)
     climbCap = tonumber(climbCap) or 0
     if type(ladder) ~= "table" or type(ladder.rungs) ~= "table" or climbCap < 1 then
@@ -1132,6 +1221,7 @@ local function BestOwnedReqOnLadder(ladder, climbCap)
     if not (Inv and Inv.CountByUid) then
         return 0
     end
+    local Grow = StockPiler3.Grow
     local best = 0
     for i = 1, #ladder.rungs do
         local rung = ladder.rungs[i]
@@ -1144,6 +1234,16 @@ local function BestOwnedReqOnLadder(ladder, climbCap)
                 have = true
             elseif plantUid > 0 and (tonumber(Inv.CountByUid(plantUid)) or 0) >= 1 then
                 have = true
+            elseif seedUid > 0 and Grow then
+                local ground = 0
+                if Grow.CountSeedPlotCredit then
+                    ground = tonumber(Grow.CountSeedPlotCredit(seedUid)) or 0
+                elseif Grow.CountInGroundSeeds then
+                    ground = tonumber(Grow.CountInGroundSeeds(seedUid)) or 0
+                end
+                if ground >= 1 then
+                    have = true
+                end
             end
             if have and req > best then
                 best = req
@@ -1165,7 +1265,7 @@ local function RebuildWatchStatusCache()
         US._active = nil
         return
     end
-    local targets = CollectUpgradeTargets()
+    local targets = GetUpgradeTargets()
     if #targets < 1 then
         -- Climb done / no targets: always clear latch. Keeping planting/refining
         -- here made ApplySeedBufferStatus re-paint upgrading_seed via GetActiveStatus.
@@ -1177,35 +1277,41 @@ local function RebuildWatchStatusCache()
         local needReq = tonumber(t.needReq) or 0
         local climbCap = US.ClimbCap(needReq)
         local haveReq = BestOwnedReqOnLadder(t.ladder, climbCap)
-        local why = "climbing"
-        if haveReq < 1 then
-            why = "need_buy"
-        elseif climbCap < needReq and haveReq >= climbCap then
-            why = "need_cult"
-        end
-        local genus = t.ladder and t.ladder.genus or nil
-        local st = {
-            familyKey = t.familyKey or (t.ladder and t.ladder.key),
-            genus = genus,
-            haveReq = haveReq,
-            needReq = needReq,
-            climbCap = climbCap,
-            why = why,
-            plantUid = tonumber(t.plantUid) or 0,
-        }
-        local plantUid = tonumber(t.plantUid) or 0
-        if plantUid > 0 then
-            US._statusByPlant[plantUid] = st
-        end
-        if genus and genus ~= "" then
-            US._statusByGenus[genus] = st
-        end
-        -- Keep _active filled so stalls / dumps reflect the climb even when
-        -- Grow planted via plant_stock rather than upgrade_seed.
-        if i == 1 then
-            local curWhy = type(US._active) == "table" and tostring(US._active.why or "") or ""
-            if curWhy ~= "planting" and curWhy ~= "refining" then
-                US._active = st
+        -- Target rung already owned in bag or plots: not an upgrade climb.
+        if haveReq >= needReq and needReq >= 1 then
+            -- Seed-buffer / restock paths own the row status.
+        else
+            local why = "climbing"
+            if haveReq < 1 then
+                why = "need_buy"
+            elseif climbCap < needReq and haveReq >= climbCap then
+                why = "need_cult"
+            end
+            local genus = t.ladder and t.ladder.genus or nil
+            local st = {
+                familyKey = t.familyKey or (t.ladder and t.ladder.key),
+                genus = genus,
+                haveReq = haveReq,
+                needReq = needReq,
+                climbCap = climbCap,
+                why = why,
+                plantUid = tonumber(t.plantUid) or 0,
+                seedUid = tonumber(t.seedUid) or 0,
+            }
+            local plantUid = tonumber(t.plantUid) or 0
+            if plantUid > 0 then
+                US._statusByPlant[plantUid] = st
+            end
+            if genus and genus ~= "" then
+                US._statusByGenus[genus] = st
+            end
+            -- Keep _active filled so stalls / dumps reflect the climb even when
+            -- Grow planted via plant_stock rather than upgrade_seed.
+            if i == 1 then
+                local curWhy = type(US._active) == "table" and tostring(US._active.why or "") or ""
+                if curWhy ~= "planting" and curWhy ~= "refining" then
+                    US._active = st
+                end
             end
         end
     end
@@ -1404,7 +1510,7 @@ function US.Dump(emit)
     local cult = US.GetCultSkill()
     emit("  cultSkill=" .. tostring(cult)
         .. " cultFloor=" .. tostring(US.FloorCultTier(cult)))
-    local targets = CollectUpgradeTargets()
+    local targets = GetUpgradeTargets()
     emit("  targets=" .. tostring(#targets))
     for i = 1, math.min(5, #targets) do
         local t = targets[i]

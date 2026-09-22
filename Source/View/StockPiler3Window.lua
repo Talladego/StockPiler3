@@ -236,6 +236,9 @@ function StockPiler3Window.FlushPendingFooterRefresh()
     if StockPiler3.BrewTooltip and StockPiler3.BrewTooltip.TickLive then
         StockPiler3.BrewTooltip.TickLive()
     end
+    if StockPiler3.CraftTooltip and StockPiler3.CraftTooltip.TickLive then
+        StockPiler3.CraftTooltip.TickLive()
+    end
 end
 
 function StockPiler3Window.RefreshFooterButtons()

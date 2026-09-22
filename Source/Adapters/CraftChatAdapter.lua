@@ -333,6 +333,7 @@ end
 local HARVEST_CUE_STICKY_SEC = 5
 CC._harvestFailStickyAt = 0
 CC._harvestOkStickyAt = 0
+CC._harvestSpecialMomentStickyAt = 0
 CC._chatRegistered = false
 
 local function ToNarrow(value)
@@ -371,9 +372,9 @@ function CC.ConsumeHarvestCriticalSuccessSticky()
 end
 
 function CC.ConsumeHarvestSpecialMomentSticky()
-    local on = CC._harvestSpecialMomentSticky == true
-    CC._harvestSpecialMomentSticky = false
-    return on
+    local at = CC._harvestSpecialMomentStickyAt
+    CC._harvestSpecialMomentStickyAt = 0
+    return StickyFresh(at)
 end
 
 local function NoteHarvestCriticalFailure()
@@ -395,8 +396,10 @@ local function NoteHarvestSpecialMoment()
         pending.chatSpecialMoment = true
         return
     end
-    CC._harvestOkStickyAt = NowSec()
-    CC._harvestSpecialMomentSticky = true
+    local now = NowSec()
+    CC._harvestOkStickyAt = now
+    -- Same TTL as crit success: orphan SM chat must not tag a later harvest.
+    CC._harvestSpecialMomentStickyAt = now
 end
 
 local function NoteHarvestCriticalSuccess()
@@ -505,4 +508,5 @@ function CC.UnregisterChat()
     CC._chatRegistered = false
     CC._harvestFailStickyAt = 0
     CC._harvestOkStickyAt = 0
+    CC._harvestSpecialMomentStickyAt = 0
 end

@@ -10,8 +10,13 @@ local Buy = StockPiler3.Buy
 Buy.BRASS_PER_GOLD = 10000
 Buy.BRASS_PER_SILVER = 100
 Buy.MAX_PURCHASES_PER_VISIT = 80
-Buy.PENDING_BUY_TIMEOUT_SEC = 1.0
-Buy.NO_SPEND_COOLDOWN_SEC = 2.0
+-- Must exceed Scheduler bag coalesce (~2s) or pending buys false no-spend before L0/snap.
+Buy.PENDING_BUY_TIMEOUT_SEC = 3.5
+Buy.NO_SPEND_COOLDOWN_SEC = 0.75
+-- After a false no-spend, still accept bag/money confirm for chat/accounting.
+Buy.LATE_CONFIRM_GRACE_SEC = 6.0
+-- Brief settle after a confirmed buy before the next BuyItem (back-to-back can no-op).
+Buy.POST_BUY_GAP_SEC = 0.35
 
 Buy._jobsCache = nil
 Buy._jobsCacheKey = nil
@@ -27,6 +32,8 @@ Buy._allowPlantBuys = false
 Buy._planArmedAfterFill = false
 Buy._pendingBuy = nil
 Buy._noSpendCooldownUntil = Buy._noSpendCooldownUntil or {}
+Buy._lateBuyAttempts = Buy._lateBuyAttempts or {}
+Buy._nextBuyAfter = 0
 
 ----------------------------------------------------------------
 -- Helpers
@@ -104,6 +111,40 @@ local function ArmNoSpendCooldown(uid)
         return
     end
     Buy._noSpendCooldownUntil[uid] = now + (tonumber(Buy.NO_SPEND_COOLDOWN_SEC) or 2)
+end
+
+local function ClearNoSpendCooldown(uid)
+    uid = tonumber(uid) or 0
+    if uid > 0 then
+        Buy._noSpendCooldownUntil[uid] = nil
+    end
+end
+
+local function ClearLateAttemptsForUid(uid)
+    uid = tonumber(uid) or 0
+    if uid <= 0 then
+        return
+    end
+    local list = Buy._lateBuyAttempts
+    if type(list) ~= "table" or #list < 1 then
+        return
+    end
+    local keep = {}
+    for i = 1, #list do
+        local pending = list[i]
+        if type(pending) == "table" and (tonumber(pending.uid) or 0) ~= uid then
+            keep[#keep + 1] = pending
+        end
+    end
+    Buy._lateBuyAttempts = keep
+end
+
+local function ArmPostBuyGap()
+    local now = NowSec()
+    local gap = tonumber(Buy.POST_BUY_GAP_SEC) or 0.35
+    if now > 0 and gap > 0 then
+        Buy._nextBuyAfter = now + gap
+    end
 end
 
 local function IsGrowableStoreItem(item)
@@ -284,6 +325,9 @@ local function AccountConfirmedBuy(pending, liveMoney)
     if type(pending) ~= "table" then
         return
     end
+    -- A live confirm owns this uid - do not also late-confirm the same bag gain.
+    ClearLateAttemptsForUid(pending.uid)
+    ClearNoSpendCooldown(pending.uid)
     local qty = math.max(1, tonumber(pending.qty) or 1)
     local unitCost = tonumber(pending.unitCost) or 0
     local costTotal = tonumber(pending.costTotal) or (unitCost * qty)
@@ -292,6 +336,7 @@ local function AccountConfirmedBuy(pending, liveMoney)
     Buy._visitSpentBrass = (tonumber(Buy._visitSpentBrass) or 0) + costTotal
     Buy._visitBought = (tonumber(Buy._visitBought) or 0) + qty
     Buy._visitMoneyBrass = tonumber(liveMoney) or PlayerMoneyBrass()
+    ArmPostBuyGap()
     local Watch = StockPiler3.Watch
     if Watch and Watch.AddAutoBuySpentBrass then
         Watch.AddAutoBuySpentBrass(costTotal)
@@ -325,6 +370,100 @@ local function AccountConfirmedBuy(pending, liveMoney)
     ))
 end
 
+local function PendingEvidenceOk(pending, live, bagNow)
+    if type(pending) ~= "table" then
+        return false
+    end
+    live = tonumber(live) or PlayerMoneyBrass()
+    local before = tonumber(pending.beforeMoney) or 0
+    local costTotal = tonumber(pending.costTotal) or 0
+    local qty = math.max(1, tonumber(pending.qty) or 1)
+    local uid = tonumber(pending.uid) or 0
+    bagNow = tonumber(bagNow)
+    if bagNow == nil then
+        bagNow = BagCountUid(uid)
+    end
+    local bagBefore = tonumber(pending.bagBefore) or 0
+    local moneyOk = live > 0 and before > 0 and live <= (before - costTotal + 1)
+    local bagOk = uid > 0 and bagNow >= (bagBefore + qty)
+    return moneyOk or bagOk, live
+end
+
+--- Keep a timed-out pending buy so a late bag/money snap can still chat.
+local function StashLateBuyAttempt(pending)
+    if type(pending) ~= "table" then
+        return
+    end
+    local now = NowSec()
+    local grace = tonumber(Buy.LATE_CONFIRM_GRACE_SEC) or 6
+    local list = Buy._lateBuyAttempts
+    if type(list) ~= "table" then
+        list = {}
+        Buy._lateBuyAttempts = list
+    end
+    list[#list + 1] = {
+        beforeMoney = tonumber(pending.beforeMoney) or 0,
+        bagBefore = tonumber(pending.bagBefore) or 0,
+        unitCost = tonumber(pending.unitCost) or 0,
+        costTotal = tonumber(pending.costTotal) or 0,
+        qty = math.max(1, tonumber(pending.qty) or 1),
+        key = pending.key,
+        uid = tonumber(pending.uid) or 0,
+        name = pending.name,
+        at = tonumber(pending.at) or now,
+        expiresAt = now + grace,
+        job = pending.job,
+        item = pending.item,
+        remainingWas = pending.remainingWas,
+        late = true,
+    }
+end
+
+--- Confirm buys that timed out as no-spend before inventory/money caught up.
+local function TryLateConfirmBuys()
+    local list = Buy._lateBuyAttempts
+    if type(list) ~= "table" or #list < 1 then
+        return false
+    end
+    local now = NowSec()
+    local any = false
+    local keep = {}
+    local confirmedUid = {}
+    for i = 1, #list do
+        local pending = list[i]
+        if type(pending) == "table" then
+            local uid = tonumber(pending.uid) or 0
+            local expires = tonumber(pending.expiresAt) or 0
+            local ok, live = PendingEvidenceOk(pending)
+            if ok and uid > 0 and confirmedUid[uid] ~= true then
+                confirmedUid[uid] = true
+                ClearNoSpendCooldown(uid)
+                AccountConfirmedBuy(pending, live)
+                LogBuy(string.format(
+                    "late-confirm uid=%s qty=%d bag=%d->%d",
+                    tostring(uid),
+                    math.max(1, tonumber(pending.qty) or 1),
+                    tonumber(pending.bagBefore) or 0,
+                    BagCountUid(uid)
+                ))
+                any = true
+            elseif ok and confirmedUid[uid] == true then
+                -- Same uid already confirmed this pass (bag gain consumed).
+            elseif expires > 0 and now > 0 and now >= expires then
+                LogBuy(string.format(
+                    "late-confirm-expire uid=%s qty=%d",
+                    tostring(uid),
+                    math.max(1, tonumber(pending.qty) or 1)
+                ))
+            else
+                keep[#keep + 1] = pending
+            end
+        end
+    end
+    Buy._lateBuyAttempts = keep
+    return any
+end
+
 --- Resolve open pending buy: confirm spend, timeout no-spend, or still waiting.
 --- @return "confirmed"|"waiting"|"no-spend"|nil
 local function ResolvePendingBuy()
@@ -339,16 +478,15 @@ local function ResolvePendingBuy()
     local uid = tonumber(pending.uid) or 0
     local bagNow = BagCountUid(uid)
     local bagBefore = tonumber(pending.bagBefore) or 0
-    local moneyOk = live > 0 and before > 0 and live <= (before - costTotal + 1)
-    local bagOk = uid > 0 and bagNow >= (bagBefore + qty)
-    if moneyOk or bagOk then
+    local ok = select(1, PendingEvidenceOk(pending, live, bagNow))
+    if ok then
         AccountConfirmedBuy(pending, live > 0 and live or before)
         Buy._pendingBuy = nil
         return "confirmed"
     end
     local at = tonumber(pending.at) or 0
     local now = NowSec()
-    local timeout = tonumber(Buy.PENDING_BUY_TIMEOUT_SEC) or 1
+    local timeout = tonumber(Buy.PENDING_BUY_TIMEOUT_SEC) or 3.5
     if at > 0 and now > 0 and (now - at) >= timeout then
         if live <= 0 or live >= before then
             LogBuy(string.format(
@@ -361,6 +499,7 @@ local function ResolvePendingBuy()
                 bagBefore,
                 bagNow
             ))
+            StashLateBuyAttempt(pending)
             ArmNoSpendCooldown(uid)
             Buy._pendingBuy = nil
             return "no-spend"
@@ -375,6 +514,7 @@ local function ResolvePendingBuy()
             before,
             live
         ))
+        StashLateBuyAttempt(pending)
         ArmNoSpendCooldown(uid)
         Buy._pendingBuy = nil
         return "no-spend"
@@ -417,6 +557,8 @@ local function FinalizePendingBuyForStop()
         before,
         live
     ))
+    -- Store often closes before bag/money catch up - keep grace for chat.
+    StashLateBuyAttempt(pending)
     Buy._pendingBuy = nil
 end
 
@@ -505,6 +647,8 @@ local function ResetVisit()
     Buy._planArmedAfterFill = false
     Buy._pendingBuy = nil
     Buy._noSpendCooldownUntil = {}
+    Buy._lateBuyAttempts = {}
+    Buy._nextBuyAfter = 0
     Buy.InvalidateJobsCache()
 end
 
@@ -935,6 +1079,14 @@ function Buy.IssueOne(opId)
         return ok == true
     end
 
+    -- Late bag/money after a false no-spend still counts + chats.
+    if TryLateConfirmBuys() then
+        if StockPiler3.Scheduler and StockPiler3.Scheduler.WakeAutoBuy then
+            StockPiler3.Scheduler.WakeAutoBuy()
+        end
+        return done(true)
+    end
+
     -- Confirm or wait on in-flight broadcast before starting another buy.
     -- Waiting must return true so Orch keeps the buy tick (refine must not steal
     -- and SendUseItem a "plant" that closes the vendor).
@@ -952,6 +1104,15 @@ function Buy.IssueOne(opId)
         return done(true)
     end
     -- "no-spend" or nil -> continue to next purchase attempt.
+
+    local nowGate = NowSec()
+    local nextBuyAfter = tonumber(Buy._nextBuyAfter) or 0
+    if nextBuyAfter > 0 and nowGate > 0 and nowGate < nextBuyAfter then
+        if StockPiler3.Scheduler and StockPiler3.Scheduler.WakeAutoBuy then
+            StockPiler3.Scheduler.WakeAutoBuy()
+        end
+        return done(true)
+    end
 
     local purchases = tonumber(Buy._visitPurchases) or 0
     if purchases >= (Buy.MAX_PURCHASES_PER_VISIT or 80) then
@@ -993,6 +1154,7 @@ function Buy.IssueOne(opId)
     local matched = 0
     local zeroCost = 0
     local noMatch = 0
+    local cooldownBlocked = false
     for i = 1, #jobs do
         local job = jobs[i]
         local item, unitCost = Buy.FindStoreMatch(job)
@@ -1015,7 +1177,8 @@ function Buy.IssueOne(opId)
             if key == nil or slotNum == nil then
                 LogBuy("skip bad-slot-or-key job=" .. tostring(job.specKey or job.uid or i))
             elseif IsUidOnCooldown(uid) then
-                -- Recent buy-no-spend for this uid.
+                -- Recent buy-no-spend for this uid - stay armed until cooldown ends.
+                cooldownBlocked = true
             else
                 local deficit = tonumber(job.deficit) or 0
                 local remaining = math.max(0, deficit - VisitAcquired(key))
@@ -1051,6 +1214,8 @@ function Buy.IssueOne(opId)
                                 ))
                                 return done(false)
                             end
+                            -- Retry owns confirm - drop stale late stash for this uid.
+                            ClearLateAttemptsForUid(uid)
                             -- Broadcast only - confirm on money/bag movement next tick.
                             Buy._pendingBuy = {
                                 beforeMoney = beforeMoney,
@@ -1103,6 +1268,13 @@ function Buy.IssueOne(opId)
         ChatVisitStop("budget")
         ArmPlanAfterBuyFill("budget")
         return done(false)
+    end
+    -- Jobs remain but uid is on short no-spend cooldown - keep buying phase alive.
+    if cooldownBlocked and Buy._visitStopReason == nil then
+        if StockPiler3.Scheduler and StockPiler3.Scheduler.WakeAutoBuy then
+            StockPiler3.Scheduler.WakeAutoBuy()
+        end
+        return done(true)
     end
     if #jobs > 0 and matched <= 0 then
         local indexRows = 0
@@ -1189,12 +1361,20 @@ function Buy.OnInventorySnapshot()
     if Buy._storeWasOpen == true then
         Buy._visitAcquired = {}
     end
+    local woke = false
     -- Inventory may confirm a pending buy via bag gain.
     if type(Buy._pendingBuy) == "table" then
         local state = ResolvePendingBuy()
-        if state == "confirmed" and StockPiler3.Scheduler and StockPiler3.Scheduler.WakeAutoBuy then
-            StockPiler3.Scheduler.WakeAutoBuy()
+        if state == "confirmed" then
+            woke = true
         end
+    end
+    -- Bag often arrives after PENDING_BUY_TIMEOUT marked no-spend - still chat.
+    if TryLateConfirmBuys() then
+        woke = true
+    end
+    if woke and StockPiler3.Scheduler and StockPiler3.Scheduler.WakeAutoBuy then
+        StockPiler3.Scheduler.WakeAutoBuy()
     end
 end
 

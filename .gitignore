@@ -5,6 +5,7 @@ Thumbs.db
 *.bak
 *.tmp
 tools/out/
+tools/__pycache__/
 GameData.Sound.txt
 Sound.txt
 

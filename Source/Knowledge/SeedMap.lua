@@ -337,6 +337,59 @@ function SM.ResolveSeedEffectId(seedUid)
     return 0
 end
 
+--- Craft bonus value from a seed (bag / learned / DB), after CraftItemInfo fill-gap.
+--- Cultivation seed bonus lookup (SPECIAL_CHANCE / FAIL_CHANCE on seeds).
+--- Not for plant apo Super-Crit — those meanings differ and must not mix.
+function SM.ResolveSeedBonusValue(seedUid, bonusRef)
+    seedUid = tonumber(seedUid) or 0
+    bonusRef = tonumber(bonusRef) or 0
+    if seedUid <= 0 or bonusRef <= 0 then
+        return 0
+    end
+    if SM.IsSeedPacketUid(seedUid) then
+        return 0
+    end
+    local MS = StockPiler3.MaterialSpec
+    local function FromSpec(spec)
+        if type(spec) ~= "table" or type(spec.bonuses) ~= "table" then
+            return 0
+        end
+        local v = spec.bonuses[bonusRef]
+        if type(v) == "table" then
+            return tonumber(v[1] or v.bonusValue) or 0
+        end
+        return tonumber(v) or 0
+    end
+    local sample = BagSample(seedUid)
+    if type(sample) == "table" and MS and MS.FromItemData then
+        local n = FromSpec(MS.FromItemData(sample))
+        if n ~= 0 then
+            return n
+        end
+    end
+    local Items = StockPiler3.Items
+    if Items and Items.GetByUid then
+        local row = Items.GetByUid(seedUid)
+        if type(row) == "table" and type(row.bonuses) == "table" then
+            local v = row.bonuses[bonusRef]
+            local n = type(v) == "table" and (tonumber(v[1]) or 0) or (tonumber(v) or 0)
+            if n ~= 0 then
+                return n
+            end
+        end
+    end
+    if type(GetDatabaseItemData) == "function" and MS and MS.FromItemData then
+        local ok, data = pcall(GetDatabaseItemData, seedUid)
+        if ok and type(data) == "table" then
+            local n = FromSpec(MS.FromItemData(data))
+            if n ~= 0 then
+                return n
+            end
+        end
+    end
+    return 0
+end
+
 local function PlantLooksLikeByproduct(plantUid, plantData)
     plantUid = tonumber(plantUid) or 0
     if type(plantData) == "table" and SM.IsHarvestByproduct(plantData) then
@@ -361,11 +414,9 @@ local function StampPlantEffectFromSeedLink(seedUid, plantUid, plantData)
         return 0
     end
     local effectId = SM.ResolveSeedEffectId(seedUid)
-    if effectId <= 0 then
-        return 0
-    end
+    -- Only EFFECT transfers seed→plant (cult Super-Crit / Fail Chance stay on seeds).
     if StockPiler3.Items and StockPiler3.Items.StampPlantEffectFromSeed then
-        StockPiler3.Items.StampPlantEffectFromSeed(plantUid, effectId, plantData)
+        StockPiler3.Items.StampPlantEffectFromSeed(plantUid, effectId, plantData, seedUid)
     end
     return effectId
 end
@@ -966,6 +1017,19 @@ function SM.ResolveSeedUidForPlant(plantUid, plantSpec)
     if bestUid > 0 and bestScore >= 10000 then
         -- Exact name (100000+) or same skillReq (10000+). Reject genus-only guesses.
         return bestUid
+    end
+    -- Explicit refine/grow link wins when the seed is not in bags (score cannot
+    -- verify name/skill). Without this, GrowReserve still falls back to
+    -- GetSeedUidsForPlant[1] while CollectAutoGrowSeedLines leaves seedUid=0 —
+    -- brew craftable=0 with no seed-buffer plant job (Rejuvenating/Fusk stall).
+    if refineSeed > 0 then
+        return refineSeed
+    end
+    if type(linked) == "table" then
+        local first = tonumber(linked[1]) or 0
+        if first > 0 then
+            return first
+        end
     end
     -- Do not fall back to PickBestSeedUid (prefers Eternal/L1 in bags).
     return 0
@@ -1961,9 +2025,8 @@ function SM.ItemLooksLikeRefinablePlant(itemData)
 end
 
 ----------------------------------------------------------------
--- Migrate: stamp plant effectId from known seed links
--- V1 one-shot; V2 retries plants still missing EFFECT (e.g. resist
--- families whose description patterns landed after V1).
+-- Migrate: stamp plant effectId from known seed links (one-shot).
+-- Only EFFECT transfers seed→plant (never cult SPECIAL_CHANCE).
 ----------------------------------------------------------------
 
 function SM.MigratePlantEffectsFromSeeds()
@@ -1971,8 +2034,7 @@ function SM.MigratePlantEffectsFromSeeds()
     if type(acct) ~= "table" then
         return 0
     end
-    local forceRetry = acct.plantEffectFromSeedMigrateV2 ~= true
-    if acct.plantEffectFromSeedMigrateV1 == true and not forceRetry then
+    if acct.plantEffectFromSeedMigrateV2 == true then
         return 0
     end
     -- plantUid -> { seedUid, samples }
@@ -2042,7 +2104,7 @@ function SM.MigratePlantEffectsFromSeeds()
                     existing = tonumber(row.bonuses[6]) or 0
                 end
                 if existing <= 0 then
-                    if Items.StampPlantEffectFromSeed(plantUid, effectId, BagSample(plantUid)) then
+                    if Items.StampPlantEffectFromSeed(plantUid, effectId, BagSample(plantUid), seedUid) then
                         changed = changed + 1
                     end
                 end
@@ -2050,7 +2112,6 @@ function SM.MigratePlantEffectsFromSeeds()
         end
     end
 
-    acct.plantEffectFromSeedMigrateV1 = true
     acct.plantEffectFromSeedMigrateV2 = true
     if changed > 0 and StockPiler3.Knowledge and StockPiler3.Knowledge.Touch then
         StockPiler3.Knowledge.Touch("plant-effect-seed")

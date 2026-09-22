@@ -175,8 +175,10 @@ local function MatchesEffectFilter(effectKey, filter)
     return effectKey == filter
 end
 
-local function PassesFilters(row, nameFilter, effectFilter, hideSkillUp)
-    if hideSkillUp == true and row.skillUpOrigin == true and row.watched ~= true then
+local function PassesFilters(row, nameFilter, effectFilter)
+    -- Legacy defense: SkillUp Apo no longer learns potions; hide any leftover
+    -- skillUpOrigin rows unless the player watched them.
+    if row.skillUpOrigin == true and row.watched ~= true then
         return false
     end
     if not MatchesNameFilter(row.name, nameFilter)
@@ -344,7 +346,6 @@ local function BuildVisibleList()
     end
     local nameFilter = s.potionNameFilter or ""
     local effectFilter = s.potionEffectFilter or ""
-    local hideSkillUp = s.potionHideSkillUp ~= false
     local rows = {}
 
     if StockPiler3.Inventory and StockPiler3.Inventory.RefreshAllIfNeeded then
@@ -475,7 +476,7 @@ local function BuildVisibleList()
             potionBase
         )
         row.hasRecipe = row.recipeData ~= nil
-        if PassesFilters(row, nameFilter, effectFilter, hideSkillUp) then
+        if PassesFilters(row, nameFilter, effectFilter) then
             rows[#rows + 1] = row
         end
     end
@@ -536,16 +537,6 @@ function StockPiler3TabPotions.Initialize()
     local s = GetSettings()
     if DoesWindowExist("SP3TabPotionsSearchBox") then
         TextEditBoxSetText("SP3TabPotionsSearchBox", towstring(s.potionNameFilter or ""))
-    end
-    -- Hide Skill up potions (default on). Reuse former known-recipe checkbox.
-    if DoesWindowExist("SP3TabPotionsFilterKnownRecipe") then
-        WindowSetShowing("SP3TabPotionsFilterKnownRecipe", true)
-        ButtonSetCheckButtonFlag("SP3TabPotionsFilterKnownRecipe", true)
-        ButtonSetPressedFlag("SP3TabPotionsFilterKnownRecipe", s.potionHideSkillUp ~= false)
-    end
-    if DoesWindowExist("SP3TabPotionsFilterKnownRecipeLabel") then
-        WindowSetShowing("SP3TabPotionsFilterKnownRecipeLabel", true)
-        LabelSetText("SP3TabPotionsFilterKnownRecipeLabel", T("potions.hide_skillup"))
     end
     InitEffectCombo()
     UpdateSortHeaders()
@@ -620,19 +611,6 @@ function StockPiler3TabPotions.UpdateRows()
             end
         end
     end
-end
-
-function StockPiler3TabPotions.OnToggleKnownRecipeFilter()
-    local s = GetSettings()
-    if type(s) ~= "table" then
-        return
-    end
-    local on = true
-    if DoesWindowExist("SP3TabPotionsFilterKnownRecipe") then
-        on = ButtonGetPressedFlag("SP3TabPotionsFilterKnownRecipe") == true
-    end
-    s.potionHideSkillUp = on
-    StockPiler3TabPotions.Refresh()
 end
 
 function StockPiler3TabPotions.OnSearchChanged()

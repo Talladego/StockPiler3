@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ModuleFile xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    <UiMod name="StockPiler3" version="0.3.186" date="2026-09-22">
+    <UiMod name="StockPiler3" version="0.3.209" date="2026-09-23">
         <Author name="Talladego" email="" />
         <Description text="StockPiler3 - lean cult/apo stock automation. Parallel-safe with StockPiler / StockPiler2." />
         <VersionSettings gameVersion="1.4.8" windowsVersion="1.0" savedVariablesVersion="1.0" />
@@ -62,6 +62,7 @@
             <File name="Source/View/HarvestTooltip.lua" />
             <File name="Source/View/BrewChrome.lua" />
             <File name="Source/View/BrewTooltip.lua" />
+            <File name="Source/View/CraftTooltip.lua" />
             <File name="Source/View/Catalog.lua" />
             <File name="Source/View/ViewList.lua" />
             <File name="Source/View/RecipeTooltip.lua" />

@@ -310,8 +310,14 @@ function Orch._TickBody()
         end
         local canPlant = Grow and Grow.HasEmptyPlot and Grow.HasEmptyPlot() == true
         local hasSeeds = false
-        if canPlant and not usRefine and Grow and Grow.HasSeedsForNextPlant then
-            hasSeeds = Grow.HasSeedsForNextPlant() == true
+        if usRefine then
+            -- Cheap probe clear; do not run PickPlantCandidate while refine-first.
+            if Grow and Grow.MarkPlantJobProbed then
+                Grow.MarkPlantJobProbed(nil)
+            end
+        elseif canPlant and Grow and Grow.GetPlantJob then
+            local job = Grow.GetPlantJob()
+            hasSeeds = type(job) == "table" and (tonumber(job.seedUid) or 0) > 0
         end
         if canPlant or bufferRefine or refineForced or usRefine then
             if Sch and Sch.SetAutoGrowIdle then
@@ -416,8 +422,7 @@ function Orch._TickBody()
 
     local Grow = StockPiler3.Grow
     local canPlant = Grow and Grow.HasEmptyPlot and Grow.HasEmptyPlot() == true
-    -- Upgrade Seed refine-first: skip HasSeedsForNextPlant demand build, but still
-    -- clear plant-queue dirty via GetPlantJob (NeedsRefineFirst short-circuits to nil).
+    -- Upgrade Seed refine-first: skip demand pick, clear plant-probe via MarkPlantJobProbed.
     -- Leaving dirty made ShouldAllowRefineNow return plant-probe-pending and block
     -- refine for ~50s after harvest (idle 5s ticks until a dump probed the queue).
     local usRefineFirst = false
@@ -429,13 +434,17 @@ function Orch._TickBody()
         if StockPiler3.Refine and StockPiler3.Refine.MarkRefineDue then
             StockPiler3.Refine.MarkRefineDue("upgrade-seed")
         end
-        if Grow and Grow.GetPlantJob then
+        if Grow and Grow.MarkPlantJobProbed then
+            Grow.MarkPlantJobProbed(nil)
+        elseif Grow and Grow.GetPlantJob then
             Grow.GetPlantJob()
         end
     end
+    -- One plant-queue probe per tick (nil-cache makes idle re-entry O(1)).
     local hasSeeds = false
-    if canPlant and not usRefineFirst and Grow and Grow.HasSeedsForNextPlant then
-        hasSeeds = Grow.HasSeedsForNextPlant() == true
+    if canPlant and not usRefineFirst and Grow and Grow.GetPlantJob then
+        local job = Grow.GetPlantJob()
+        hasSeeds = type(job) == "table" and (tonumber(job.seedUid) or 0) > 0
     end
     local needAdditives = Grow and Grow.NeedsCurrentStageAdditive
         and Grow.NeedsCurrentStageAdditive() == true
@@ -542,11 +551,12 @@ function Orch._TickBody()
             EndTick()
             return
         end
-        -- After failed refine, re-probe seeds and plant same tick
+        -- After failed refine, re-probe once and plant same tick (IssuePlantOne hits cache).
         if canPlant and Grow and Grow.MarkPlantJobDirty then
             Grow.MarkPlantJobDirty("refine-miss")
-            if Grow.HasSeedsForNextPlant then
-                hasSeeds = Grow.HasSeedsForNextPlant() == true
+            if Grow.GetPlantJob then
+                local job = Grow.GetPlantJob()
+                hasSeeds = type(job) == "table" and (tonumber(job.seedUid) or 0) > 0
             end
         end
         if canPlant and hasSeeds and not holdHarvestBatch then

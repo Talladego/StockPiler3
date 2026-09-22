@@ -284,6 +284,35 @@ local function PlantBonusValue(bonuses, ref)
     return tonumber(v) or 0
 end
 
+--- Apo plant craftingBonus map. isApo when family=Apothecary or TYPE slot present.
+local function PlantApoCraftingBonusMap(itemData)
+    local map = {}
+    local isApo = false
+    if type(itemData) ~= "table" or type(itemData.craftingBonus) ~= "table" then
+        return map, false
+    end
+    local apoFamily = (GameData and GameData.TradeSkills and GameData.TradeSkills.APOTHECARY) or 4
+    for _, bonus in pairs(itemData.craftingBonus) do
+        if type(bonus) == "table" then
+            local ref = tonumber(bonus.bonusReference) or 0
+            local val = tonumber(bonus.bonusValue) or 0
+            if val > 32767 then
+                val = val - 65536
+            end
+            if ref > 0 then
+                map[ref] = val
+            end
+            if ref == 5 and val == apoFamily then
+                isApo = true
+            end
+            if ref == 8 and val > 0 then
+                isApo = true
+            end
+        end
+    end
+    return map, isApo
+end
+
 --- Prefer non-zero craft fingerprint fields from learned Account.items over thin bag shells.
 local function MergePlantSpec(preferred, fallback)
     if type(preferred) ~= "table" then
@@ -521,6 +550,36 @@ function Catalog.ListPlantEntries()
                 end
             end
         end
+        -- Refine/grow can leave nameless uid stubs; try the item DB once.
+        local needDb = type(itemData) ~= "table"
+            or itemData.name == nil
+            or itemData.name == L""
+            or (tonumber(itemData.iconNum) or 0) <= 0
+        if needDb and type(GetDatabaseItemData) == "function" then
+            local ok, db = pcall(GetDatabaseItemData, plantUid)
+            if ok and type(db) == "table" then
+                if Items and Items.StoreItem then
+                    Items.StoreItem(db, "plant")
+                    item = Items.GetByUid and Items.GetByUid(plantUid) or item
+                    if Items.AsItemData then
+                        itemData = Items.AsItemData(plantUid) or itemData
+                    end
+                end
+                if type(itemData) ~= "table" then
+                    itemData = db
+                else
+                    if (itemData.name == nil or itemData.name == L"") and db.name ~= nil then
+                        itemData.name = db.name
+                    end
+                    if (tonumber(itemData.iconNum) or 0) <= 0 and (tonumber(db.iconNum) or 0) > 0 then
+                        itemData.iconNum = db.iconNum
+                    end
+                    if not ItemDataHasCraftBonuses(itemData) and ItemDataHasCraftBonuses(db) then
+                        itemData.craftingBonus = db.craftingBonus
+                    end
+                end
+            end
+        end
         if type(itemData) == "table" and Inv and Inv.ResolvePotionItemData then
             itemData = Inv.ResolvePotionItemData(nil, plantUid, itemData) or itemData
         end
@@ -528,8 +587,24 @@ function Catalog.ListPlantEntries()
         if MS and MS.FromItemData and type(itemData) == "table" then
             liveSpec = MS.FromItemData(itemData)
         end
+        if type(learnedSpec) ~= "table" and Items and Items.ToSpec then
+            learnedSpec = Items.ToSpec(plantUid)
+        end
         local spec = MergePlantSpec(learnedSpec, liveSpec)
         if type(spec) ~= "table" then
+            return
+        end
+        -- Ghost refine stubs (uid only, never bag/DB name) stay off the Plants tab.
+        local dispName = (item and item.name) or (itemData and itemData.name) or (spec and spec.name)
+        if dispName == nil or dispName == L"" then
+            return
+        end
+        if type(dispName) == "wstring" and type(WStringToString) == "function" then
+            local narrow = WStringToString(dispName) or ""
+            if narrow == "" or narrow == tostring(plantUid) then
+                return
+            end
+        elseif tostring(dispName) == tostring(plantUid) then
             return
         end
         if SM and SM.IsHarvestByproduct and SM.IsHarvestByproduct(spec) == true then
@@ -618,6 +693,46 @@ function Catalog.ListPlantEntries()
                 end
             end
         end
+        -- Live/DB apo plant craftingBonus is SoT for brew stats. Never use seed
+        -- SPECIAL_CHANCE (cultivation Super-Crit / Fail Chance are unrelated).
+        local liveMap, liveIsApo = PlantApoCraftingBonusMap(itemData)
+        if liveIsApo then
+            if liveMap[2] ~= nil then
+                power = liveMap[2]
+            end
+            if liveMap[1] ~= nil then
+                stability = liveMap[1]
+            end
+            if liveMap[3] ~= nil then
+                duration = liveMap[3]
+            end
+            if liveMap[4] ~= nil then
+                multiplier = liveMap[4]
+            end
+            -- Absent SPECIAL_CHANCE on apo plant => 0 (stabilizers have Mult instead).
+            superCrit = liveMap[14] or 0
+        elseif multiplier == 0 and type(itemData) == "table"
+            and type(itemData.craftingBonus) == "table"
+        then
+            -- Non-apo fingerprints: may fill Mult gaps only. Never take SPECIAL_CHANCE
+            -- here (could be cultivation seed Super-Crit).
+            for _, bonus in pairs(itemData.craftingBonus) do
+                if type(bonus) == "table" then
+                    local ref = tonumber(bonus.bonusReference) or 0
+                    local val = tonumber(bonus.bonusValue) or 0
+                    if val > 32767 then
+                        val = val - 65536
+                    end
+                    if ref == 4 then
+                        multiplier = val
+                    end
+                end
+            end
+        end
+        local role = tostring(spec.role or "")
+        if role == "stabilizer" or role == "goldweed" then
+            superCrit = 0
+        end
         local apoLevel = tonumber(spec.skillLevel) or tonumber(spec.craftingSkillRequirement)
             or tonumber(item and item.skillLevel) or tonumber(item and item.skillReq)
             or tonumber(itemData and itemData.craftingSkillRequirement)
@@ -627,6 +742,9 @@ function Catalog.ListPlantEntries()
         end
         if apoLevel <= 0 then
             apoLevel = PlantBonusValue(bonuses, (B and B.CRAFTING_SKILL) or 9) or 0
+        end
+        if liveIsApo and liveMap[9] ~= nil then
+            apoLevel = liveMap[9]
         end
         -- Prefer stamped learned effectId (from seed at harvest) over description matching.
         local effectId = 0
@@ -652,8 +770,8 @@ function Catalog.ListPlantEntries()
         -- Live fallback: seed map link -> seed EFFECT (before recipe / description).
         if (not effectKey or effectKey == "") and SM and SM.ResolveSeedEffectId then
             local seedUids = SM.GetSeedUidsForPlant and SM.GetSeedUidsForPlant(plantUid) or nil
-            local bestSeed = 0
-            if SM.PickBestSeedUid and type(seedUids) == "table" then
+            local bestSeed = seedUid
+            if bestSeed <= 0 and SM.PickBestSeedUid and type(seedUids) == "table" then
                 bestSeed = tonumber(SM.PickBestSeedUid(plantUid, seedUids)) or 0
             end
             if bestSeed <= 0 and type(seedUids) == "table" and #seedUids > 0 then
@@ -696,6 +814,17 @@ function Catalog.ListPlantEntries()
             effectKey = StockPiler3.Classify.GetEffectKey(itemData)
             if type(effectKey) == "string" and effectKey ~= "" and RS and RS.NormalizeEffectKeyForUi then
                 effectKey = RS.NormalizeEffectKeyForUi(effectKey) or effectKey
+            end
+        end
+        -- Non-main plants have no apo EFFECT id; show stabilizer/extender/multiplier.
+        if (not effectKey or effectKey == "") then
+            local role = tostring(spec.role or "")
+            if role == "stabilizer" or role == "goldweed" then
+                effectKey = "stabilizer"
+            elseif role == "extender" then
+                effectKey = "extender"
+            elseif role == "multiplier" or role == "stimulant" then
+                effectKey = "multiplier"
             end
         end
         local have = 0

@@ -32,7 +32,7 @@
 --   Never hard-stall on "upgrade plant exists" when that plant cannot
 --   actually refine (fall through to same-tier refine / plant / AutoBuy).
 --   SkillUp crafts are not recorded as known potions (BrewLearn skips
---   session.skillUp learns). Hide Skill up still filters any legacy rows.
+--   session.skillUp learns). Legacy skillUpOrigin rows stay hidden in Potions.
 --   Cult AutoGrow assists at Apo tier even at Cult 200 / Cult SkillUp off.
 ----------------------------------------------------------------
 

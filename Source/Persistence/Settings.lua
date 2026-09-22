@@ -39,6 +39,7 @@ local ACCOUNT_ALLOWED = {
     recipeFingerprintMigrateV2 = true,
     recipeFingerprintMigrateV3 = true,
     recipeFingerprintMigrateV4 = true,
+    plantEffectFromSeedMigrateV2 = true,
 }
 for i = 1, #ACCOUNT_TABLES do
     ACCOUNT_ALLOWED[ACCOUNT_TABLES[i]] = true
@@ -83,7 +84,6 @@ StockPiler3.DefaultSettings = {
     potionEffectFilter = "",
     potionSortColumn = "name",
     potionSortAscending = true,
-    potionHideSkillUp = true,
 }
 
 StockPiler3.DefaultCharacterSettings = {
@@ -201,9 +201,6 @@ function P.EnsureSettings()
     if s.potionSortAscending == nil then
         s.potionSortAscending = true
     end
-    if s.potionHideSkillUp == nil then
-        s.potionHideSkillUp = true
-    end
     if s.selectedTab == nil then
         s.selectedTab = 1
     end
@@ -213,6 +210,10 @@ function P.EnsureSettings()
     -- Explicitly drop known-filter if somehow present in old SV.
     if s.potionKnownRecipeOnly ~= nil then
         s.potionKnownRecipeOnly = nil
+    end
+    -- Removed UI: SkillUp Apo no longer learns potions.
+    if s.potionHideSkillUp ~= nil then
+        s.potionHideSkillUp = nil
     end
     if s.perfEnabled ~= nil then
         s.perfEnabled = nil

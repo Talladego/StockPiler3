@@ -14,6 +14,8 @@ Classify.EFFECT_KEYS = {
     "hyaccrcrit", "hywoumelee", "hywoucrit", "hywoumcrit", "hywourcrit",
     "hywouheal", "hywoustr", "hyresist", "hywouarmpen", "hywouinit",
     "hytounocrit", "hyhpregencritdmg", "hywsarmpen",
+    -- Non-main plant roles (Plants tab Effect column / filter).
+    "stabilizer", "extender", "multiplier",
 }
 
 local EFFECT_SHORT = {
@@ -49,6 +51,9 @@ local EFFECT_SHORT = {
     hyhpregencritdmg = "Regen+CritD",
     hywsarmpen = "WS+APen",
     hywsnocrit = "WS-Crit",
+    stabilizer = "Stab",
+    extender = "Ext",
+    multiplier = "Mult",
 }
 
 -- Memoize short labels (finite key set).
@@ -202,7 +207,21 @@ local function ClassifyFromDescription(description)
     if string.find(descLower, "increases", 1, true)
         or string.find(descLower, "create", 1, true)
         or string.find(descLower, "used to", 1, true)
+        or string.find(descLower, "grows into", 1, true)
     then
+        -- Non-main plant / seed text before stat mains.
+        if string.find(descLower, "stabiliz", 1, true) or string.find(descLower, "stability", 1, true) then
+            return "stabilizer"
+        end
+        if string.find(descLower, "extend", 1, true) or string.find(descLower, "duration", 1, true) then
+            return "extender"
+        end
+        if string.find(descLower, "number of", 1, true)
+            or string.find(descLower, "concoction", 1, true)
+            or string.find(descLower, "multiplier", 1, true)
+        then
+            return "multiplier"
+        end
         -- Willpower before strength/"power": "willpower potions" contains "power potion".
         if string.find(descLower, "willpower", 1, true) then return "wp" end
         if string.find(descLower, "intelligence", 1, true) then return "int" end

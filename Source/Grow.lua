@@ -33,6 +33,7 @@ Grow._fillBlocked = false
 Grow._plantWaitTicks = 0
 Grow._plantQueueDirty = true
 Grow._cachedPlantJob = nil
+Grow._plantJobProbed = false
 Grow._plantQuietUntil = 0
 Grow._lastHarvestForceAt = 0
 Grow._harvestOpLockUntil = 0
@@ -302,7 +303,7 @@ local function BufferCredit(seedUid)
         end
     end
     local bag = OpaqueSeedCredit(seedUid, LiveSeedBag(seedUid))
-    local ground = CountInGroundSeeds(seedUid)
+    local ground = CountSeedPlotCredit(seedUid)
     local outstanding = 0
     local RP = StockPiler3.RefinePipeline
     if RP and RP.GetOutstanding then
@@ -659,10 +660,14 @@ local function PickSurplusCandidate(lines)
     return best
 end
 
---- After all enabled potion watches are stocked: grow raw plant floors.
+--- Soft gate: plant floors while potions only need buy/brew; block while they need Cult grow.
 local function PickPlantStockCandidate(SM)
     local Watch = StockPiler3.Watch
-    if not (Watch and Watch.AllEnabledPotionWatchesStocked
+    if Watch and Watch.EnabledPotionWatchesNeedCultGrow then
+        if Watch.EnabledPotionWatchesNeedCultGrow() == true then
+            return nil
+        end
+    elseif not (Watch and Watch.AllEnabledPotionWatchesStocked
         and Watch.AllEnabledPotionWatchesStocked() == true)
     then
         return nil
@@ -1043,6 +1048,11 @@ function Grow.InvalidatePlantQueue(opts)
     opts = type(opts) == "table" and opts or {}
     Grow._plantQueueDirty = true
     Grow._cachedPlantJob = nil
+    Grow._plantJobProbed = false
+    local US = StockPiler3.UpgradeSeed
+    if US and US.InvalidateUpgradeTargetsCache then
+        US.InvalidateUpgradeTargetsCache()
+    end
     if opts.force == true then
         Grow._seedCommitted = {}
         Grow._wavePlantedBySeed = {}
@@ -1054,6 +1064,18 @@ end
 
 function Grow.MarkPlantJobDirty(reason)
     Grow.InvalidatePlantQueue({ reason = reason })
+end
+
+--- Record a plant-queue probe result without re-running PickPlantCandidate.
+--- Used by Orchestrator refine-first to clear plant-probe-pending cheaply.
+function Grow.MarkPlantJobProbed(job)
+    if type(job) == "table" then
+        Grow._cachedPlantJob = job
+    else
+        Grow._cachedPlantJob = nil
+    end
+    Grow._plantJobProbed = true
+    Grow._plantQueueDirty = false
 end
 
 ----------------------------------------------------------------
@@ -1622,24 +1644,10 @@ function Grow.PickPlantCandidate()
             LogPlantPick(best)
             return done(best)
         end
-        if focusGap > 0 then
-            local SkillUpGate = StockPiler3.SkillUp
-            if not (SkillUpGate and SkillUpGate.WatchesAllowIdleSkillUp
-                and SkillUpGate.WatchesAllowIdleSkillUp() == true)
-            then
-                return done(nil)
-            end
-            -- All short watches progress-blocked: fall through to SkillUp.
-        end
+        -- focusGap > 0 with no buffer job: do NOT idle here. plant_stock is soft-gated
+        -- (buy/brew shorts do not block); SkillUp remains gated by ShouldCultPlant.
     elseif #watches > 0 then
-        -- Watches still short, buffer off, no plantable job - do not SkillUp yet
-        -- unless every short watch is progress-blocked.
-        local SkillUpGate = StockPiler3.SkillUp
-        if not (SkillUpGate and SkillUpGate.WatchesAllowIdleSkillUp
-            and SkillUpGate.WatchesAllowIdleSkillUp() == true)
-        then
-            return done(nil)
-        end
+        -- Buffer off, watches still short: same fall-through to plant_stock / SkillUp.
     end
 
     local best = PickPlantStockCandidate(SM)
@@ -1674,12 +1682,13 @@ function Grow.PickPlantCandidate()
 end
 
 function Grow.GetPlantJob()
-    if Grow._plantQueueDirty ~= true and type(Grow._cachedPlantJob) == "table" then
+    -- Cache hits for both a real job and a probed nil (no plantable work).
+    -- Without nil-cache, idle AutoGrow ticks re-ran PickPlantCandidate every 5s.
+    if Grow._plantQueueDirty ~= true and Grow._plantJobProbed == true then
         return Grow._cachedPlantJob
     end
     local job = Grow.PickPlantCandidate()
-    Grow._cachedPlantJob = job
-    Grow._plantQueueDirty = false
+    Grow.MarkPlantJobProbed(job)
     return job
 end
 
@@ -1690,6 +1699,9 @@ function Grow.PeekSeedsForNextPlant()
     local job = Grow._cachedPlantJob
     if type(job) == "table" and (tonumber(job.seedUid) or 0) > 0 then
         return true, job
+    end
+    if Grow._plantJobProbed == true and Grow._cachedPlantJob == nil then
+        return false, "none"
     end
     if Grow._plantQueueDirty ~= true and Grow._cachedPlantJob == nil then
         return false, "none"

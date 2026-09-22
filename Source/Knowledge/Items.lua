@@ -47,13 +47,10 @@ local function BonusesFromCrafting(item)
             end
         end
     end
-    if next(out) ~= nil then
-        return out
-    end
     if type(item.CraftItemInfo) == "table" then
         for ref, vals in pairs(item.CraftItemInfo) do
             local nref = tonumber(ref) or 0
-            if nref > 0 then
+            if nref > 0 and out[nref] == nil then
                 if type(vals) == "table" then
                     out[nref] = SignedBonus(vals[1] or vals)
                 else
@@ -62,15 +59,13 @@ local function BonusesFromCrafting(item)
             end
         end
     end
-    if next(out) ~= nil then
-        return out
-    end
+    -- Fill missing apo refs when bag craftingBonus is cult-only (common on seeds).
     if type(CraftItemInfo) == "table" and type(CraftItemInfo.GetItemBonuses) == "function" then
         local ok, vData = pcall(CraftItemInfo.GetItemBonuses, item)
         if ok and type(vData) == "table" then
             for ref, vals in pairs(vData) do
                 local nref = tonumber(ref) or 0
-                if nref > 0 then
+                if nref > 0 and out[nref] == nil then
                     if type(vals) == "table" then
                         out[nref] = SignedBonus(vals[1] or vals)
                     else
@@ -286,12 +281,14 @@ function Items.StoreItem(itemData, kindHint)
 end
 
 --- Stamp EFFECT onto a learned plant from its seed (harvest/refine / migrate).
+--- Only EFFECT transfers seed→plant. Cultivation SPECIAL_CHANCE / FAIL_CHANCE on
+--- seeds must never be copied (different meaning than apo Super-Crit on plants).
 --- Does not overwrite a different existing non-zero effectId. Clears incomplete
 --- only when the row already has a usable main fingerprint (pwr/stab/slot).
-function Items.StampPlantEffectFromSeed(plantUid, effectId, plantSample)
+function Items.StampPlantEffectFromSeed(plantUid, effectId, plantSample, _seedUid)
     plantUid = tonumber(plantUid) or 0
     effectId = tonumber(effectId) or 0
-    if plantUid <= 0 or effectId <= 0 then
+    if plantUid <= 0 then
         return false
     end
     if type(plantSample) == "table" then
@@ -304,33 +301,41 @@ function Items.StampPlantEffectFromSeed(plantUid, effectId, plantSample)
     local key = tostring(plantUid)
     local row = store[key]
     if type(row) ~= "table" then
+        if effectId <= 0 then
+            return false
+        end
         row = { uniqueID = plantUid, kind = "plant", incomplete = true }
         store[key] = row
     end
-    local existing = tonumber(row.effectId) or 0
-    if existing <= 0 and type(row.bonuses) == "table" then
-        existing = tonumber(row.bonuses[6]) or 0
-    end
-    if existing > 0 and existing ~= effectId then
-        return false
-    end
-    local changed = existing ~= effectId
-    row.effectId = effectId
-    if type(row.bonuses) ~= "table" then
-        row.bonuses = {}
-        changed = true
-    end
-    if tonumber(row.bonuses[6]) ~= effectId then
-        row.bonuses[6] = effectId
-        changed = true
+    local changed = false
+    if effectId > 0 then
+        local existing = tonumber(row.effectId) or 0
+        if existing <= 0 and type(row.bonuses) == "table" then
+            existing = tonumber(row.bonuses[6]) or 0
+        end
+        if existing > 0 and existing ~= effectId then
+            return false
+        end
+        if existing ~= effectId then
+            changed = true
+        end
+        row.effectId = effectId
+        if type(row.bonuses) ~= "table" then
+            row.bonuses = {}
+            changed = true
+        end
+        if tonumber(row.bonuses[6]) ~= effectId then
+            row.bonuses[6] = effectId
+            changed = true
+        end
     end
     if row.kind == nil or row.kind == "" or row.kind == "mat" then
         row.kind = "plant"
         changed = true
     end
-    local power = tonumber(row.power) or tonumber(row.bonuses[2]) or 0
-    local stab = tonumber(row.stability) or tonumber(row.bonuses[1]) or 0
-    local slot = tonumber(row.slotType) or tonumber(row.bonuses[8]) or 0
+    local power = tonumber(row.power) or tonumber(row.bonuses and row.bonuses[2]) or 0
+    local stab = tonumber(row.stability) or tonumber(row.bonuses and row.bonuses[1]) or 0
+    local slot = tonumber(row.slotType) or tonumber(row.bonuses and row.bonuses[8]) or 0
     local role = tostring(row.role or "")
     if role == "main" and (power ~= 0 or stab ~= 0 or slot > 0) then
         if row.incomplete ~= false then
@@ -338,7 +343,7 @@ function Items.StampPlantEffectFromSeed(plantUid, effectId, plantSample)
             changed = true
         end
     end
-    return changed or existing == effectId
+    return changed or (effectId > 0 and tonumber(row.effectId) == effectId)
 end
 
 --- Learned plant/mat fingerprint (bag AsItemData often lacks craftingBonus).

@@ -267,25 +267,31 @@ local function ParseBonuses(itemData)
             end
         end
     end
-    if next(bonuses) == nil
-        and type(CraftItemInfo) == "table"
+    -- Seeds often ship cult-only craftingBonus (family/level/fail). Fill missing apo
+    -- refs (TYPE / STAB / DURATION / MULTIPLIER / SPECIAL_CHANCE / EFFECT) from the
+    -- engine CraftItemInfo table even when craftingBonus is non-empty.
+    if type(CraftItemInfo) == "table"
         and type(CraftItemInfo.GetItemBonuses) == "function"
     then
         local ok, vData = pcall(CraftItemInfo.GetItemBonuses, itemData)
         if ok and type(vData) == "table" then
             for ref, vals in pairs(vData) do
                 local nref = tonumber(ref) or 0
-                if nref > 0 and type(vals) == "table" then
-                    AddBonusValue(bonuses, nref, vals[1])
+                if nref > 0 and bonuses[nref] == nil then
+                    if type(vals) == "table" then
+                        AddBonusValue(bonuses, nref, vals[1])
+                    else
+                        AddBonusValue(bonuses, nref, vals)
+                    end
                 end
             end
         end
     end
-    -- Flat learned Items.ToSpec / stored bonuses map.
-    if next(bonuses) == nil and type(itemData.bonuses) == "table" then
+    -- Flat learned Items.ToSpec / stored bonuses map (fill gaps only).
+    if type(itemData.bonuses) == "table" then
         for ref, val in pairs(itemData.bonuses) do
             local nref = tonumber(ref) or 0
-            if nref > 0 then
+            if nref > 0 and bonuses[nref] == nil then
                 if type(val) == "table" then
                     AddBonusValue(bonuses, nref, val[1])
                 else

@@ -947,6 +947,41 @@ function Watch.AllEnabledPotionWatchesStocked()
     return true
 end
 
+--- Soft plant_stock gate: true when an enabled potion watch still needs Cultivation
+--- (restocking / seed buffer / seed upgrade). Buy materials and Ready to brew do not count.
+--- Prefer PlanSnapshot status SoT (or an in-build rows table); with no plan, fall back
+--- to the hard stocked gate.
+function Watch.EnabledPotionWatchesNeedCultGrow(rows)
+    local CULT = {
+        restocking = true,
+        need_seeds = true,
+        upgrading_seed = true,
+    }
+    if type(rows) ~= "table" or #rows == 0 then
+        local PS = StockPiler3.PlanSnapshot
+        local plan = PS and PS.Get and PS.Get()
+        rows = plan and plan.rows
+    end
+    if type(rows) == "table" and #rows > 0 then
+        for i = 1, #rows do
+            local row = rows[i]
+            if type(row) == "table"
+                and row.skillUp ~= true
+                and row.kind ~= "plant"
+                and row.isPlantWatch ~= true
+                and (tonumber(row.potionDeficit) or 0) > 0
+            then
+                local key = tostring(row.statusKey or "")
+                if CULT[key] then
+                    return true
+                end
+            end
+        end
+        return false
+    end
+    return Watch.AllEnabledPotionWatchesStocked() ~= true
+end
+
 function Watch.ShouldAutoGrowPlant(plantKey)
     if Watch.IsAutoGrowEnabled() ~= true then
         return false

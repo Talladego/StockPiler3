@@ -151,11 +151,25 @@ local function LiveSeedCount(seedUid)
     return 0
 end
 
+--- Pending plant + established garden rows (seeds in ground are refundable until harvest).
 local function CountInGround(seedUid)
-    if StockPiler3.Grow and StockPiler3.Grow.CountInGroundSeeds then
-        return tonumber(StockPiler3.Grow.CountInGroundSeeds(seedUid)) or 0
+    local Grow = StockPiler3.Grow
+    if Grow and Grow.CountSeedPlotCredit then
+        return tonumber(Grow.CountSeedPlotCredit(seedUid)) or 0
+    end
+    if Grow and Grow.CountInGroundSeeds then
+        return tonumber(Grow.CountInGroundSeeds(seedUid)) or 0
     end
     return 0
+end
+
+--- Buffer-settle refine must wait for grow/harvest: in-ground seeds are not lost yet.
+local function SeedBufferSettleDeferred(seedUid)
+    seedUid = tonumber(seedUid) or 0
+    if seedUid <= 0 then
+        return true
+    end
+    return CountInGround(seedUid) > 0
 end
 
 local function OpaqueCredit(seedUid, bag)
@@ -457,6 +471,10 @@ local function LineConvertiblePending(line)
     if IsSeedBufferOnCooldown(seedUid) then
         return false
     end
+    -- Do not treat as pending settle while this seed is still in plots.
+    if SeedBufferSettleDeferred(seedUid) then
+        return false
+    end
     -- Pending buffer refine = plants waiting to fill a short buffer.
     -- Leftover plants after the buffer is met must not hold auto-brew.
     if not LineBufferShort(line) then
@@ -679,6 +697,17 @@ end
 
 function Refine.GetSeedBudget(seedUid)
     seedUid = tonumber(seedUid) or 0
+    if seedUid <= 0 then
+        return {
+            live = 0,
+            ground = 0,
+            outstanding = 0,
+            credit = 0,
+            headroom = 0,
+            bufferMin = 0,
+            unsettled = true,
+        }
+    end
     local live = OpaqueCredit(seedUid, LiveSeedCount(seedUid))
     local ground = CountInGround(seedUid)
     local outstanding = 0
@@ -700,7 +729,13 @@ function Refine.GetSeedBudget(seedUid)
         credit = credit,
         headroom = headroom,
         bufferMin = buffer,
+        -- True while plots still hold this seed (refundable / outcome unknown).
+        unsettled = ground > 0,
     }
+end
+
+function Refine.SeedBufferSettleDeferred(seedUid)
+    return SeedBufferSettleDeferred(seedUid)
 end
 
 function Refine.GetSeedBudgetForSpec(spec, seedUid)
@@ -954,7 +989,9 @@ function Refine.CollectIntents()
             local line = lines[i]
             local seedUid = tonumber(line.seedUid) or 0
             local key = tostring(line.specKey or seedUid)
-            if seenBuffer[key] ~= true and not IsSeedBufferOnCooldown(seedUid) then
+            if seenBuffer[key] ~= true and seedUid > 0 and not IsSeedBufferOnCooldown(seedUid)
+                and not SeedBufferSettleDeferred(seedUid)
+            then
                 seenBuffer[key] = true
                 local budget = Refine.GetSeedBudget(seedUid)
                 local refinable = CountRefinableForSpec(line.plantUid, line.spec)
@@ -1122,6 +1159,11 @@ function Refine.CanIssue(intent)
     if reason == "seed-buffer" and IsSeedBufferOnCooldown(seedUid) then
         return false, "seed-buffer-cooldown"
     end
+    if (reason == "seed-buffer" or reason == "upgrade-seed-buffer")
+        and SeedBufferSettleDeferred(seedUid)
+    then
+        return false, "seed-buffer-unsettled"
+    end
     if Refine._issuedSeedThisTick ~= nil and seedUid > 0 and Refine._issuedSeedThisTick == seedUid then
         return false, "duplicate-tick"
     end
@@ -1179,8 +1221,14 @@ function Refine.IssueOne(intent, opId)
     -- Clamp to live headroom (not resin-need).
     local bufferOn = StockPiler3.Watch and StockPiler3.Watch.IsSeedBufferEnabled
         and StockPiler3.Watch.IsSeedBufferEnabled() == true
+    if (reason == "seed-buffer" or reason == "upgrade-seed-buffer")
+        and SeedBufferSettleDeferred(seedUid)
+    then
+        return done(false)
+    end
     if seedUid > 0 and reason ~= "resin-need"
-        and (reason == "seed-buffer" or (reason == "plant-need" and bufferOn))
+        and (reason == "seed-buffer" or reason == "upgrade-seed-buffer"
+            or (reason == "plant-need" and bufferOn))
     then
         local budget = Refine.GetSeedBudget(seedUid)
         local headroom = tonumber(budget.headroom) or 0
