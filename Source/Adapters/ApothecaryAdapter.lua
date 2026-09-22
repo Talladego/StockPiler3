@@ -1,5 +1,5 @@
 ----------------------------------------------------------------
--- StockPiler3 Adapters/ApothecaryAdapter — open/load/perform/close
+-- StockPiler3 Adapters/ApothecaryAdapter - open/load/perform/close
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}

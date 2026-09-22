@@ -1,5 +1,5 @@
 ----------------------------------------------------------------
--- StockPiler3 Adapters/VendorAdapter — NPC store + AutoBuy match index
+-- StockPiler3 Adapters/VendorAdapter - NPC store + AutoBuy match index
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
@@ -20,8 +20,8 @@ local function TryCall(context, fn, ...)
     return StockPiler3.Util.TryCall(context, fn, ...)
 end
 
---- Persist new store rows only (Touch once per new uid batch — no per-page spam).
---- Only Cultivation / Apothecary craft mats — never mounts, dyes, junk.
+--- Persist new store rows only (Touch once per new uid batch - no per-page spam).
+--- Only Cultivation / Apothecary craft mats - never mounts, dyes, junk.
 local function ApothecarySkillId()
     local Caps = StockPiler3.TradeSkillCaps
     if Caps and Caps.ApothecaryId then

@@ -1,12 +1,12 @@
 ----------------------------------------------------------------
--- StockPiler3 Knowledge/MaterialSpec — role fingerprints for bag/vendor/brew
+-- StockPiler3 Knowledge/MaterialSpec - role fingerprints for bag/vendor/brew
 -- Match by craft stats (not exact uid/name). Containers share skill+slot
 -- (Fabricated vs normal vials). Incomplete mains stay boundUid-only.
 --
 -- Potions-tab columns (Lvl/Effect/Pwr/Stab/Mult/SCrit) mirror the stats we
 -- sum for recipe identity. SCrit = SPECIAL_CHANCE (Super-Critical): may later
--- be omitted from Matches/Key — it yields a higher-tier potion uid (e.g. Potent
--- …) that is a separate watch target, so it does not advance the stocked line.
+-- be omitted from Matches/Key - it yields a higher-tier potion uid (e.g. Potent
+-- ...) that is a separate watch target, so it does not advance the stocked line.
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
@@ -24,7 +24,7 @@ local function CultivationTypes()
     return { NONE = 0, SEED = 1, SOIL = 2, WATERCAN = 3, NUTRIENT = 4, SPORE = 5 }
 end
 
---- Soil / Water / Nutrient plot additives — never apo recipe mats.
+--- Soil / Water / Nutrient plot additives - never apo recipe mats.
 local function CultivationTypeIsAdditive(cultType)
     cultType = tonumber(cultType) or 0
     if cultType <= 0 then
@@ -68,7 +68,7 @@ local function CultivationSkill()
     return (GameData and GameData.TradeSkills and GameData.TradeSkills.CULTIVATION) or 3
 end
 
--- Built-in apothecary effect id → StockPiler key (and CVT-compatible aliases).
+-- Built-in apothecary effect id -> StockPiler key (and CVT-compatible aliases).
 local EFFECT_ID_TO_KEY = {
     [1] = "heal",
     [2] = "hot",
@@ -125,7 +125,7 @@ local EFFECT_ID_TO_KEY = {
     [1110] = "movespeed",
 }
 
--- Reverse lookup: StockPiler keys + legacy CVT names → effect id.
+-- Reverse lookup: StockPiler keys + legacy CVT names -> effect id.
 local EFFECT_KEY_TO_ID = {
     heal = 1,
     regen = 2,
@@ -448,7 +448,7 @@ local function LookupItemDescription(itemData)
     return nil
 end
 
---- Main-ingredient EFFECT: craftingBonus → CraftItemInfo → item description.
+--- Main-ingredient EFFECT: craftingBonus -> CraftItemInfo -> item description.
 local function ResolveMainEffectId(itemData, bonuses)
     local B = CraftBonusRefs()
     local effectId = FirstBonus(bonuses, B.EFFECT)
@@ -852,8 +852,8 @@ function MS.Matches(itemData, spec)
         end
         -- Potions-tab Mult + SCrit (SPECIAL_CHANCE / Super-Critical).
         -- Squig Bits vs Majestic Fusk share +16 mult but differ on SCrit.
-        -- Future: may drop SPECIAL_CHANCE from matching — Super-Critical only
-        -- produces a different potion uid (Potent …), not progress on the
+        -- Future: may drop SPECIAL_CHANCE from matching - Super-Critical only
+        -- produces a different potion uid (Potent ...), not progress on the
         -- watched stock target. Treat like DESTROY_ON_FAIL if that lands.
         if role == "multiplier"
             and not BonusMatch(otherBonuses, specBonuses, B.SPECIAL_CHANCE)
@@ -945,7 +945,7 @@ function MS.ProductKey(specOrItem, roleHint)
     return MS.Key(product)
 end
 
---- Stat-equivalent match across uid variants and cultivation→apo product forms.
+--- Stat-equivalent match across uid variants and cultivation->apo product forms.
 function MS.ProductMatches(itemData, spec)
     if type(itemData) ~= "table" or type(spec) ~= "table" then
         return false

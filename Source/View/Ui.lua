@@ -117,7 +117,8 @@ local function IsWatchPlanStale()
     return tostring(plan.cacheKey or "") ~= tostring(wantKey or "")
 end
 
---- Hold Watch paint during harvest storm, refine outstanding, buffer refine, or AutoBuy visit.
+--- Hold Watch paint during harvest storm, refine outstanding, buffer refine,
+--- AutoBuy visit, FrameWork prewarm, or session settle.
 local function ShouldDeferWatchFlush()
     local Sch = StockPiler3.Scheduler
     if Sch and Sch.SkipUiThisFrameActive and Sch.SkipUiThisFrameActive() == true then
@@ -126,10 +127,23 @@ local function ShouldDeferWatchFlush()
     if Sch and Sch._skipUiThisFrame == true then
         return true
     end
+    if Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true then
+        return true
+    end
     if Sch and Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
         return true
     end
     if Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+        return true
+    end
+    if Sch and Sch.IsPlanRebuildPending and Sch.IsPlanRebuildPending() == true then
+        return true
+    end
+    local FW = StockPiler3.FrameWork
+    if FW and FW.IsPrewarmBusy and FW.IsPrewarmBusy() == true then
+        return true
+    end
+    if FW and FW.Busy and FW.Busy() == true then
         return true
     end
     local RP = StockPiler3.RefinePipeline
@@ -211,6 +225,10 @@ function Ui.FlushWatchUiIfDirty()
     end
     if ShouldDeferWatchFlush() then
         WakeReadyFromLiveStatus()
+        -- While settle/prewarm holds full paint, kill the white ListBox flash.
+        if StockPiler3TabWatch and StockPiler3TabWatch.PrimeRowChrome then
+            StockPiler3TabWatch.PrimeRowChrome()
+        end
         return
     end
 
@@ -350,18 +368,12 @@ function Ui.RegisterEventRefresh()
     if E.KNOWLEDGE_UPDATED then
         track(B.Subscribe(E.KNOWLEDGE_UPDATED, function()
             -- Knowledge can land after an inventory flush already painted Potions.
-            -- Bypass Watch throttle and refresh the active tab (Potions or Watch).
+            -- Bypass Watch throttle for the next coalesced flush - never sync paint
+            -- (WarmHave used to hide inside WatchRows on the same frame as CultivationUpdated).
             Ui._watchUiLastKey = nil
             Ui._watchUiLastKnowledgeGen = 0
             Ui._watchUiFlushedAt = 0
             Ui.MarkWatchUiDirty()
-            if DoesWindowExist("StockPiler3Window")
-                and WindowGetShowing("StockPiler3Window") == true
-                and StockPiler3Window
-                and StockPiler3Window.RefreshActiveTab
-            then
-                StockPiler3Window.RefreshActiveTab()
-            end
         end))
     end
     if E.SESSION_LOADED then
@@ -369,7 +381,9 @@ function Ui.RegisterEventRefresh()
             if StockPiler3TabWatch and StockPiler3TabWatch.RefreshSkillGates then
                 StockPiler3TabWatch.RefreshSkillGates()
             end
-            -- Session load: force refresh so stock/status are not stale until tab flip.
+            -- Session load: mark dirty only. Sync RefreshActiveTab here caused the
+            -- SP2 Flatten hitch (Planner.Build + WarmHave + WatchRows + CultivationUpdated
+            -- x4 on the same frame as Garden.SyncAll / first plan rebuild).
             Ui._watchUiLastKey = nil
             Ui._watchUiLastBrewKey = nil
             Ui._watchUiFlushedAt = 0
@@ -377,13 +391,6 @@ function Ui.RegisterEventRefresh()
             Ui._watchUiLastKnowledgeGen = 0
             Ui.ClearWatchTipCaches()
             Ui.MarkWatchUiDirty()
-            if DoesWindowExist("StockPiler3Window")
-                and WindowGetShowing("StockPiler3Window") == true
-                and StockPiler3Window
-                and StockPiler3Window.RefreshActiveTab
-            then
-                StockPiler3Window.RefreshActiveTab()
-            end
         end))
     end
     Ui._eventsRegistered = true

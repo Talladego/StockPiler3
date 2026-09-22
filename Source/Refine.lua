@@ -11,12 +11,14 @@ Refine.MAX_OUTSTANDING_PER_SEED = 6
 Refine.MAX_PENDING_PER_PLANT = 6
 Refine.SEED_BUFFER_FAIL_COOLDOWN_SEC = 45
 Refine.OUTSTANDING_TTL_SEC = 30
+Refine.EMPTY_INTENT_RETRY_SEC = 5
 
 Refine._refineDirty = false
 Refine._refineDirtyReason = nil
 Refine._refineWaitTicks = 0
 Refine._intentCacheKey = nil
 Refine._intentCache = nil
+Refine._emptyIntentBustAt = 0
 Refine._bufferFlags = nil
 Refine._bufferFlagsKey = nil
 Refine._bufferFlagsStructKey = nil
@@ -183,7 +185,7 @@ local function EnsureBagIndex()
     end
     local index = { entries = {}, byPlantUid = {} }
     if Inv and Inv.ForEachItem then
-        -- Inventory.ForEachItem passes (item [, bagKey, slot]) — not (bagKey, slot, item).
+        -- Inventory.ForEachItem passes (item [, bagKey, slot]) - not (bagKey, slot, item).
         Inv.ForEachItem(function(item, bagKey, slot)
             if ItemLooksRefinable(item) then
                 local plantUid = tonumber(item.uniqueID) or 0
@@ -437,7 +439,7 @@ local function LineBufferShort(line)
         return false
     end
     local seedUid = tonumber(line.seedUid) or 0
-    -- Plant-only lines (seed not resolved yet) cannot measure seed credit — do not
+    -- Plant-only lines (seed not resolved yet) cannot measure seed credit - do not
     -- treat as buffer-short or brew stays blocked forever.
     if seedUid <= 0 then
         return false
@@ -589,7 +591,7 @@ function Refine.PeekCachedBufferPending()
     return flags.pending == true
 end
 
---- O(1) urgent snap invalidate — do not rebuild BufferFlags / HasAnyBufferShort here.
+--- O(1) urgent snap invalidate - do not rebuild BufferFlags / HasAnyBufferShort here.
 function Refine.OnUrgentInventorySnap()
     Refine.InvalidateIntentCache()
     Refine._refineWaitTicks = 0
@@ -717,7 +719,7 @@ function Refine.TrackLiveSeed(seedUid)
     Refine._liveSeedBaseline[seedUid] = LiveSeedCount(seedUid)
 end
 
---- Pick same-tier surplus plant to convert into resin (1:1 plant→seed+resin).
+--- Pick same-tier surplus plant to convert into resin (1:1 plant->seed+resin).
 --- Prefers convert-inflated / same-recipe rows, then any same-skill surplus.
 function Refine.PickPlantForResinConvert(resinSpec, resinDeficit, preferredPotionKeys)
     if type(resinSpec) ~= "table" then
@@ -838,15 +840,35 @@ function Refine.ShouldAllowRefineNow()
             end
         end
         if not plantable and (peekReason == "dirty" or peekReason == "unprobed") then
-            if not (Grow.IsFillBlocked and Grow.IsFillBlocked() == true) then
+            -- Post-harvest / upgrade refine-first often leaves the plant queue dirty
+            -- on purpose (skip demand probe). Do not block refine waiting for a plant
+            -- probe that orch will not run this tick.
+            local allowDirty = Refine._refineDirty == true
+                or tostring(Refine._refineDirtyReason or "") == "harvest"
+            if not allowDirty then
+                local US = StockPiler3.UpgradeSeed
+                if US and US.IsEnabled and US.IsEnabled() == true
+                    and US.NeedsRefineFirst and US.NeedsRefineFirst() == true
+                then
+                    allowDirty = true
+                end
+            end
+            if not allowDirty
+                and not (Grow.IsFillBlocked and Grow.IsFillBlocked() == true)
+            then
                 return false, "plant-probe-pending"
             end
         end
         if plantable then
             local SkillUp = StockPiler3.SkillUp
-            -- SkillUp tier graduation: refine higher plant before replanting lower seeds.
-            if SkillUp and SkillUp.HasUpgradePlant and SkillUp.HasUpgradePlant() == true then
-                return true, "skill-up-upgrade"
+            -- SkillUp: refine higher plant or buffer-fill plants before replanting.
+            if SkillUp and SkillUp.PreferRefineOverPlant
+                and SkillUp.PreferRefineOverPlant() == true
+            then
+                if SkillUp.HasUpgradePlant and SkillUp.HasUpgradePlant() == true then
+                    return true, "skill-up-upgrade"
+                end
+                return true, "skill-up-refine"
             end
             if bufferPending then
                 if plantReason == "potion_stock" or plantReason == "seed_buffer" then
@@ -886,16 +908,26 @@ function Refine.CollectIntents()
     local cacheKey = IntentCacheKey()
     if Refine._intentCacheKey == cacheKey and type(Refine._intentCache) == "table" then
         -- Empty-cache bust when buffer/SkillUp may have gained plants since last miss.
+        -- Rate-limit: unbounded rebuilds here caused ~300-450ms spikes every AutoGrow
+        -- tick while plots grew with a short seed buffer + leftover refinable plants.
         if #Refine._intentCache == 0 then
             local SkillUp = StockPiler3.SkillUp
             local skillUpPending = SkillUp and SkillUp.ShouldCultPlant
                 and SkillUp.ShouldCultPlant() == true
                 and SkillUp.HasRefinablePlants and SkillUp.HasRefinablePlants() == true
-            if Refine.HasPendingBufferRefine() == true
+            local wantBust = Refine.HasPendingBufferRefine() == true
                 or skillUpPending == true
                 or Refine._refineDirtyReason == "harvest"
-            then
-                Refine.InvalidateIntentCache()
+            if wantBust == true then
+                local now = NowSec()
+                local last = tonumber(Refine._emptyIntentBustAt) or 0
+                local gap = tonumber(Refine.EMPTY_INTENT_RETRY_SEC) or 5
+                if (now - last) >= gap then
+                    Refine._emptyIntentBustAt = now
+                    Refine.InvalidateIntentCache()
+                else
+                    return Refine._intentCache
+                end
             else
                 return Refine._intentCache
             end
@@ -1071,6 +1103,9 @@ function Refine.CollectIntents()
 
     Refine._intentCacheKey = cacheKey
     Refine._intentCache = intents
+    if #intents == 0 then
+        Refine._emptyIntentBustAt = NowSec()
+    end
     if Perf and Perf.End then
         Perf.End("CollectIntents")
     end
@@ -1203,15 +1238,26 @@ function Refine.IssueOne(intent, opId)
     if StockPiler3.Grow and StockPiler3.Grow.InvalidatePlantQueue then
         StockPiler3.Grow.InvalidatePlantQueue({ jobOnly = true })
     end
-    if StockPiler3.Scheduler and StockPiler3.Scheduler.EnqueueBagFlush then
-        StockPiler3.Scheduler.EnqueueBagFlush(false)
+    -- Hold plan/UI through refine inventory storms (same Flatten as plant).
+    local Sch = StockPiler3.Scheduler
+    if Sch and Sch.ArmPlantQuiet then
+        Sch.ArmPlantQuiet()
+    end
+    if Sch and Sch.SkipPlanThisFrame then
+        Sch.SkipPlanThisFrame()
+    end
+    if Sch and Sch.SkipUiThisFrame then
+        Sch.SkipUiThisFrame()
+    end
+    if Sch and Sch.EnqueueBagFlush then
+        Sch.EnqueueBagFlush(false)
     end
     Refine.InvalidateIntentCache()
     Refine._refineWaitTicks = (reason == "seed-buffer") and 2 or 5
     Refine._refineDirty = false
     Refine._refineDirtyReason = nil
-    if StockPiler3.Scheduler and StockPiler3.Scheduler.WakeAutoGrow then
-        StockPiler3.Scheduler.WakeAutoGrow()
+    if Sch and Sch.WakeAutoGrow then
+        Sch.WakeAutoGrow()
     end
     return done(true)
 end
@@ -1229,6 +1275,16 @@ function Refine.TryTick(opId)
     end
     ClearOrphanPending()
     local intents = Refine.CollectIntents()
+    if type(intents) ~= "table" or #intents == 0 then
+        -- No actionable refine: back off so grow-wait ticks do not rebuild intents
+        -- every AutoGrow second (LibPerf ~300-450ms CollectIntents spikes).
+        Refine._refineWaitTicks = math.max(tonumber(Refine._refineWaitTicks) or 0, 5)
+        if Refine._refineDirty == true and Refine._refineDirtyReason ~= "harvest" then
+            Refine._refineDirty = false
+            Refine._refineDirtyReason = nil
+        end
+        return false
+    end
     for i = 1, #intents do
         if Refine.IssueOne(intents[i], opId) == true then
             return true

@@ -1,6 +1,6 @@
 ----------------------------------------------------------------
--- StockPiler3 Knowledge/MaterialExceptions — data overrides for
--- engine quirks (false isRefinable, identity bonus ignore, …).
+-- StockPiler3 Knowledge/MaterialExceptions - data overrides for
+-- engine quirks (false isRefinable, identity bonus ignore, ...).
 -- Prefer uid / learned sticky flags; name/desc rules as fallback.
 ----------------------------------------------------------------
 
@@ -54,7 +54,7 @@ function ME.IdentityIgnoreBonusRefs()
     return { [destroy] = true }
 end
 
---- Name fallback only when uid unknown — Squig Bits butcher family.
+--- Name fallback only when uid unknown - Squig Bits butcher family.
 function ME.NameLooksForceNotRefinable(name)
     local n = string.lower(ToNarrow(name))
     if n == "" then
@@ -82,7 +82,7 @@ function ME.DescLooksSpecialApoMain(description)
     return false
 end
 
---- Liniment-ingredient (not hybrid) — used to tag learned potions.
+--- Liniment-ingredient (not hybrid) - used to tag learned potions.
 function ME.DescLooksLinimentIngredient(description)
     local d = string.lower(ToNarrow(description))
     if d == "" then
@@ -253,7 +253,7 @@ function ME.MarkForceNotRefinable(uid, reason)
     end
 end
 
---- True when engine isRefinable must be ignored (not a plant→seed convert).
+--- True when engine isRefinable must be ignored (not a plant->seed convert).
 function ME.IsForceNotRefinable(specOrItem)
     local uid = UidFrom(specOrItem)
     if uid > 0 then

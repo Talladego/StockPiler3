@@ -1,5 +1,5 @@
 ----------------------------------------------------------------
--- StockPiler3 Core/Util — shared micro-helpers (NowSec, ToNarrow, T, TryCall)
+-- StockPiler3 Core/Util - shared micro-helpers (NowSec, ToNarrow, T, TryCall)
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}

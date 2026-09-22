@@ -1,5 +1,5 @@
 ----------------------------------------------------------------
--- StockPiler3 View/ViewList — shared list chrome helpers
+-- StockPiler3 View/ViewList - shared list chrome helpers
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}

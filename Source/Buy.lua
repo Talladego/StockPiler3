@@ -116,7 +116,7 @@ local function IsGrowableStoreItem(item)
     return cult == seed or cult == spore
 end
 
---- Soil / Water / Nutrient — never AutoBuy as recipe mats (same skill tier ≠ match).
+--- Soil / Water / Nutrient - never AutoBuy as recipe mats (same skill tier != match).
 local function IsCultivationAdditiveStoreItem(item)
     if type(item) ~= "table" then
         return false
@@ -193,7 +193,7 @@ local function JobAcquireKey(job, item)
     return nil
 end
 
---- Brass → compact g/s/b (WAR: 1g = 100s = 10000b). Avoids "0g" for sub-gold spends.
+--- Brass -> compact g/s/b (WAR: 1g = 100s = 10000b). Avoids "0g" for sub-gold spends.
 function Buy.FormatMoneyBrass(brass)
     brass = math.max(0, math.floor((tonumber(brass) or 0) + 1e-9))
     local perGold = Buy.BRASS_PER_GOLD or 10000
@@ -272,7 +272,7 @@ local function NoteFillProgress(job, item, bought, unitCost)
     local need = tonumber(row.need) or 0
     local acquired = VisitAcquired(key)
     -- Print when this material's need is filled, or immediately if visit already stopped
-    -- (pending buy confirmed after store close — FlushFillChat already ran).
+    -- (pending buy confirmed after store close - FlushFillChat already ran).
     if (need > 0 and acquired >= need) or Buy._visitStopReason ~= nil then
         ChatMaterialFill(row.uid, row.name, row.count, row.spent)
         Buy._fillChatPending[key] = nil
@@ -365,7 +365,7 @@ local function ResolvePendingBuy()
             Buy._pendingBuy = nil
             return "no-spend"
         end
-        -- Money dropped some but not full cost yet — keep waiting briefly.
+        -- Money dropped some but not full cost yet - keep waiting briefly.
         if (now - at) < (timeout + 1) then
             return "waiting"
         end
@@ -483,14 +483,14 @@ local function ArmPlanAfterBuyFill(reason)
         return
     end
     Buy._planArmedAfterFill = true
-    -- Batch invalidate after visit — no per-purchase Flatten.
+    -- Batch invalidate after visit - no per-purchase Flatten.
     if StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Invalidate then
         StockPiler3.PlanSnapshot.Invalidate()
     end
     if StockPiler3.Scheduler and StockPiler3.Scheduler.EnqueuePlanRebuild then
         StockPiler3.Scheduler.EnqueuePlanRebuild({ reason = reason or "buy-fill" })
     end
-    -- Do not wait for coalesced rebuild / vendor-open Watch defer — wake Brew now.
+    -- Do not wait for coalesced rebuild / vendor-open Watch defer - wake Brew now.
     WakeBrewAfterBuyFill(reason or "buy-fill")
 end
 
@@ -951,7 +951,7 @@ function Buy.IssueOne(opId)
         end
         return done(true)
     end
-    -- "no-spend" or nil → continue to next purchase attempt.
+    -- "no-spend" or nil -> continue to next purchase attempt.
 
     local purchases = tonumber(Buy._visitPurchases) or 0
     if purchases >= (Buy.MAX_PURCHASES_PER_VISIT or 80) then
@@ -962,7 +962,9 @@ function Buy.IssueOne(opId)
 
     local jobs = Buy.CollectBuyJobs()
     if type(jobs) ~= "table" or #jobs == 0 then
-        if (tonumber(Buy._visitBought) or 0) > 0 then
+        -- After a successful fill, stop the visit so Orch does not re-IssueOne
+        -- every tick (was spamming idle-no-jobs while the store stayed open).
+        if (tonumber(Buy._visitBought) or 0) > 0 and Buy._visitStopReason == nil then
             local meta = StockPiler3.Planner and StockPiler3.Planner._vendorBuyJobsMeta
             if type(meta) == "table" then
                 LogBuy(string.format(
@@ -974,6 +976,7 @@ function Buy.IssueOne(opId)
                 ))
             end
             ArmPlanAfterBuyFill("idle-no-jobs")
+            ChatVisitStop("idle-no-jobs")
         end
         return done(false)
     end
@@ -1048,7 +1051,7 @@ function Buy.IssueOne(opId)
                                 ))
                                 return done(false)
                             end
-                            -- Broadcast only — confirm on money/bag movement next tick.
+                            -- Broadcast only - confirm on money/bag movement next tick.
                             Buy._pendingBuy = {
                                 beforeMoney = beforeMoney,
                                 bagBefore = bagBefore,

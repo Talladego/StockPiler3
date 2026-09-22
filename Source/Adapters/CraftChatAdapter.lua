@@ -1,5 +1,5 @@
 ----------------------------------------------------------------
--- StockPiler3 Adapters/CraftChatAdapter — chat print + soil confirm
+-- StockPiler3 Adapters/CraftChatAdapter - chat print + soil confirm
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
@@ -326,7 +326,7 @@ function CC.HasSoilPending(plotNum)
 end
 
 ----------------------------------------------------------------
--- Crafting-channel harvest cues ("Your creation failed.", Critical Success, …)
+-- Crafting-channel harvest cues ("Your creation failed.", Critical Success, ...)
 -- Chat arrives before plot-empty often; sticky cues bridge until BeginPendingHarvest.
 ----------------------------------------------------------------
 
@@ -370,6 +370,12 @@ function CC.ConsumeHarvestCriticalSuccessSticky()
     return StickyFresh(at)
 end
 
+function CC.ConsumeHarvestSpecialMomentSticky()
+    local on = CC._harvestSpecialMomentSticky == true
+    CC._harvestSpecialMomentSticky = false
+    return on
+end
+
 local function NoteHarvestCriticalFailure()
     local pending = StockPiler3.SeedMap and StockPiler3.SeedMap._pendingHarvest
     if type(pending) == "table" then
@@ -380,6 +386,17 @@ local function NoteHarvestCriticalFailure()
         return
     end
     CC._harvestFailStickyAt = NowSec()
+end
+
+local function NoteHarvestSpecialMoment()
+    local pending = StockPiler3.SeedMap and StockPiler3.SeedMap._pendingHarvest
+    if type(pending) == "table" then
+        pending.chatCriticalSuccess = true
+        pending.chatSpecialMoment = true
+        return
+    end
+    CC._harvestOkStickyAt = NowSec()
+    CC._harvestSpecialMomentSticky = true
 end
 
 local function NoteHarvestCriticalSuccess()
@@ -408,6 +425,13 @@ local function ParseCraftingLine(text)
         or string.find(lower, "^critical success%.?")
     then
         return { kind = "critical_success" }
+    end
+    -- Cultivation Special Moment (super-crit) - same cue family as critical success.
+    if string.find(lower, "special moment", 1, true) == 1
+        or lower == "special moment."
+        or string.find(lower, "^special moment%.?")
+    then
+        return { kind = "special_moment" }
     end
     local qty, plant = string.match(text, "^You have harvested (%d+) (.+)%.?$")
     if qty and plant then
@@ -440,6 +464,8 @@ function CC.OnChatTextArrived()
         NoteHarvestCriticalFailure()
     elseif parsed.kind == "critical_success" then
         NoteHarvestCriticalSuccess()
+    elseif parsed.kind == "special_moment" then
+        NoteHarvestSpecialMoment()
     elseif parsed.kind == "harvested" then
         if StockPiler3.SeedMap and StockPiler3.SeedMap.MarkHarvestLootDirty then
             StockPiler3.SeedMap.MarkHarvestLootDirty()

@@ -184,17 +184,24 @@ end
 
 function Orch.DecayFillBlocked()
     if Orch._fillBlocked ~= true then
+        -- Grow may still be latched after Orch wait hit 0 on a prior tick.
+        local Grow = StockPiler3.Grow
+        if Grow and Grow.IsFillBlocked and Grow.IsFillBlocked() == true
+            and Grow.ClearFillBlocked
+        then
+            Grow.ClearFillBlocked()
+        end
         return
     end
     local wait = tonumber(Orch._fillBlockedWait) or 0
     if wait <= 0 then
+        Orch.ClearFillBlocked()
         return
     end
     wait = wait - 1
     Orch._fillBlockedWait = wait
     if wait <= 0 then
-        Orch._fillBlocked = false
-        Orch._fillBlockedWait = 0
+        Orch.ClearFillBlocked()
     end
 end
 
@@ -280,30 +287,71 @@ function Orch._TickBody()
         return
     end
 
-    -- fillBlocked with no buffer refine -> idle + buy
+    -- fillBlocked: allow refine AND plant (FindSeedSlot misses after refine used to
+    -- latch fillBlocked and never retry planting while seeds sat in bag).
     if Orch.IsFillBlocked() then
         local Refine = StockPiler3.Refine
+        local Grow = StockPiler3.Grow
+        local Sch = StockPiler3.Scheduler
         local bufferRefine = HasPendingBufferRefine()
-        if bufferRefine and Refine and Refine.ShouldAllowRefineNow and Refine.ShouldAllowRefineNow() == true
-            and Refine.RefineCheckDue and Refine.RefineCheckDue() == true
-            and Refine.TryTick
+        local refineForced = Refine and (
+            Refine._refineDirty == true
+            or tostring(Refine._refineDirtyReason or "") == "harvest"
+        )
+        local usRefine = false
+        local US = StockPiler3.UpgradeSeed
+        if US and US.IsEnabled and US.IsEnabled() == true
+            and US.NeedsRefineFirst and US.NeedsRefineFirst() == true
         then
-            if StockPiler3.Scheduler and StockPiler3.Scheduler.SetAutoGrowIdle then
-                StockPiler3.Scheduler.SetAutoGrowIdle(false)
+            usRefine = true
+            if Refine and Refine.MarkRefineDue then
+                Refine.MarkRefineDue("upgrade-seed")
             end
-            local opId = Orch.NewOpId()
-            if Refine.TryTick(opId) == true then
-                SetPhase("refining", "seed-buffer")
+        end
+        local canPlant = Grow and Grow.HasEmptyPlot and Grow.HasEmptyPlot() == true
+        local hasSeeds = false
+        if canPlant and not usRefine and Grow and Grow.HasSeedsForNextPlant then
+            hasSeeds = Grow.HasSeedsForNextPlant() == true
+        end
+        if canPlant or bufferRefine or refineForced or usRefine then
+            if Sch and Sch.SetAutoGrowIdle then
+                Sch.SetAutoGrowIdle(false)
+            end
+        end
+        local opId = Orch.NewOpId()
+        if canPlant and hasSeeds then
+            local planted = false
+            if Grow and Grow.IssuePlantOne then
+                planted = Grow.IssuePlantOne(opId) == true
+            end
+            if planted then
+                SetPhase("planting", "auto")
                 Orch.ClearFillBlocked()
-                if StockPiler3.Scheduler and StockPiler3.Scheduler.WakeAutoGrow then
-                    StockPiler3.Scheduler.WakeAutoGrow()
+                if Sch and Sch.WakeAutoGrow then
+                    Sch.WakeAutoGrow()
                 end
                 EndTick()
                 return
             end
         end
-        if StockPiler3.Scheduler and StockPiler3.Scheduler.SetAutoGrowIdle then
-            StockPiler3.Scheduler.SetAutoGrowIdle(true)
+        if (bufferRefine or refineForced or usRefine)
+            and Refine and Refine.ShouldAllowRefineNow and Refine.ShouldAllowRefineNow() == true
+            and Refine.RefineCheckDue and Refine.RefineCheckDue() == true
+            and Refine.TryTick
+        then
+            if Refine.TryTick(opId) == true then
+                SetPhase("refining", bufferRefine and "seed-buffer" or "auto")
+                Orch.ClearFillBlocked()
+                if Sch and Sch.WakeAutoGrow then
+                    Sch.WakeAutoGrow()
+                end
+                EndTick()
+                return
+            end
+        end
+        -- Keep fast ticks while empty plots remain; idle-5s made fillBlocked feel stuck.
+        if not canPlant and Sch and Sch.SetAutoGrowIdle then
+            Sch.SetAutoGrowIdle(true)
         end
         if Orch.Phase ~= "idle" and not Orch.IsHarvestActive() and not Orch.IsBrewSessionActive() then
             SetPhase("idle", "fill-blocked")
@@ -368,8 +416,25 @@ function Orch._TickBody()
 
     local Grow = StockPiler3.Grow
     local canPlant = Grow and Grow.HasEmptyPlot and Grow.HasEmptyPlot() == true
+    -- Upgrade Seed refine-first: skip HasSeedsForNextPlant demand build, but still
+    -- clear plant-queue dirty via GetPlantJob (NeedsRefineFirst short-circuits to nil).
+    -- Leaving dirty made ShouldAllowRefineNow return plant-probe-pending and block
+    -- refine for ~50s after harvest (idle 5s ticks until a dump probed the queue).
+    local usRefineFirst = false
+    local US = StockPiler3.UpgradeSeed
+    if US and US.IsEnabled and US.IsEnabled() == true
+        and US.NeedsRefineFirst and US.NeedsRefineFirst() == true
+    then
+        usRefineFirst = true
+        if StockPiler3.Refine and StockPiler3.Refine.MarkRefineDue then
+            StockPiler3.Refine.MarkRefineDue("upgrade-seed")
+        end
+        if Grow and Grow.GetPlantJob then
+            Grow.GetPlantJob()
+        end
+    end
     local hasSeeds = false
-    if canPlant and Grow and Grow.HasSeedsForNextPlant then
+    if canPlant and not usRefineFirst and Grow and Grow.HasSeedsForNextPlant then
         hasSeeds = Grow.HasSeedsForNextPlant() == true
     end
     local needAdditives = Grow and Grow.NeedsCurrentStageAdditive
@@ -378,7 +443,7 @@ function Orch._TickBody()
         and Grow.ShouldHoldPlantForReadyHarvest() == true
     local opId = Orch.NewOpId()
 
-    if (canPlant and hasSeeds) or needAdditives then
+    if (canPlant and hasSeeds) or needAdditives or usRefineFirst then
         if Sch and Sch.SetAutoGrowIdle then
             Sch.SetAutoGrowIdle(false)
         end
@@ -420,8 +485,8 @@ function Orch._TickBody()
             Sch.SetAutoGrowIdle(false)
         end
     elseif canPlant and not hasSeeds then
-        if HasPendingBufferRefine() then
-            if Orch._seedBufferRefineArmed ~= true
+        if HasPendingBufferRefine() or usRefineFirst then
+            if not usRefineFirst and Orch._seedBufferRefineArmed ~= true
                 and StockPiler3.Refine and StockPiler3.Refine.MarkRefineDue
             then
                 Orch._seedBufferRefineArmed = true

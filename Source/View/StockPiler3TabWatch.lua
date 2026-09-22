@@ -64,6 +64,35 @@ local function TintStepper(bgWin)
     end
 end
 
+--- TintableSolidBackground defaults to bright white until SetListRowTint runs.
+--- Session settle defers Watch paint ~2.5s, so prime dark chrome and hide
+--- unpainted rows so login/reload never flashes white bars.
+function StockPiler3TabWatch.PrimeRowChrome()
+    if not DoesWindowExist("SP3TabWatchList") then
+        return
+    end
+    local numVisible = 12
+    if SP3TabWatchList and SP3TabWatchList.numVisibleRows then
+        numVisible = tonumber(SP3TabWatchList.numVisibleRows) or 12
+    end
+    local paintKeys = StockPiler3TabWatch._rowPaintKey
+    for rowIndex = 1, numVisible do
+        local rowName = "SP3TabWatchListRow" .. rowIndex
+        if DoesWindowExist(rowName) then
+            if DefaultColor and DefaultColor.SetListRowTint then
+                DefaultColor.SetListRowTint(rowName .. "Background", rowIndex, false)
+            elseif WindowSetTintColor then
+                WindowSetTintColor(rowName .. "Background", 20, 20, 20)
+            end
+            TintStepper(rowName .. "PrioChipBg")
+            TintStepper(rowName .. "TargetChipBg")
+            if type(paintKeys) ~= "table" or paintKeys[rowIndex] == nil then
+                WindowSetShowing(rowName, false)
+            end
+        end
+    end
+end
+
 local function SetChipNumber(valueWin, chipWin, value)
     if DoesWindowExist(valueWin) then
         LabelSetText(valueWin, towstring(tostring(value)))
@@ -109,6 +138,7 @@ local function ApplyStatusColor(labelWin, statusKey)
     local c = COLOR_GRAY
     if statusKey == "potion_stocked" or statusKey == "plant_stocked" or statusKey == "ready_to_craft"
         or statusKey == "planting" or statusKey == "buffer_plant" or statusKey == "growing"
+        or statusKey == "fallback_blocked" or statusKey == "skill_done"
     then
         c = COLOR_OK
     elseif statusKey == "ready_to_craft_shared"
@@ -119,9 +149,14 @@ local function ApplyStatusColor(labelWin, statusKey)
         or statusKey == "wait_cult"
         or statusKey == "seed_buffer"
         or statusKey == "idle"
+        or statusKey == "waiting_watches"
+        or statusKey == "waiting_potions"
+        or statusKey == "waiting_plants"
+        or statusKey == "waiting_seed_buffer"
     then
         c = COLOR_WARN
     elseif statusKey == "no_recipe"
+        or statusKey == "no_target"
         or statusKey == "enable_autogrow"
         or statusKey == "need_apothecary"
         or statusKey == "need_skill"
@@ -301,7 +336,10 @@ local function PatchWatchRowsLiveCounts(rows)
         return
     end
     if StockPiler3.Planner and StockPiler3.Planner.PatchWatchRowsLiveCounts then
-        StockPiler3.Planner.PatchWatchRowsLiveCounts(rows)
+        -- Never WarmHave from Watch paint — FrameWork prewarm owns that.
+        StockPiler3.Planner.PatchWatchRowsLiveCounts(rows, {
+            allowWarmHave = false,
+        })
         return
     end
     for i = 1, #rows do
@@ -331,9 +369,14 @@ end
 --- Soft demand change: Bump + immediate AutoGrow status reconcile + coalesced PlanRebuild.
 local function AfterWatchSettingsChanged()
     BumpWatch()
-    -- Flip Enable AutoGrow ↔ Restocking now (UI throttle / plan gap must not leave stale status).
+    -- Flip Enable AutoGrow <-> Restocking now (UI throttle / plan gap must not leave stale status).
     if StockPiler3.Planner and StockPiler3.Planner.ReconcileAutoGrowStatusesNow then
         StockPiler3.Planner.ReconcileAutoGrowStatusesNow(StockPiler3TabWatch.listData)
+    end
+    if StockPiler3.Ui and StockPiler3.Ui.ClearWatchTipCaches then
+        StockPiler3.Ui.ClearWatchTipCaches()
+    else
+        StockPiler3TabWatch._statusTipCache = nil
     end
     local Sch = StockPiler3.Scheduler
     if Sch and Sch.EnqueuePlanRebuild then
@@ -471,18 +514,20 @@ local function BuildVisibleList(opts)
     local plan = nil
     local forcePlan = opts.forcePlan == true
     local hasContent = HasEnabledWatch() or HasSkillUpWatchStatus()
-    -- Enabled watches / SkillUp status but empty/stale plan: sync-build so Watch tab is never blank.
-    if not forcePlan and hasContent then
-        local snap = StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Get
-            and StockPiler3.PlanSnapshot.Get()
-        local snapRows = type(snap) == "table" and snap.rows or nil
-        if type(snapRows) ~= "table" or #snapRows == 0 then
-            forcePlan = true
-        end
+    -- Never sync-force Planner.Build from Watch paint (SP2 Flatten). Empty/stale
+    -- plan: keep previous rows and enqueue a coalesced rebuild.
+    local Sch = StockPiler3.Scheduler
+    local holdBuild = (Sch and Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true)
+        or (Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true)
+        or (Sch and Sch.IsPlanRebuildPending and Sch.IsPlanRebuildPending() == true)
+    local snap = StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Get
+        and StockPiler3.PlanSnapshot.Get()
+    local snapRows = type(snap) == "table" and snap.rows or nil
+    local snapEmpty = type(snapRows) ~= "table" or #snapRows == 0
+    if hasContent and (forcePlan or snapEmpty) and Sch and Sch.EnqueuePlanRebuild then
+        Sch.EnqueuePlanRebuild({ nudge = holdBuild or not forcePlan })
     end
-    if forcePlan and StockPiler3.Planner and StockPiler3.Planner.Build then
-        plan = StockPiler3.Planner.Build({ force = true })
-    elseif StockPiler3.Planner and StockPiler3.Planner.GetOrBuild then
+    if StockPiler3.Planner and StockPiler3.Planner.GetOrBuild then
         plan = StockPiler3.Planner.GetOrBuild({ refresh = false })
     elseif StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Get then
         plan = StockPiler3.PlanSnapshot.Get()
@@ -815,6 +860,9 @@ function StockPiler3TabWatch.Initialize()
     ButtonSetText("SP3TabWatchColPriority", T("watch.col.autogrow"))
     ButtonSetText("SP3TabWatchColBrew", T("watch.col.brew"))
     StockPiler3TabWatch.RefreshSkillGates()
+    if StockPiler3TabWatch.PrimeRowChrome then
+        StockPiler3TabWatch.PrimeRowChrome()
+    end
 end
 
 function StockPiler3TabWatch.RefreshSkillGates()
@@ -1447,6 +1495,7 @@ end
 
 local STATUS_TIP_COLORS = {
     no_recipe = COLOR_BLOCK,
+    no_target = COLOR_BLOCK,
     potion_stocked = COLOR_OK,
     plant_stocked = COLOR_OK,
     ready_to_craft = COLOR_OK,
@@ -1458,6 +1507,27 @@ local STATUS_TIP_COLORS = {
     buy_ingredients = COLOR_BLOCK,
     need_seeds = COLOR_WARN,
     upgrading_seed = COLOR_WARN,
+    seed_buffer = COLOR_WARN,
+    planting = COLOR_OK,
+    buffer_plant = COLOR_OK,
+    growing = COLOR_OK,
+    refining = COLOR_WARN,
+    wait_cult = COLOR_WARN,
+    idle = COLOR_WARN,
+    fallback_blocked = COLOR_OK,
+    waiting_watches = COLOR_WARN,
+    waiting_potions = COLOR_WARN,
+    waiting_plants = COLOR_WARN,
+    waiting_seed_buffer = COLOR_WARN,
+    no_seeds = COLOR_BLOCK,
+    need_vendor = COLOR_BLOCK,
+    autobuy_off = COLOR_BLOCK,
+    no_vendor_seed = COLOR_BLOCK,
+    need_mats = COLOR_BLOCK,
+    need_resin = COLOR_BLOCK,
+    unstable = COLOR_BLOCK,
+    need_container_vendor = COLOR_BLOCK,
+    no_vendor_container = COLOR_BLOCK,
 }
 
 local function StatusTitleColor(statusKey)
@@ -1491,6 +1561,10 @@ local function GrowingNoteKind(notes)
         or string.find(n, "need seed", 1, true)
         or string.find(n, "buy seeds", 1, true)
         or string.find(n, "buy plants", 1, true)
+        or string.find(n, "climbing", 1, true)
+        or string.find(n, "climb ", 1, true)
+        or string.find(n, "refining", 1, true)
+        or string.find(n, "buy lower", 1, true)
     then
         return "warning"
     end
@@ -1498,6 +1572,7 @@ local function GrowingNoteKind(notes)
         or string.find(n, "buy materials", 1, true)
         or string.find(n, "autogrow off", 1, true)
         or string.find(n, "needs cultivation", 1, true)
+        or string.find(n, "need cult", 1, true)
     then
         return "negative"
     end
@@ -1724,7 +1799,7 @@ local function BuildStatusTooltipRows(data)
                 if statusKey == "upgrading_seed" then
                     statusNote = data.statusText or T("plan.status.upgrading_seed")
                 else
-                    statusNote = T("watch.note.buy_seeds")
+                    statusNote = T("plan.status.need_seeds")
                 end
             elseif statusKey == "restocking" then
                 -- Match potion tip plant-slot warn tint while AutoGrow can progress.
@@ -1833,6 +1908,23 @@ local function BuildStatusTooltipRows(data)
                         color = RgbDef(COLOR_BLOCK),
                     }
                 end
+            elseif data.statusKey == "need_seeds" or data.statusKey == "upgrading_seed" then
+                local lines = data.statusLines
+                if type(lines) == "table" then
+                    for i = 1, #lines do
+                        local line = lines[i]
+                        if line and line ~= L"" then
+                            local narrow = ToNarrow(line)
+                            if string.find(narrow, "buffer=", 1, true) == nil then
+                                rows[#rows + 1] = {
+                                    text = line,
+                                    kind = "warning",
+                                    color = RgbDef(COLOR_WARN),
+                                }
+                            end
+                        end
+                    end
+                end
             end
             local RS = StockPiler3.RecipeSpec
             local uid = tonumber(data.uniqueID) or 0
@@ -1901,7 +1993,7 @@ local function BuildStatusTooltipRows(data)
                     }
                 end
 
-                -- Live Have: copy tip-slot fields locally — never write back into statusTipSlots.
+                -- Live Have: copy tip-slot fields locally - never write back into statusTipSlots.
                 local tipHave = tonumber(entry.have) or 0
                 local tipNeed = tonumber(entry.need) or 0
                 local tipDeficit = tonumber(entry.deficit) or math.max(0, tipNeed - tipHave)
@@ -1942,40 +2034,55 @@ local function BuildStatusTooltipRows(data)
                 if (entry.kind == "plant" or (agProgressable and entry.kind ~= "convert"))
                     and not stocked
                 then
-                    local notes = nil
-                    if Grow and Grow.GrowingNotesForSpec then
-                        notes = Grow.GrowingNotesForSpec(entry.spec, { cacheOnly = true })
+                    -- Prefer per-slot Upgrade Seed climb note (Spumepetal vs Fusk).
+                    local climbNote = nil
+                    local US = StockPiler3.UpgradeSeed
+                    if US and US.IsEnabled and US.IsEnabled() == true
+                        and US.StatusForPlant and US.FormatClimbSlotNote
+                    then
+                        local climb = US.StatusForPlant(entry.plantUid, entry.spec)
+                        climbNote = US.FormatClimbSlotNote(climb)
                     end
-                    if notes == nil or notes == L"" then
-                        notes = entry.growingNotes
-                    end
-                    if notes == nil or notes == L"" then
-                        notes = L""
-                    end
-                    if notes == L"" then
-                        if not CanAutoGrowUi() then
-                            notes = T("watch.note.needs_cult")
-                            haveColor = colorBlock
-                        elseif data.autoGrow == true then
-                            local seedUid = tonumber(entry.seedUid) or 0
-                            local credit = tonumber(entry.seedCredit) or 0
-                            if seedUid > 0 and credit <= 0 then
-                                notes = T("watch.note.buy_seeds")
-                                haveColor = colorWarn
-                            elseif seedUid <= 0 then
-                                notes = T("watch.note.buy_plants")
-                                haveColor = colorWarn
-                            else
-                                notes = T("watch.note.needs_planting")
-                                haveColor = colorWarn
-                            end
-                        else
-                            notes = T("watch.note.autogrow_off")
-                            haveColor = colorBlock
+                    if climbNote ~= nil and climbNote ~= L"" then
+                        statusNote = climbNote
+                        noteKind = "warning"
+                        haveColor = colorWarn
+                    else
+                        local notes = nil
+                        if Grow and Grow.GrowingNotesForSpec then
+                            notes = Grow.GrowingNotesForSpec(entry.spec, { cacheOnly = true })
                         end
+                        if notes == nil or notes == L"" then
+                            notes = entry.growingNotes
+                        end
+                        if notes == nil or notes == L"" then
+                            notes = L""
+                        end
+                        if notes == L"" then
+                            if not CanAutoGrowUi() then
+                                notes = T("watch.note.needs_cult")
+                                haveColor = colorBlock
+                            elseif data.autoGrow == true then
+                                local seedUid = tonumber(entry.seedUid) or 0
+                                local credit = tonumber(entry.seedCredit) or 0
+                                if seedUid > 0 and credit <= 0 then
+                                    notes = T("watch.note.buy_seeds")
+                                    haveColor = colorWarn
+                                elseif seedUid <= 0 then
+                                    notes = T("watch.note.buy_plants")
+                                    haveColor = colorWarn
+                                else
+                                    notes = T("watch.note.needs_planting")
+                                    haveColor = colorWarn
+                                end
+                            else
+                                notes = T("watch.note.autogrow_off")
+                                haveColor = colorBlock
+                            end
+                        end
+                        statusNote = TitleCaseStatusNote(notes)
+                        noteKind = GrowingNoteKind(notes)
                     end
-                    statusNote = TitleCaseStatusNote(notes)
-                    noteKind = GrowingNoteKind(notes)
                 elseif not stocked then
                     if entry.role == "container" then
                         statusNote = T("watch.note.buy_flasks")
@@ -2225,6 +2332,8 @@ function StockPiler3TabWatch.OnMouseOverStatus()
     end
     local genKey = PlanTipCacheKey() .. ":s" .. tostring(snapGen)
     local watchKey = tostring(data.potionKey or data.id or "")
+        .. ":k" .. tostring(data.statusKey or "")
+        .. ":t" .. ToNarrow(data.statusText or "")
     local cache = StockPiler3TabWatch._statusTipCache
     if type(cache) ~= "table" or cache.genKey ~= genKey then
         cache = { genKey = genKey, byWatch = {} }

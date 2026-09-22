@@ -158,6 +158,22 @@ function Bridge.OnCultivationUpdated()
     if GameData and GameData.Player and GameData.Player.Cultivation then
         plotNum = tonumber(GameData.Player.Cultivation.UpdatedIndex) or 0
     end
+    -- Harvest macro op-lock: arm storm before Garden dirty fans out so
+    -- OnGardenDirty / Watch flush cannot sync Planner.Build this frame.
+    local Grow = StockPiler3.Grow
+    local Sch = StockPiler3.Scheduler
+    -- Always hold Watch paint on cult updates (plot storms pile RefreshWatch).
+    if Sch and Sch.SkipUiThisFrame then
+        Sch.SkipUiThisFrame()
+    end
+    if Grow and Grow.IsHarvestOpActive and Grow.IsHarvestOpActive() == true then
+        if Sch and Sch.ArmHarvestStorm then
+            Sch.ArmHarvestStorm()
+        end
+        if Sch and Sch.SkipPlanThisFrame then
+            Sch.SkipPlanThisFrame()
+        end
+    end
     if StockPiler3.Garden and StockPiler3.Garden.OnCultivationUpdated then
         StockPiler3.Garden.OnCultivationUpdated(plotNum)
     elseif StockPiler3.Garden and StockPiler3.Garden.SyncAll then
@@ -169,14 +185,20 @@ function Bridge.OnCultivationUpdated()
     if StockPiler3.LearnBridge and StockPiler3.LearnBridge.OnCultivationUpdated then
         StockPiler3.LearnBridge.OnCultivationUpdated()
     end
-    if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
-        StockPiler3Window.RequestFooterRefresh()
+    -- Footer via coalesced flush only — never SyncActionReadiness per plot.
+    local storm = Sch and Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true
+    local quiet = Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true
+    local settling = Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true
+    if not storm and not quiet and not settling then
+        if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
+            StockPiler3Window.RequestFooterRefresh()
+        end
     end
-    local Grow = StockPiler3.Grow
     if Grow and Grow.NeedsCurrentStageAdditive and Grow.NeedsCurrentStageAdditive()
-        and StockPiler3.Scheduler and StockPiler3.Scheduler.WakeAutoGrow
+        and Sch and Sch.WakeAutoGrow
+        and not storm
     then
-        StockPiler3.Scheduler.WakeAutoGrow()
+        Sch.WakeAutoGrow()
     end
     if StockPiler3.Perf and StockPiler3.Perf.End then
         StockPiler3.Perf.End("CultivationUpdated")
@@ -200,6 +222,14 @@ function Bridge.OnTradeSkillUpdated()
     if cult > 0 or apo > 0 then
         Bridge._skillsWereReady = true
     end
+    -- Cult often arrives one TRADE_SKILL_UPDATED before Apo. Scrubbing potion
+    -- watches while apo still reads 0 was wiping every marked L1–L200 watch.
+    if apo > 0 then
+        Bridge._apoSkillSeen = true
+    end
+    if cult > 0 then
+        Bridge._cultSkillSeen = true
+    end
 
     local prev = Bridge._skillPrev
     if type(prev) ~= "table" then
@@ -216,6 +246,8 @@ function Bridge.OnTradeSkillUpdated()
                 Caps.ResetTradeSkillsReady()
             end
             Bridge._skillsWereReady = false
+            Bridge._apoSkillSeen = false
+            Bridge._cultSkillSeen = false
             Bridge._skillLevelsHash = nil
             Bridge._skillPrev = nil
             return
@@ -230,8 +262,11 @@ function Bridge.OnTradeSkillUpdated()
     end
 
     if hashChanged or firstSkillsReady then
-        if StockPiler3.Watch and StockPiler3.Watch.DisableOverSkillWatches then
-            StockPiler3.Watch.DisableOverSkillWatches({ notify = firstSkillsReady })
+        -- Defer over-skill scrub until the skill we need has been observed.
+        -- DisableOverSkillWatches itself also no-ops potion/plant sides at 0.
+        local canScrub = (Bridge._apoSkillSeen == true) or (Bridge._cultSkillSeen == true)
+        if canScrub and StockPiler3.Watch and StockPiler3.Watch.DisableOverSkillWatches then
+            StockPiler3.Watch.DisableOverSkillWatches({ notify = firstSkillsReady and apo > 0 })
         end
         if StockPiler3.Scheduler and StockPiler3.Scheduler.EnqueuePlanRebuild then
             StockPiler3.Scheduler.EnqueuePlanRebuild()
@@ -293,8 +328,25 @@ function Bridge.OnLoadingEnd()
     Bridge._skillLevelsHash = nil
     Bridge._skillPrev = nil
     Bridge._skillsWereReady = false
-    if StockPiler3.Garden and StockPiler3.Garden.SyncAll then
-        StockPiler3.Garden.SyncAll()
+    Bridge._apoSkillSeen = false
+    Bridge._cultSkillSeen = false
+    local Sch = StockPiler3.Scheduler
+    -- Defer SyncAll + skip plan/UI this frame so SESSION_LOADED cannot pile
+    -- CultivationUpdated x4 with Planner.Build / RefreshWatch (10s hitch).
+    if Sch and Sch.SkipPlanThisFrame then
+        Sch.SkipPlanThisFrame()
+    end
+    if Sch and Sch.SkipUiThisFrame then
+        Sch.SkipUiThisFrame()
+    end
+    if StockPiler3.Garden then
+        if StockPiler3.Garden.MarkSyncAllDue then
+            StockPiler3.Garden.MarkSyncAllDue()
+        elseif StockPiler3.Garden._syncAllDue ~= nil then
+            StockPiler3.Garden._syncAllDue = true
+        elseif StockPiler3.Garden.SyncAll then
+            StockPiler3.Garden.SyncAll()
+        end
     end
     if StockPiler3.Inventory and StockPiler3.Inventory.ForceFullRefresh then
         StockPiler3.Inventory.ForceFullRefresh()

@@ -1,5 +1,5 @@
 ----------------------------------------------------------------
--- StockPiler3 Knowledge/BrewLearn — capture apo board → StoreLearnedRecipeSpec
+-- StockPiler3 Knowledge/BrewLearn - capture apo board -> StoreLearnedRecipeSpec
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
@@ -108,7 +108,7 @@ local function AggregateMaterials(slots)
     return list
 end
 
---- Materials rebuilt from a saved recipe — never invent a board-only fingerprint.
+--- Materials rebuilt from a saved recipe - never invent a board-only fingerprint.
 local function MaterialsFromSavedRecipe(recipe)
     local list = {}
     if type(recipe) ~= "table" or type(recipe.slots) ~= "table" then
@@ -540,7 +540,7 @@ function BL.CompletePendingCraftLearn(opts)
         and tostring(pending.recipeKey) ~= intendedKey
         and pending.fromSessionRecipe ~= true
     then
-        -- Board snapshot drifted from the loaded recipe — do not register a new fingerprint.
+        -- Board snapshot drifted from the loaded recipe - do not register a new fingerprint.
         if StockPiler3.Debug and StockPiler3.Debug.LogOp then
             StockPiler3.Debug.LogOp("brewlearn", "reject board fingerprint != session recipe")
         end
@@ -560,7 +560,7 @@ function BL.CompletePendingCraftLearn(opts)
     end
     -- Engine SuccessChance is SoT for speculative learns (LOW = definite fail,
     -- INVALID = incomplete). Stable SkillUp boards may latch LOW while still
-    -- succeeding via ActionBar — allow bag-delta learn only when stab >= 0.
+    -- succeeding via ActionBar - allow bag-delta learn only when stab >= 0.
     if opts.failed ~= true
         and #outputs == 0
         and not SuccessChanceAllowsLearn(pending.successChance)
@@ -586,7 +586,7 @@ function BL.CompletePendingCraftLearn(opts)
         )
     end
     local skillUpOrigin = pending.skillUpOrigin == true or LatchSkillUpOrigin()
-    -- SkillUp Apo invents throwaway boards — never stamp them into known potions.
+    -- SkillUp Apo invents throwaway boards - never stamp them into known potions.
     -- Manual / watch brews do not latch session.skillUp, so they still learn.
     if skillUpOrigin == true then
         if StockPiler3.Debug and StockPiler3.Debug.LogOp then
@@ -673,7 +673,7 @@ function BL.MaybeCompletePendingCraftFromInventory()
     return BL.DrainInventoryCraftPoll()
 end
 
---- Crafting chat "You created …" when SUCCESS state was skipped (instant brew).
+--- Crafting chat "You created ..." when SUCCESS state was skipped (instant brew).
 --- Complete only if bag already gained; otherwise arm inventory poll.
 function BL.OnCreatedChat(createdName)
     if type(BL._pendingCraft) ~= "table" then

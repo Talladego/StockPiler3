@@ -1,7 +1,8 @@
 ----------------------------------------------------------------
--- StockPiler3 UpgradeSeed — watch-driven family climb
--- buy L1 → plant → crit harvest → refine → repeat toward watch skillReq.
--- Shared ladder helpers also used by SkillUp (mains-only, TargetMaxSkill cap).
+-- StockPiler3 UpgradeSeed - watch-driven family climb
+-- buy L1 -> plant -> crit harvest -> refine -> repeat toward watch skillReq.
+-- Shared seed economy (SeedDeficit / PlantableSurplus / GetSeedBudget) and
+-- ladder scan helpers also used by SkillUp (mains-only, TargetMaxSkill cap).
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
@@ -38,17 +39,22 @@ function US.SetEnabled(enabled)
 end
 
 function US.GetCultSkill()
+    -- SkillUp owns the Caps facade; fall back if SkillUp is unavailable.
+    local SkillUp = StockPiler3.SkillUp
+    if SkillUp and SkillUp.GetCultSkill then
+        return tonumber(SkillUp.GetCultSkill()) or 0
+    end
     local Caps = StockPiler3.TradeSkillCaps
     if Caps and Caps.GetCultSkill then
         return tonumber(Caps.GetCultSkill()) or 0
     end
-    -- Legacy alias (some older Caps builds).
     if Caps and Caps.GetCultivationSkill then
         return tonumber(Caps.GetCultivationSkill()) or 0
     end
     return 0
 end
 
+--- Cult seed/plant floor (1, 25, ...). Canonical implementation is SkillUp.FloorCultTier.
 function US.FloorCultTier(cultSkill)
     local SkillUp = StockPiler3.SkillUp
     if SkillUp and SkillUp.FloorCultTier then
@@ -81,7 +87,8 @@ function US.ClimbCap(neededReq)
     return floor
 end
 
-local function SeedBudget(seedUid)
+--- Shared seed budget facade (Refine.GetSeedBudget).
+function US.GetSeedBudget(seedUid)
     local Refine = StockPiler3.Refine
     if Refine and Refine.GetSeedBudget then
         local b = Refine.GetSeedBudget(seedUid)
@@ -99,7 +106,7 @@ local function SeedBudget(seedUid)
     }
 end
 
-local function CountEmptyPlots()
+function US.CountEmptyPlots()
     local Grow = StockPiler3.Grow
     if Grow and Grow.CountEmptyPlots then
         return tonumber(Grow.CountEmptyPlots()) or 0
@@ -107,17 +114,16 @@ local function CountEmptyPlots()
     return 0
 end
 
-function US.SeedDeficit(seedUid)
+--- Seeds still needed for planting / AutoBuy.
+--- mode "climb" (default): with buffer on, buy to (buffer + empty) so climb surplus exists.
+--- mode "skillup": max(headroom, empty-plot need) - SkillUp fills all plots.
+function US.SeedDeficit(seedUid, mode)
     seedUid = tonumber(seedUid) or 0
-    local empty = CountEmptyPlots()
-    local budget = SeedBudget(seedUid)
+    mode = tostring(mode or "climb")
+    local empty = US.CountEmptyPlots()
+    local budget = US.GetSeedBudget(seedUid)
     local buffer = tonumber(budget.bufferMin) or 0
     local live = tonumber(budget.live) or 0
-    -- Climb planting only uses surplus above the seed buffer, so AutoBuy must
-    -- top up to (buffer + empty plots) or every harvest can wipe the rung.
-    if buffer > 0 then
-        return math.max(0, buffer + empty - live)
-    end
     local headroom = tonumber(budget.headroom) or 0
     local needPlots = empty
     if live >= empty then
@@ -125,14 +131,22 @@ function US.SeedDeficit(seedUid)
     else
         needPlots = empty - live
     end
+    if mode == "skillup" then
+        return math.max(headroom, needPlots)
+    end
+    -- Climb planting only uses surplus above the seed buffer, so AutoBuy must
+    -- top up to (buffer + empty plots) or every harvest can wipe the rung.
+    if buffer > 0 then
+        return math.max(0, buffer + empty - live)
+    end
     return math.max(headroom, needPlots)
 end
 
---- How many bag seeds of this uid may be planted without dipping the keep cushion.
---- L1 / cold-start: keep full seed buffer (vendor can restock).
---- Intermediate climb rungs: keep 0 — those seeds are not at the vendor; holding
---- even 1 seed with empty plots stalls the climb (seen: have=50, plantable=0).
-local function PlantableSurplus(seedUid, bagSeeds, empty, opts)
+--- How many bag seeds may be planted without dipping the keep cushion.
+--- opts.mode "climb" (default): L1 keeps full buffer; intermediate rungs keep 0.
+--- opts.mode "skillup": plant up to headroom when buffer-short, else fill empties.
+--- opts.intermediate: climb-only - treat as non-vendor intermediate rung.
+function US.PlantableSurplus(seedUid, bagSeeds, empty, opts)
     seedUid = tonumber(seedUid) or 0
     bagSeeds = tonumber(bagSeeds) or 0
     empty = tonumber(empty) or 0
@@ -140,8 +154,19 @@ local function PlantableSurplus(seedUid, bagSeeds, empty, opts)
     if bagSeeds < 1 or empty < 1 then
         return 0
     end
-    local budget = SeedBudget(seedUid)
+    local budget = US.GetSeedBudget(seedUid)
     local buffer = tonumber(budget.bufferMin) or 0
+    local mode = tostring(opts.mode or "climb")
+    if mode == "skillup" then
+        local headroom = tonumber(budget.headroom) or 0
+        if buffer > 0 and headroom > 0 then
+            return math.min(bagSeeds, empty, headroom)
+        end
+        return math.min(bagSeeds, empty)
+    end
+    -- Climb: L1 / cold-start keep full seed buffer (vendor can restock).
+    -- Intermediate climb rungs keep 0 - those seeds are not at the vendor; holding
+    -- even 1 seed with empty plots stalls the climb (seen: have=50, plantable=0).
     if buffer <= 0 or opts.intermediate == true then
         return math.min(bagSeeds, empty)
     end
@@ -151,6 +176,18 @@ local function PlantableSurplus(seedUid, bagSeeds, empty, opts)
         return 0
     end
     return math.min(bagSeeds, empty, surplus)
+end
+
+local function SeedBudget(seedUid)
+    return US.GetSeedBudget(seedUid)
+end
+
+local function CountEmptyPlots()
+    return US.CountEmptyPlots()
+end
+
+local function PlantableSurplus(seedUid, bagSeeds, empty, opts)
+    return US.PlantableSurplus(seedUid, bagSeeds, empty, opts)
 end
 
 local function LadderLowestReq(ladder)
@@ -167,8 +204,72 @@ local function LadderLowestReq(ladder)
     return lowest
 end
 
+--- True when bag seeds are not the vendor L1 cushion seed.
+--- Multiplier/main ladders often start at 100+; treating that floor as "L1 buffer"
+--- trapped Fusk 3010034 (live=1, buffer=5, plantable=0) while Spumepetal refined.
+local function IsIntermediateClimb(ladder, ownedReq)
+    ownedReq = tonumber(ownedReq) or 0
+    local lowest = LadderLowestReq(ladder)
+    if ownedReq > lowest then
+        return true
+    end
+    if ownedReq > 1 then
+        return true
+    end
+    return false
+end
+
+--- Plantable climb count for one upgrade target (0 if none / cannot plant).
+local function TargetPlantableCount(t)
+    if type(t) ~= "table" or type(t.ladder) ~= "table" then
+        return 0, nil, 0
+    end
+    local needReq = tonumber(t.needReq) or 0
+    local climbCap = US.ClimbCap(needReq)
+    local owned = US.PickBestOwnedSeed({
+        ladder = t.ladder,
+        climbCap = climbCap,
+    })
+    if type(owned) ~= "table" or (tonumber(owned.seedUid) or 0) <= 0 then
+        return 0, owned, climbCap
+    end
+    local seedUid = tonumber(owned.seedUid) or 0
+    local ownedReq = tonumber(owned.skillReq) or 0
+    local bagSeeds = tonumber(owned.count) or 0
+    local empty = CountEmptyPlots()
+    local intermediate = IsIntermediateClimb(t.ladder, ownedReq)
+    local plantable = PlantableSurplus(seedUid, bagSeeds, empty, {
+        intermediate = intermediate,
+    })
+    return plantable, owned, climbCap
+end
+
+--- Refine scan for one target (plants above owned seed rung).
+local function TargetUpgradePlant(t)
+    if type(t) ~= "table" or type(t.ladder) ~= "table" then
+        return nil, 0
+    end
+    local needReq = tonumber(t.needReq) or 0
+    local climbCap = US.ClimbCap(needReq)
+    local owned = US.PickBestOwnedSeed({
+        ladder = t.ladder,
+        climbCap = climbCap,
+    })
+    local ownedReq = type(owned) == "table" and (tonumber(owned.skillReq) or 0) or 0
+    local refineCap = US.FloorCultTier(US.GetCultSkill())
+    if refineCap < climbCap then
+        refineCap = climbCap
+    end
+    local up = US.ScanUpgradePlant({
+        ladder = t.ladder,
+        climbCap = refineCap,
+        ownedSeedReq = ownedReq,
+    })
+    return up, ownedReq
+end
+
 --- Have the target-tier seed/plant for this climb need?
---- Only the needReq rung counts — owned lower-tier seeds must not end the climb
+--- Only the needReq rung counts - owned lower-tier seeds must not end the climb
 --- (ResolveSeedForSpec prefers bag seeds and would falsely "arrive" at L25).
 local function HaveTargetRung(ladder, needReq, plantUid, seedUid)
     needReq = tonumber(needReq) or 0
@@ -361,7 +462,7 @@ local function CollectUpgradeTargets()
         local needReq = NeedReqFor(spec, plantUid)
         local ladder = LadderFor(spec)
         local seedUid = 0
-        -- Prefer skill-matched plant→seed link; ResolveSeedForSpec prefers any
+        -- Prefer skill-matched plant->seed link; ResolveSeedForSpec prefers any
         -- owned genus seed in bags and would pin climb to L25 Gobswort spores.
         if plantUid > 0 and SM.ResolveSeedUidForPlant then
             seedUid = tonumber(SM.ResolveSeedUidForPlant(plantUid, spec)) or 0
@@ -466,41 +567,56 @@ function US.NeedsRefineFirst()
         return false
     end
     local targets = CollectUpgradeTargets()
+    local anyRefine = false
+    local anyPlantable = false
     for i = 1, #targets do
         local t = targets[i]
         local climbCap = US.ClimbCap(t.needReq)
         if climbCap < t.needReq and climbCap < 1 then
             -- gated
         else
-            local owned = US.PickBestOwnedSeed({
-                ladder = t.ladder,
-                climbCap = climbCap,
-            })
-            local ownedReq = type(owned) == "table" and (tonumber(owned.skillReq) or 0) or 0
-            -- Prefer Cult-floor upgrades even above climbCap when plant is already in bags
-            -- (same as SkillUp: refine lucky crits). Cap refine scan at FloorCultTier.
-            local refineCap = US.FloorCultTier(US.GetCultSkill())
-            if refineCap < climbCap then
-                refineCap = climbCap
-            end
-            local up = US.ScanUpgradePlant({
-                ladder = t.ladder,
-                climbCap = refineCap,
-                ownedSeedReq = ownedReq,
-            })
+            local up = TargetUpgradePlant(t)
             if type(up) == "table" and (tonumber(up.plantUid) or 0) > 0 then
-                US._active = {
-                    familyKey = t.familyKey or (t.ladder and t.ladder.key),
-                    haveReq = ownedReq,
-                    needReq = t.needReq,
-                    why = "refining",
-                    genus = t.ladder and t.ladder.genus,
-                }
-                return true
+                anyRefine = true
+            end
+            local plantable = TargetPlantableCount(t)
+            if (tonumber(plantable) or 0) >= 1 then
+                anyPlantable = true
             end
         end
     end
-    return false
+    -- Only skip demand/plant when refine is the only climb work.
+    -- Spumepetal refine must not starve Fusk (or other) plantable climb seeds.
+    return anyRefine == true and anyPlantable ~= true
+end
+
+--- Hold empty plots for climb status only when no target has plantable seeds
+--- or refinable plants (need_buy / climbing must not starve another genus).
+function US.ShouldHoldEmptyPlots(climb)
+    if US.IsEnabled() ~= true then
+        return false
+    end
+    local why = tostring(type(climb) == "table" and climb.why or "")
+    if why == "refining" then
+        -- Refine armed and PickPlantJob found no plantable elsewhere.
+        return true
+    end
+    if why ~= "climbing" and why ~= "need_buy" and why ~= "no_family" then
+        return false
+    end
+    local targets = CollectUpgradeTargets()
+    for i = 1, #targets do
+        local t = targets[i]
+        local plantable = TargetPlantableCount(t)
+        if (tonumber(plantable) or 0) >= 1 then
+            return false
+        end
+        local up = TargetUpgradePlant(t)
+        if type(up) == "table" and (tonumber(up.plantUid) or 0) > 0 then
+            return false
+        end
+    end
+    return true
 end
 
 function US.PickPlantJob()
@@ -517,6 +633,9 @@ function US.PickPlantJob()
     end
     local SM = StockPiler3.SeedMap
     local targets = CollectUpgradeTargets()
+    local refineActive = nil
+    local stallActive = nil
+    local plantCandidates = {}
     for i = 1, #targets do
         local t = targets[i]
         local needReq = tonumber(t.needReq) or 0
@@ -533,48 +652,35 @@ function US.PickPlantJob()
             }
             return nil
         end
-        if climbCap < needReq then
-            -- Can still climb toward Cult floor; status notes remaining gap after owned max.
-        end
         if type(t.ladder) ~= "table" or type(t.ladder.rungs) ~= "table" or #t.ladder.rungs == 0 then
-            US._active = {
+            stallActive = stallActive or {
                 familyKey = t.familyKey,
                 haveReq = 0,
                 needReq = needReq,
                 why = "no_family",
                 genus = SM and SM.GenusKeyFromName and SM.GenusKeyFromName(t.spec and t.spec.name),
             }
-            -- try next target
         else
-            local owned = US.PickBestOwnedSeed({
-                ladder = t.ladder,
-                climbCap = climbCap,
-            })
-            local ownedReq = type(owned) == "table" and (tonumber(owned.skillReq) or 0) or 0
-            local refineCap = cultFloor
-            if refineCap < climbCap then
-                refineCap = climbCap
-            end
-            local up = US.ScanUpgradePlant({
-                ladder = t.ladder,
-                climbCap = refineCap,
-                ownedSeedReq = ownedReq,
-            })
-            if type(up) == "table" then
-                US._active = {
+            local up, ownedReq = TargetUpgradePlant(t)
+            local upgradePlantReq = 0
+            if type(up) == "table" and (tonumber(up.plantUid) or 0) > 0 then
+                upgradePlantReq = tonumber(up.skillReq) or 0
+                if StockPiler3.Refine and StockPiler3.Refine.MarkRefineDue then
+                    StockPiler3.Refine.MarkRefineDue("upgrade-seed")
+                end
+                refineActive = refineActive or {
                     familyKey = t.ladder.key,
                     haveReq = ownedReq,
                     needReq = needReq,
                     why = "refining",
                     genus = t.ladder.genus,
                 }
-                if StockPiler3.Refine and StockPiler3.Refine.MarkRefineDue then
-                    StockPiler3.Refine.MarkRefineDue("upgrade-seed")
-                end
-                return nil
+                -- Continue: another family (e.g. Fusk) may still have plantable seeds.
             end
+            local plantable, owned = TargetPlantableCount(t)
             if type(owned) == "table" and (tonumber(owned.seedUid) or 0) > 0 then
                 local seedUid = tonumber(owned.seedUid) or 0
+                ownedReq = tonumber(owned.skillReq) or 0
                 local budget = SeedBudget(seedUid)
                 local headroom = tonumber(budget.headroom) or 0
                 local buffer = tonumber(budget.bufferMin) or 0
@@ -587,71 +693,61 @@ function US.PickPlantJob()
                     local spec = Items and Items.ToSpec and Items.ToSpec(plantUid) or nil
                     refinable = tonumber(StockPiler3.Refine.CountRefinablePlants(plantUid, spec)) or 0
                 end
-                local lowestReq = LadderLowestReq(t.ladder)
-                local intermediate = ownedReq > lowestReq
+                local intermediate = IsIntermediateClimb(t.ladder, ownedReq)
+                -- Do not plant a lower rung while higher-tier plants sit in bag
+                -- (L1 Fusk 3010030 filled all plots while Cloudy Fusk waited to refine).
+                local plantGoesBackward = upgradePlantReq > ownedReq
                 if buffer > 0 and headroom > 0 and refinable > 0
                     and (not intermediate or bagSeeds < 1)
                 then
-                    US._active = {
-                        familyKey = t.ladder.key,
-                        haveReq = ownedReq,
-                        needReq = needReq,
-                        why = "refining",
-                        genus = t.ladder.genus,
-                    }
                     if StockPiler3.Refine and StockPiler3.Refine.MarkRefineDue then
                         StockPiler3.Refine.MarkRefineDue("upgrade-seed-buffer")
                     end
-                    return nil
-                end
-                -- Intermediate: plant every bag seed into empty plots (no vendor restock).
-                -- L1: never plant into full buffer.
-                local plantable = PlantableSurplus(seedUid, bagSeeds, empty, {
-                    intermediate = intermediate,
-                })
-                if plantable < 1 and empty > 0 and refinable > 0 then
-                    -- Same-tier plants in bags, no plantable seeds: refine into seeds.
-                    US._active = {
+                    refineActive = refineActive or {
                         familyKey = t.ladder.key,
                         haveReq = ownedReq,
                         needReq = needReq,
                         why = "refining",
                         genus = t.ladder.genus,
                     }
+                elseif plantable < 1 and empty > 0 and refinable > 0 then
                     if StockPiler3.Refine and StockPiler3.Refine.MarkRefineDue then
                         StockPiler3.Refine.MarkRefineDue("upgrade-seed-reseed")
                     end
-                    return nil
-                end
-                if plantable >= 1 then
-                    US._active = {
+                    refineActive = refineActive or {
                         familyKey = t.ladder.key,
                         haveReq = ownedReq,
                         needReq = needReq,
-                        why = "planting",
+                        why = "refining",
                         genus = t.ladder.genus,
                     }
-                    US._stallLatch = nil
-                    local Inv = StockPiler3.Inventory
-                    local sample = Inv and Inv.GetSample and Inv.GetSample(seedUid)
-                    return {
+                elseif plantable >= 1 and plantGoesBackward ~= true then
+                    plantCandidates[#plantCandidates + 1] = {
                         seedUid = seedUid,
                         plantUid = plantUid,
-                        seed = sample or { uniqueID = seedUid },
-                        seedHave = bagSeeds,
+                        bagSeeds = bagSeeds,
                         plantable = plantable,
-                        deficit = plantable,
-                        plantReason = "upgrade_seed",
-                        pickMode = "upgrade_seed",
-                        familyKey = t.ladder.key,
-                        skillReq = ownedReq,
+                        ownedReq = ownedReq,
                         needReq = needReq,
+                        short = tonumber(t.short) or 0,
+                        intermediate = intermediate == true,
+                        familyKey = t.ladder.key,
+                        genus = t.ladder.genus,
+                        targetIndex = i,
                     }
-                end
-                -- Owned this rung but nothing plantable: wait on plots / Cult gate.
-                -- Do not flag need_buy for intermediate seeds (not sold at vendor).
-                if empty < 1 then
-                    US._active = {
+                elseif plantable >= 1 and plantGoesBackward == true then
+                    if StockPiler3.Refine and StockPiler3.Refine.MarkRefineDue then
+                        StockPiler3.Refine.MarkRefineDue("upgrade-seed-no-backslide")
+                    end
+                    refineActive = refineActive or {
+                        familyKey = t.ladder.key,
+                        haveReq = ownedReq,
+                        needReq = needReq,
+                        why = "refining",
+                        genus = t.ladder.genus,
+                    }
+                elseif empty < 1 then
+                    stallActive = stallActive or {
                         familyKey = t.ladder.key,
                         haveReq = ownedReq,
                         needReq = needReq,
@@ -659,7 +755,7 @@ function US.PickPlantJob()
                         genus = t.ladder.genus,
                     }
                 elseif climbCap < needReq and ownedReq >= climbCap then
-                    US._active = {
+                    stallActive = stallActive or {
                         familyKey = t.ladder.key,
                         haveReq = ownedReq,
                         needReq = needReq,
@@ -668,7 +764,7 @@ function US.PickPlantJob()
                         needCult = needReq,
                     }
                 elseif not intermediate and US.SeedDeficit(seedUid) >= 1 then
-                    US._active = {
+                    stallActive = stallActive or {
                         familyKey = t.ladder.key,
                         haveReq = ownedReq,
                         needReq = needReq,
@@ -676,7 +772,7 @@ function US.PickPlantJob()
                         genus = t.ladder.genus,
                     }
                 else
-                    US._active = {
+                    stallActive = stallActive or {
                         familyKey = t.ladder.key,
                         haveReq = ownedReq,
                         needReq = needReq,
@@ -685,7 +781,7 @@ function US.PickPlantJob()
                     }
                 end
             elseif climbCap < needReq and ownedReq >= climbCap and ownedReq > 0 then
-                US._active = {
+                stallActive = stallActive or {
                     familyKey = t.ladder.key,
                     haveReq = ownedReq,
                     needReq = needReq,
@@ -694,7 +790,7 @@ function US.PickPlantJob()
                     needCult = needReq,
                 }
             else
-                US._active = {
+                stallActive = stallActive or {
                     familyKey = t.ladder.key,
                     haveReq = ownedReq,
                     needReq = needReq,
@@ -703,6 +799,108 @@ function US.PickPlantJob()
                 }
             end
         end
+    end
+    if #plantCandidates > 0 then
+        -- Prefer the behind family (lowest owned seed rung), not the largest potion short.
+        -- Spumepetal@150 with short=24 used to starve Fusk@125 before any Fusk seeds landed.
+        table.sort(plantCandidates, function(a, b)
+            local oa = tonumber(a.ownedReq) or 0
+            local ob = tonumber(b.ownedReq) or 0
+            if oa ~= ob then
+                return oa < ob
+            end
+            return (tonumber(a.short) or 0) > (tonumber(b.short) or 0)
+        end)
+        local function SiblingBehind(cand)
+            for i = 1, #targets do
+                if i ~= (tonumber(cand.targetIndex) or 0) then
+                    local t2 = targets[i]
+                    local owned2 = US.PickBestOwnedSeed({
+                        ladder = t2.ladder,
+                        climbCap = US.ClimbCap(t2.needReq),
+                    })
+                    local req2 = type(owned2) == "table" and (tonumber(owned2.skillReq) or 0) or 0
+                    if req2 < (tonumber(cand.ownedReq) or 0) then
+                        return true
+                    end
+                end
+            end
+            return false
+        end
+        local function PlotsHoldingSeed(seedUid)
+            seedUid = tonumber(seedUid) or 0
+            if seedUid <= 0 then
+                return 0
+            end
+            local Grow = StockPiler3.Grow
+            if Grow and Grow.CountSeedPlotCredit then
+                return tonumber(Grow.CountSeedPlotCredit(seedUid)) or 0
+            end
+            if Grow and Grow.CountInGroundSeeds then
+                return tonumber(Grow.CountInGroundSeeds(seedUid)) or 0
+            end
+            return 0
+        end
+        local best = nil
+        for ci = 1, #plantCandidates do
+            local cand = plantCandidates[ci]
+            local behind = SiblingBehind(cand)
+            -- Cap is per-wave, not per-job: plantable=1 still re-picked every tick and
+            -- filled all 4 plots. Skip an ahead family that already holds a plot.
+            if behind == true and cand.intermediate == true
+                and PlotsHoldingSeed(cand.seedUid) >= 1
+            then
+                cand = nil
+            end
+            if cand ~= nil then
+                best = cand
+                if behind == true and best.intermediate == true then
+                    best.plantable = 1
+                end
+                break
+            end
+        end
+        if best == nil then
+            -- Ahead family already occupies a plot; leave empties for the behind family.
+            if refineActive then
+                US._active = refineActive
+            elseif stallActive then
+                US._active = stallActive
+            end
+            return nil
+        end
+        US._active = {
+            familyKey = best.familyKey,
+            haveReq = best.ownedReq,
+            needReq = best.needReq,
+            why = "planting",
+            genus = best.genus,
+            seedUid = best.seedUid,
+            plantUid = best.plantUid,
+        }
+        US._stallLatch = nil
+        local Inv = StockPiler3.Inventory
+        local sample = Inv and Inv.GetSample and Inv.GetSample(best.seedUid)
+        return {
+            seedUid = best.seedUid,
+            plantUid = best.plantUid,
+            seed = sample or { uniqueID = best.seedUid },
+            seedHave = best.bagSeeds,
+            plantable = tonumber(best.plantable) or 1,
+            deficit = tonumber(best.plantable) or 1,
+            plantReason = "upgrade_seed",
+            pickMode = "upgrade_seed",
+            familyKey = best.familyKey,
+            skillReq = best.ownedReq,
+            needReq = best.needReq,
+        }
+    end
+    if refineActive then
+        US._active = refineActive
+        return nil
+    end
+    if stallActive then
+        US._active = stallActive
     end
     return nil
 end
@@ -800,53 +998,60 @@ function US.CollectBuyJobs()
     end
     local SM = StockPiler3.SeedMap
     local targets = CollectUpgradeTargets()
+    local seenBuy = {}
     for i = 1, #targets do
         local t = targets[i]
         if type(t.ladder) == "table" then
-            local climbCap = US.ClimbCap(t.needReq)
-            local owned = US.PickBestOwnedSeed({
-                ladder = t.ladder,
-                climbCap = climbCap,
-            })
-            if type(owned) ~= "table" or (tonumber(owned.count) or 0) < 1 then
-                local buy = SM.LowestBuySeedOnLadder and SM.LowestBuySeedOnLadder(t.ladder) or nil
-                if type(buy) == "table" and (tonumber(buy.seedUid) or 0) > 0 then
-                    local seedUid = tonumber(buy.seedUid) or 0
+            -- L1 vendor seed only for cold-start / wiped vendor rung.
+            -- Owning mid/high seeds (Spumepetal@150+) must not trigger L1 top-up:
+            -- SeedDeficit(L1) only counts that uid's live stack, so buffer=5 with
+            -- live(L1)=0 bought 5x 84235 while L150/L175 seeds were already owned.
+            local buy = SM.LowestBuySeedOnLadder and SM.LowestBuySeedOnLadder(t.ladder) or nil
+            if type(buy) == "table" and (tonumber(buy.seedUid) or 0) > 0 then
+                local seedUid = tonumber(buy.seedUid) or 0
+                local buyReq = tonumber(buy.skillReq) or 1
+                if buyReq < 1 then
+                    buyReq = 1
+                end
+                local owned = US.PickBestOwnedSeed({
+                    ladder = t.ladder,
+                    climbCap = US.ClimbCap(t.needReq),
+                })
+                local ownedReq = type(owned) == "table" and (tonumber(owned.skillReq) or 0) or 0
+                if ownedReq > buyReq then
+                    -- Family already past vendor rung; climb via plant/refine only.
+                elseif seenBuy[seedUid] ~= true then
                     local deficit = US.SeedDeficit(seedUid)
-                    if deficit < 1 then
-                        deficit = math.max(1, CountEmptyPlots())
-                        if deficit < 1 then
-                            deficit = 1
+                    if deficit >= 1 then
+                        seenBuy[seedUid] = true
+                        local MS = StockPiler3.MaterialSpec
+                        local Inv = StockPiler3.Inventory
+                        local sample = Inv and Inv.GetSample and Inv.GetSample(seedUid)
+                        local spec = nil
+                        if MS and MS.FromItemData and type(sample) == "table" then
+                            spec = MS.FromItemData(sample, tostring(t.ladder.role or "main"))
+                        elseif MS and MS.FromUid then
+                            spec = MS.FromUid(seedUid)
                         end
+                        jobs[#jobs + 1] = {
+                            uid = seedUid,
+                            uniqueID = seedUid,
+                            deficit = deficit,
+                            upgradeSeed = true,
+                            skillUp = true, -- allow growable purchase path
+                            growable = true,
+                            isGrowable = true,
+                            role = tostring(t.ladder.role or "main"),
+                            spec = spec or t.spec,
+                            specKey = "upgrade_seed:" .. tostring(seedUid),
+                            acquireKey = "upgrade_seed:" .. tostring(seedUid),
+                            skillReq = buyReq,
+                            familyKey = t.ladder.key,
+                        }
                     end
-                    local MS = StockPiler3.MaterialSpec
-                    local Inv = StockPiler3.Inventory
-                    local sample = Inv and Inv.GetSample and Inv.GetSample(seedUid)
-                    local spec = nil
-                    if MS and MS.FromItemData and type(sample) == "table" then
-                        spec = MS.FromItemData(sample, tostring(t.ladder.role or "main"))
-                    elseif MS and MS.FromUid then
-                        spec = MS.FromUid(seedUid)
-                    end
-                    jobs[#jobs + 1] = {
-                        uid = seedUid,
-                        uniqueID = seedUid,
-                        deficit = deficit,
-                        upgradeSeed = true,
-                        skillUp = true, -- allow growable purchase path
-                        growable = true,
-                        isGrowable = true,
-                        role = tostring(t.ladder.role or "main"),
-                        spec = spec or t.spec,
-                        specKey = "upgrade_seed:" .. tostring(seedUid),
-                        acquireKey = "upgrade_seed:" .. tostring(seedUid),
-                        skillReq = tonumber(buy.skillReq) or 0,
-                        familyKey = t.ladder.key,
-                    }
-                    return jobs
                 end
             end
-            -- Never AutoBuy intermediate climb seeds (L25/L50/…) — vendor only sells L1.
+            -- Never AutoBuy intermediate climb seeds (L25/L50/...) - vendor only sells L1.
             -- Progress those rungs via plant / crit / refine.
         end
     end
@@ -1006,6 +1211,41 @@ local function RebuildWatchStatusCache()
     end
 end
 
+--- Merge live PickPlantJob/_active action onto a status snapshot for tips.
+local function WithLiveActive(st)
+    if type(st) ~= "table" then
+        return st
+    end
+    local active = US._active
+    if type(active) ~= "table" then
+        return st
+    end
+    local sameGenus = tostring(active.genus or "") ~= ""
+        and tostring(active.genus) == tostring(st.genus or "")
+    local sameFamily = tostring(active.familyKey or "") ~= ""
+        and tostring(active.familyKey) == tostring(st.familyKey or "")
+    if not sameGenus and not sameFamily then
+        return st
+    end
+    local why = tostring(active.why or "")
+    if why ~= "planting" and why ~= "refining" and why ~= "need_buy"
+        and why ~= "need_cult" and why ~= "climbing" and why ~= "no_family"
+    then
+        return st
+    end
+    return {
+        familyKey = st.familyKey or active.familyKey,
+        genus = st.genus or active.genus,
+        haveReq = tonumber(active.haveReq) or tonumber(st.haveReq) or 0,
+        needReq = tonumber(st.needReq) or tonumber(active.needReq) or 0,
+        climbCap = tonumber(st.climbCap) or tonumber(active.climbCap) or 0,
+        why = why,
+        plantUid = tonumber(active.plantUid) or tonumber(st.plantUid) or 0,
+        seedUid = tonumber(active.seedUid) or 0,
+        live = true,
+    }
+end
+
 --- UI: climb status for a plant watch (or genus), or nil if not climbing.
 function US.StatusForPlant(plantUid, spec)
     if US.IsEnabled() ~= true then
@@ -1014,7 +1254,7 @@ function US.StatusForPlant(plantUid, spec)
     RebuildWatchStatusCache()
     plantUid = tonumber(plantUid) or 0
     if plantUid > 0 and type(US._statusByPlant[plantUid]) == "table" then
-        return US._statusByPlant[plantUid]
+        return WithLiveActive(US._statusByPlant[plantUid])
     end
     local SM = StockPiler3.SeedMap
     local genus = nil
@@ -1026,25 +1266,135 @@ function US.StatusForPlant(plantUid, spec)
         end
     end
     if genus and genus ~= "" and type(US._statusByGenus[genus]) == "table" then
-        return US._statusByGenus[genus]
+        return WithLiveActive(US._statusByGenus[genus])
     end
     return nil
 end
 
---- UI: any climb status (first target), for potion seed-buffer rows.
+--- UI: climb status for potion seed-buffer rows.
+--- Prefer the live active genus so the tip matches what AutoGrow is doing.
 function US.StatusForWatch()
     if US.IsEnabled() ~= true then
         return nil
     end
     RebuildWatchStatusCache()
+    local active = US._active
+    if type(active) == "table" then
+        local genus = tostring(active.genus or "")
+        if genus ~= "" and type(US._statusByGenus) == "table"
+            and type(US._statusByGenus[genus]) == "table"
+        then
+            return WithLiveActive(US._statusByGenus[genus])
+        end
+        local why = tostring(active.why or "")
+        if why == "planting" or why == "refining" or why == "need_buy"
+            or why == "need_cult" or why == "climbing"
+        then
+            return WithLiveActive({
+                familyKey = active.familyKey,
+                genus = active.genus,
+                haveReq = tonumber(active.haveReq) or 0,
+                needReq = tonumber(active.needReq) or 0,
+                climbCap = tonumber(active.climbCap) or 0,
+                why = why,
+                plantUid = tonumber(active.plantUid) or 0,
+                seedUid = tonumber(active.seedUid) or 0,
+            })
+        end
+    end
     if type(US._statusByGenus) == "table" then
         for _, st in pairs(US._statusByGenus) do
             if type(st) == "table" then
-                return st
+                return WithLiveActive(st)
             end
         end
     end
     return nil
+end
+
+--- All live climb statuses (one per genus), for multi-family tips.
+function US.ListClimbStatuses()
+    if US.IsEnabled() ~= true then
+        return {}
+    end
+    RebuildWatchStatusCache()
+    local out = {}
+    local seen = {}
+    if type(US._statusByGenus) == "table" then
+        for genus, st in pairs(US._statusByGenus) do
+            if type(st) == "table" and seen[tostring(genus)] ~= true then
+                seen[tostring(genus)] = true
+                out[#out + 1] = WithLiveActive(st)
+            end
+        end
+    end
+    table.sort(out, function(a, b)
+        local ga = tostring(a and a.genus or "")
+        local gb = tostring(b and b.genus or "")
+        if ga ~= gb then
+            return ga < gb
+        end
+        return (tonumber(a and a.needReq) or 0) < (tonumber(b and b.needReq) or 0)
+    end)
+    return out
+end
+
+local function ClimbCapShow(climb)
+    local needReq = tonumber(climb and climb.needReq) or 0
+    local climbCap = tonumber(climb and climb.climbCap) or 0
+    if climbCap < 1 and US.ClimbCap then
+        climbCap = US.ClimbCap(needReq) or needReq
+    end
+    local capShow = climbCap
+    if needReq > 0 and needReq < capShow then
+        capShow = needReq
+    end
+    return capShow, needReq, tonumber(climb and climb.haveReq) or 0
+end
+
+--- Short parenthetical for tip Have/Need notes (per recipe slot).
+function US.FormatClimbSlotNote(climb)
+    if type(climb) ~= "table" then
+        return nil
+    end
+    local why = tostring(climb.why or "")
+    if why ~= "planting" and why ~= "refining" and why ~= "need_buy"
+        and why ~= "need_cult" and why ~= "climbing" and why ~= "no_family"
+    then
+        return nil
+    end
+    local genus = tostring(climb.genus or "seed")
+    local capShow, needReq, haveReq = ClimbCapShow(climb)
+    local T = function(key, tokens)
+        return StockPiler3.Util.T(key, tokens)
+    end
+    if why == "planting" then
+        return T("watch.note.climb_planting", {
+            genus = genus,
+            have = tostring(haveReq),
+        })
+    end
+    if why == "refining" then
+        return T("watch.note.climb_refining", {
+            genus = genus,
+            have = tostring(haveReq),
+        })
+    end
+    if why == "need_buy" then
+        return T("watch.note.climb_buy", { genus = genus })
+    end
+    if why == "need_cult" or (needReq > 0 and capShow > 0 and capShow < needReq) then
+        return T("watch.note.climb_cult", {
+            genus = genus,
+            need = tostring(needReq),
+            floor = tostring(capShow),
+        })
+    end
+    return T("watch.note.climb_progress", {
+        genus = genus,
+        have = tostring(haveReq),
+        cap = tostring(capShow),
+    })
 end
 
 function US.Dump(emit)
@@ -1099,6 +1449,30 @@ function US.Dump(emit)
         ))
     end
     emit("  emptyPlots=" .. tostring(CountEmptyPlots()))
+    -- Merged genus ladders for climb targets (from CollectUpgradeTargets cache;
+    -- BuildAllFamilyLadders is gen-cached so this stays cheap).
+    for i = 1, math.min(5, #targets) do
+        local t = targets[i]
+        local ladder = t.ladder
+        if type(ladder) == "table" and type(ladder.rungs) == "table" then
+            local parts = {}
+            for r = 1, #ladder.rungs do
+                local rung = ladder.rungs[r]
+                parts[#parts + 1] = string.format(
+                    "%d:s%d/p%d",
+                    tonumber(rung.skillReq) or 0,
+                    tonumber(rung.seedUid) or 0,
+                    tonumber(rung.plantUid) or 0
+                )
+            end
+            emit(string.format(
+                "  merged[%s] role=%s %s",
+                tostring(ladder.genus or ladder.key),
+                tostring(ladder.role),
+                table.concat(parts, " ")
+            ))
+        end
+    end
     local SM = StockPiler3.SeedMap
     if SM and SM.DumpFamilies then
         SM.DumpFamilies(emit)

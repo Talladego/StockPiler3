@@ -17,6 +17,10 @@ SETTINGS_SV = Path(
     r"C:\Games\Return of Reckoning\user\settings\Martyrs Square"
     r"\SharedProfile\SharedProfile\StockPiler3\SavedVariables.lua"
 )
+PRE_SCRUB_BAK = Path(
+    r"C:\Games\Return of Reckoning\user\settings\GLOBAL\StockPiler3"
+    r"\SavedVariables.lua.bak-skillup-scrub-20260921"
+)
 
 LSTR = re.compile(r'L"((?:\\.|[^"\\])*)"')
 TABLE_KEY = re.compile(r'\[["\']([^"\']+)["\']\]\s*=')
@@ -66,7 +70,6 @@ def find_balanced_table(text: str, open_brace: int) -> tuple[int, int]:
             i += 1
             continue
         if ch in ('"', "'"):
-            # L"..." or plain strings
             if ch == '"' and i > 0 and text[i - 1] == "L":
                 in_string = True
                 quote = '"'
@@ -109,13 +112,11 @@ def top_level_entries(section_text: str) -> list[tuple[str, int, int]]:
             break
         km = re.match(r'\[["\']([^"\']+)["\']\]\s*=\s*\{', body[i:])
         if not km:
-            # skip unknown junk
             i += 1
             continue
         key = km.group(1)
         brace_abs = i + km.end() - 1
         s, e = find_balanced_table(body, brace_abs)
-        # include trailing comma/newline if present
         end = e
         if end < len(body) and body[end] == ",":
             end += 1
@@ -126,7 +127,25 @@ def top_level_entries(section_text: str) -> list[tuple[str, int, int]]:
     return entries
 
 
+def rebuild_section(section_text: str, kept_entries: list[str]) -> str:
+    """Rebuild `{...}` only — no trailing comma (comma lives outside the span)."""
+    parts = ["{\n"]
+    for entry in kept_entries:
+        if not entry.endswith("\n"):
+            entry = entry + "\n"
+        # Ensure entry starts with tab indent like stock SV (\t\t["key"])
+        if entry.lstrip().startswith("[") and not entry.startswith("\t"):
+            entry = "\t\t" + entry.lstrip()
+        parts.append(entry)
+    parts.append("\t}")
+    return "".join(parts)
+
+
 def scrub(account_text: str, watched: set[str]) -> tuple[str, dict]:
+    account_text = account_text.rstrip(" \t\r\n\x00")
+    if not account_text.endswith("\n"):
+        account_text += "\n"
+
     recipes_span = section_span(account_text, "recipes")
     potions_span = section_span(account_text, "potions")
     if not recipes_span:
@@ -143,18 +162,11 @@ def scrub(account_text: str, watched: set[str]) -> tuple[str, dict]:
         "deleted_fps": [],
     }
 
-    # Work potions after recipes; edit from end so offsets stay valid.
-    # First collect recipe deletions.
     r_start, r_end = recipes_span
     recipes_block = account_text[r_start:r_end]
     recipe_entries = top_level_entries(recipes_block)
     deleted: set[str] = set()
-    keep_recipe_parts: list[str] = []
-    # rebuild recipes section
-    header_end = recipes_block.find("{") + 1
-    keep_recipe_parts.append(recipes_block[:header_end])
-    if not keep_recipe_parts[0].endswith("\n"):
-        keep_recipe_parts[0] += "\n"
+    kept_recipes: list[str] = []
 
     for key, s, e in recipe_entries:
         entry = recipes_block[s:e]
@@ -166,14 +178,9 @@ def scrub(account_text: str, watched: set[str]) -> tuple[str, dict]:
             continue
         if is_skill and key in watched:
             stats["recipes_kept_watched"] += 1
-        keep_recipe_parts.append(entry if entry.endswith("\n") else entry + "\n")
-    keep_recipe_parts.append("\t},")
-    new_recipes = "".join(keep_recipe_parts)
-    # fix trailing: original ends with },
-    if not new_recipes.rstrip().endswith("},"):
-        new_recipes = new_recipes.rstrip().rstrip(",") + "\n\t},"
+        kept_recipes.append(entry)
 
-    # Rebuild account with new recipes first (potions offsets change)
+    new_recipes = rebuild_section(recipes_block, kept_recipes)
     account_text = account_text[:r_start] + new_recipes + account_text[r_end:]
 
     potions_span = section_span(account_text, "potions")
@@ -181,18 +188,12 @@ def scrub(account_text: str, watched: set[str]) -> tuple[str, dict]:
     p_start, p_end = potions_span
     potions_block = account_text[p_start:p_end]
     potion_entries = top_level_entries(potions_block)
-    header_end = potions_block.find("{") + 1
-    keep_potion_parts: list[str] = [potions_block[:header_end]]
-    if not keep_potion_parts[0].endswith("\n"):
-        keep_potion_parts[0] += "\n"
+    kept_potions: list[str] = []
 
     for key, s, e in potion_entries:
         entry = potions_block[s:e]
-        # Collect L"..." recipe key strings inside recipeKeys / recipeSpecKey / active*
-        # Simpler: strip any L"fp" that is in deleted from the entry text.
         new_entry = entry
         for fp in list(deleted):
-            # Remove array lines: \t\t\t\tL"fp",\n
             pat = re.compile(
                 r"^[ \t]*L\"" + re.escape(fp) + r"\",?[ \t]*\r?\n",
                 re.M,
@@ -201,7 +202,6 @@ def scrub(account_text: str, watched: set[str]) -> tuple[str, dict]:
             if n:
                 stats["potion_links_removed"] += n
                 new_entry = new_entry2
-            # Clear pointer fields that equal deleted fp
             for field in (
                 "recipeSpecKey",
                 "activeRecipeKey",
@@ -214,7 +214,6 @@ def scrub(account_text: str, watched: set[str]) -> tuple[str, dict]:
                     new_entry = field_pat.sub("", new_entry)
                     stats["potion_links_removed"] += 1
 
-        # Remaining recipe key L-strings inside recipeKeys block
         keys_m = re.search(r'\["recipeKeys"\]\s*=\s*\{(.*?)\},', new_entry, re.S)
         remaining: list[str] = []
         if keys_m:
@@ -230,11 +229,6 @@ def scrub(account_text: str, watched: set[str]) -> tuple[str, dict]:
             continue
 
         if is_skill_potion and remaining:
-            # Clear flag if any remaining recipe is not in deleted (user or kept)
-            # After scrub, remaining recipes exist in recipes table; if any lack skillUp
-            # we can't know from potion alone — clear flag when potion had mixed links
-            # and still has remaining keys (user may have re-learned). Safer: clear
-            # skillUpOrigin on potion whenever it still has remaining keys after scrub.
             new_entry2 = re.sub(
                 r'^[ \t]*\["skillUpOrigin"\]\s*=\s*true,?[ \t]*\r?\n',
                 "",
@@ -245,13 +239,7 @@ def scrub(account_text: str, watched: set[str]) -> tuple[str, dict]:
                 stats["potion_flags_cleared"] += 1
                 new_entry = new_entry2
 
-        # Fix active/recipeSpecKey if emptied: point to first remaining
         if remaining:
-            for field in ("recipeSpecKey", "activeRecipeKey", "activeRecipeSpecKey"):
-                if not re.search(rf'\["{field}"\]\s*=', new_entry):
-                    # insert after potionKey if missing
-                    pass
-            # If recipeSpecKey line missing, add from remaining[0]
             if not re.search(r'\["recipeSpecKey"\]\s*=', new_entry):
                 new_entry = re.sub(
                     r'(\["potionKey"\]\s*=\s*L"[^"]*",)',
@@ -268,7 +256,6 @@ def scrub(account_text: str, watched: set[str]) -> tuple[str, dict]:
                     count=1,
                 )
             else:
-                # rewrite empty-removed pointers already handled; ensure they match remaining
                 for field in ("recipeSpecKey", "activeRecipeKey", "activeRecipeSpecKey"):
                     m = re.search(rf'\["{field}"\]\s*=\s*L"([^"]*)"', new_entry)
                     if m and m.group(1) not in remaining:
@@ -279,13 +266,11 @@ def scrub(account_text: str, watched: set[str]) -> tuple[str, dict]:
                             count=1,
                         )
 
-        keep_potion_parts.append(new_entry if new_entry.endswith("\n") else new_entry + "\n")
+        kept_potions.append(new_entry)
 
-    keep_potion_parts.append("\t},")
-    new_potions = "".join(keep_potion_parts)
+    new_potions = rebuild_section(potions_block, kept_potions)
     account_text = account_text[:p_start] + new_potions + account_text[p_end:]
 
-    # Drop migrate flag if present (we are not using in-addon scrub)
     account_text = re.sub(
         r'^[ \t]*\["?skillUpOriginLearnScrubV1"?\]\s*=\s*true,?[ \t]*\r?\n',
         "",
@@ -293,10 +278,64 @@ def scrub(account_text: str, watched: set[str]) -> tuple[str, dict]:
         flags=re.M,
     )
 
+    if "},," in account_text:
+        raise SystemExit("scrub produced },, — aborting")
+
+    brace = account_text.count("{") - account_text.count("}")
+    if brace != 0:
+        raise SystemExit(f"scrub brace imbalance={brace} — aborting")
+
     return account_text, stats
 
 
+def validate_sv(text: str) -> None:
+    logical = text.rstrip(" \t\r\n\x00")
+    if "},," in logical:
+        raise SystemExit("validation failed: },, present")
+    brace = logical.count("{") - logical.count("}")
+    if brace != 0:
+        raise SystemExit(f"validation failed: brace imbalance={brace}")
+    for name in ("grows", "refines", "recipes", "potions", "items"):
+        if not re.search(rf"\b{name}\s*=\s*\{{", logical):
+            raise SystemExit(f"validation failed: missing section {name}")
+
+
+def restore_from_backup() -> None:
+    if not PRE_SCRUB_BAK.is_file():
+        raise SystemExit(f"missing restore backup {PRE_SCRUB_BAK}")
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    if ACCOUNT_SV.is_file():
+        broken = ACCOUNT_SV.with_suffix(f".lua.broken-{stamp}")
+        shutil.copy2(ACCOUNT_SV, broken)
+        print(f"saved broken SV as {broken.name}")
+    # Full replace (client shut down — truncate/rename OK).
+    data = PRE_SCRUB_BAK.read_bytes()
+    ACCOUNT_SV.write_bytes(data)
+    validate_sv(data.decode("utf-8", errors="replace"))
+    print(f"restored {ACCOUNT_SV.name} from {PRE_SCRUB_BAK.name} ({len(data)} bytes)")
+
+
 def main() -> None:
+    import argparse
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument(
+        "--restore-only",
+        action="store_true",
+        help="Only restore pre-scrub backup; do not scrub",
+    )
+    ap.add_argument(
+        "--no-restore",
+        action="store_true",
+        help="Scrub current file without restoring first",
+    )
+    args = ap.parse_args()
+
+    if not args.no_restore:
+        restore_from_backup()
+    if args.restore_only:
+        return
+
     if not ACCOUNT_SV.is_file():
         raise SystemExit(f"missing {ACCOUNT_SV}")
     settings_text = (
@@ -307,36 +346,27 @@ def main() -> None:
     watched = watched_recipe_keys(settings_text)
     print(f"watched recipe fingerprints: {len(watched)}")
 
-    raw = ACCOUNT_SV.read_bytes()
-    target_size = len(raw)
-    original = raw.decode("utf-8", errors="replace").rstrip(" \t\r\n\x00")
-    scrubbed, stats = scrub(original + "\n", watched)
+    original = ACCOUNT_SV.read_text(encoding="utf-8", errors="replace")
+    scrubbed, stats = scrub(original, watched)
     scrubbed = scrubbed.rstrip(" \t\r\n\x00") + "\n"
-    if len(scrubbed) > target_size:
-        raise SystemExit(
-            f"scrubbed ({len(scrubbed)}) larger than mapped pad slot ({target_size})"
-        )
-    padded = (scrubbed + (" " * (target_size - len(scrubbed)))).encode("utf-8")
+    validate_sv(scrubbed)
 
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    bak = ACCOUNT_SV.with_suffix(f".lua.bak-skillup-scrub-{stamp}")
+    bak = ACCOUNT_SV.with_suffix(f".lua.bak-before-rescrub-{stamp}")
     shutil.copy2(ACCOUNT_SV, bak)
-    # Same-size overwrite: RoR often keeps SV memory-mapped (no truncate/rename).
-    with open(ACCOUNT_SV, "r+b") as f:
-        f.write(padded)
-        f.flush()
-    ACCOUNT_SV.with_suffix(".lua.new").write_bytes(padded)
+    ACCOUNT_SV.write_text(scrubbed, encoding="utf-8", newline="\n")
+    ACCOUNT_SV.with_suffix(".lua.new").write_text(scrubbed, encoding="utf-8", newline="\n")
 
     print(f"backup: {bak}")
-    print(f"wrote:  {ACCOUNT_SV} (padded {target_size})")
+    print(f"wrote:  {ACCOUNT_SV} ({len(scrubbed)} bytes)")
     print(f"recipes_deleted: {stats['recipes_deleted']}")
     print(f"recipes_kept_watched: {stats['recipes_kept_watched']}")
     print(f"potions_deleted: {stats['potions_deleted']}")
     print(f"potion_links_removed: {stats['potion_links_removed']}")
     print(f"potion_flags_cleared: {stats['potion_flags_cleared']}")
-    logical = ACCOUNT_SV.read_bytes().rstrip(b" \t\r\n\x00").decode("utf-8", errors="replace")
-    print(f"skillUpOrigin remaining: {logical.count('skillUpOrigin')}")
-    print(f"brace balance: {logical.count('{') - logical.count('}')}")
+    print(f"skillUpOrigin remaining: {scrubbed.count('skillUpOrigin')}")
+    print(f"brace balance: {scrubbed.count('{') - scrubbed.count('}')}")
+    print(f"}},, count: {scrubbed.count('},,')}")
 
 
 if __name__ == "__main__":

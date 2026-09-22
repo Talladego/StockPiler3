@@ -1,5 +1,5 @@
 ----------------------------------------------------------------
--- StockPiler3 Knowledge/Classify — potion effect / level / rarity helpers
+-- StockPiler3 Knowledge/Classify - potion effect / level / rarity helpers
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
@@ -230,7 +230,7 @@ local function ClassifyFromName(name)
         if string.find(n, "genius", 1, true) then return "hywoumcrit" end
         if string.find(n, "fervor", 1, true) then return "hywourcrit" end
     end
-    -- Do not map potion product names (Recovery / Elixir / Draught) — Effect comes
+    -- Do not map potion product names (Recovery / Elixir / Draught) - Effect comes
     -- from Use: ability or the recipe main's EFFECT id, not the finished name.
     if string.find(n, "brilliance", 1, true) then return "int" end
     if string.find(n, "discipline", 1, true) then return "wp" end
@@ -312,7 +312,7 @@ function Classify.GetEffectKey(itemData)
     if type(itemData) ~= "table" then
         return nil
     end
-    -- Finished potions: Use bonus → ability text (matches stock tooltip). Never name-first.
+    -- Finished potions: Use bonus -> ability text (matches stock tooltip). Never name-first.
     local fromUse = Classify.GetEffectKeyFromPotionUse(itemData)
     if fromUse then
         return fromUse

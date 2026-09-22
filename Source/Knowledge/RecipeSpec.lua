@@ -1,5 +1,5 @@
 ----------------------------------------------------------------
--- StockPiler3 Knowledge/RecipeSpec — learned brew fingerprints + craft counts
+-- StockPiler3 Knowledge/RecipeSpec - learned brew fingerprints + craft counts
 -- Callees above callers (RoR Lua has no local hoist).
 ----------------------------------------------------------------
 
@@ -638,11 +638,12 @@ local function CountItemsMatchingSpec(spec)
 end
 
 --- Plants/seeds still needed for AutoGrow seed-buffer (0 when buffer is satisfied).
---- Never subtract the full buffer min from plant stacks — that zeroed brew when
---- seeds were already at buffer (e.g. 5 Spumepetal plants − 5 reserve = 0 craftable).
+--- Watch brew: reserve headroom only (seeds already at buffer => plants brewable).
+--- SkillUp active: also keep bufferMin standing plant feedstock - SkillUp plants
+--- the seed buffer into plots, so headroom-only let Apo drain harvests.
 local function GrowReserveForSpec(spec)
     local Caps = StockPiler3.TradeSkillCaps
-    -- Apo/Butcher-only: no Cultivation → never reserve plants for grow/refine.
+    -- Apo/Butcher-only: no Cultivation -> never reserve plants for grow/refine.
     if not (Caps and Caps.CanAutoGrow and Caps.CanAutoGrow() == true) then
         return 0
     end
@@ -689,7 +690,7 @@ local function GrowReserveForSpec(spec)
         isSeed = true
         seedUid = plantOrSeedUid
     elseif plantOrSeedUid > 0 and SM then
-        -- Same-tier / refine-linked seed only — never L1 Eternal for a T25 plant.
+        -- Same-tier / refine-linked seed only - never L1 Eternal for a T25 plant.
         if SM.ResolveSeedUidForPlant then
             seedUid = tonumber(SM.ResolveSeedUidForPlant(plantOrSeedUid, spec)) or 0
         end
@@ -723,13 +724,20 @@ local function GrowReserveForSpec(spec)
     if headroom <= 0 then
         headroom = 0
     end
-    -- Cult SkillUp / Apo-assist grow: also hold plants needed to refill plots / buffer.
-    if skillUpActive and SkillUpMod and SkillUpMod.ShouldCultGrowForSkillUp
-        and SkillUpMod.ShouldCultGrowForSkillUp() == true and SkillUpMod.SeedDeficit
-    then
-        local deficit = tonumber(SkillUpMod.SeedDeficit(seedUid)) or 0
-        if deficit > headroom then
-            headroom = deficit
+    -- Cult SkillUp / Apo-assist: hold a standing bufferMin plant feedstock so
+    -- Apo cannot drain harvests when the seed buffer is already full (headroom=0).
+    -- Also cover SeedDeficit (plots + buffer top-up) when higher.
+    if skillUpActive then
+        if minBuf > headroom then
+            headroom = minBuf
+        end
+        if SkillUpMod and SkillUpMod.ShouldCultGrowForSkillUp
+            and SkillUpMod.ShouldCultGrowForSkillUp() == true and SkillUpMod.SeedDeficit
+        then
+            local deficit = tonumber(SkillUpMod.SeedDeficit(seedUid)) or 0
+            if deficit > headroom then
+                headroom = deficit
+            end
         end
     end
     if headroom <= 0 then
@@ -1033,7 +1041,7 @@ function RS.RecipeFingerprintStats(recipe, potionUid)
     stats.stability = SumSlotBonus(recipe.slots, CRAFT_BONUS.STABILITY)
     stats.multiplier = SumSlotBonus(recipe.slots, CRAFT_BONUS.MULTIPLIER)
     -- SCrit column: SPECIAL_CHANCE (Super-Critical). Display/fingerprint today;
-    -- may stop counting for identity later — crit success is a different potion
+    -- may stop counting for identity later - crit success is a different potion
     -- uid and does not fill the watched target stock.
     stats.superCrit = SumSlotBonus(recipe.slots, CRAFT_BONUS.SPECIAL_CHANCE)
     local yield = ObservedRecipeYield(recipe)
@@ -1129,7 +1137,7 @@ local function CountFromPlannerWarmCache(spec)
     if not P.CountItemsMatchingSpec then
         return nil
     end
-    -- cacheOnly avoids Planner→RS recursion on miss.
+    -- cacheOnly avoids Planner->RS recursion on miss.
     local n = P.CountItemsMatchingSpec(spec, { cacheOnly = true })
     if n == nil then
         return nil
@@ -1162,7 +1170,7 @@ function RS.CountItemsMatchingSpec(spec, _opts)
 end
 
 --- How many full crafts bags support.
---- MUST honor brewRespectGrowReserve: opts.respectGrowReserve OR character flag → BrewAvailableForSpec.
+--- MUST honor brewRespectGrowReserve: opts.respectGrowReserve OR character flag -> BrewAvailableForSpec.
 function RS.CountCraftsPossible(recipe, opts)
     if type(recipe) ~= "table" then
         return 0
@@ -1221,7 +1229,7 @@ function RS.CountCraftsPossible(recipe, opts)
 end
 
 ----------------------------------------------------------------
--- Potion Effect resolve (stored → fx: → main effectId → Classify)
+-- Potion Effect resolve (stored -> fx: -> main effectId -> Classify)
 ----------------------------------------------------------------
 
 local EFFECT_KEY_UI_ALIASES = {
@@ -1296,8 +1304,8 @@ local function EffectKeyFromRecipeMain(recipe)
     return nil
 end
 
---- Resolve potion Effect column key from the potion / recipe — not the product name.
---- Order: Use: ability → recipe fx: → main EFFECT id → stored.
+--- Resolve potion Effect column key from the potion / recipe - not the product name.
+--- Order: Use: ability -> recipe fx: -> main EFFECT id -> stored.
 --- opts.recipe / opts.recipeKey / opts.itemData optional.
 --- opts.stamp ~= false stamps potion.effectKey when found.
 --- opts.allowClassify == false skips bag/DB Use (fx:/main only).
@@ -1556,7 +1564,7 @@ local function IsIncompleteMainUpgrade(weakKey, strongKey)
         seg = tostring(seg or "")
         seg = string.gsub(seg, "|uid:%d+", "")
         seg = string.gsub(seg, "|fx:%d+", "")
-        -- EFFECT bonus lands as b:…6=N… when stamped; drop lone 6= from bonus list noise.
+        -- EFFECT bonus lands as b:...6=N... when stamped; drop lone 6= from bonus list noise.
         return seg
     end
     for i = 1, #weakParts do
@@ -1717,7 +1725,7 @@ function RS.RegisterKnownPotion(outputUid, out, recipeSpecKey, quality, opts)
     if quality ~= "failed" and recipeSpecKey ~= "" then
         local keys = CollectPotionRecipeKeyList(existing)
         -- Incomplete board snapshots (missing mid/trailing slots) are subsets of the
-        -- full fingerprint — do not register them as alternate recipes / active.
+        -- full fingerprint - do not register them as alternate recipes / active.
         local weaker = false
         for i = 1, #keys do
             local existingKey = tostring(keys[i] or "")
@@ -2427,7 +2435,7 @@ function RS.SpecStabilityTotal(slots)
     return SpecStabilityTotal(slots)
 end
 
---- Tops up stabilizer/goldweed when learned perCraft leaves stability ≤ 0 (MEDIUM/fail).
+--- Tops up stabilizer/goldweed when learned perCraft leaves stability <= 0 (MEDIUM/fail).
 function RS.EffectiveSpecPerCraft(slot, slots)
     return EffectiveSpecPerCraft(slot, slots)
 end
@@ -2454,7 +2462,7 @@ function RS.OutputQuality(out)
 end
 
 ----------------------------------------------------------------
--- Planner shims — Grow/Refine call RecipeSpec; demand lives on Planner
+-- Planner shims - Grow/Refine call RecipeSpec; demand lives on Planner
 ----------------------------------------------------------------
 
 local function PlannerMod()
@@ -2529,7 +2537,7 @@ end
 
 --- True when Seed Buffer is on and any growable refinable recipe line for this watch
 --- is below the buffer (bag + in-ground + outstanding). Memoized per bag snapGen.
---- opts.seedUids: known seed uniqueIDs from plan tip / statusTipSlots — prefer these and
+--- opts.seedUids: known seed uniqueIDs from plan tip / statusTipSlots - prefer these and
 --- skip SeedMap.ResolveSeedForSpec / FindPlantUidForSpec (live Watch hitch path).
 function RS.WatchHasSeedBufferShort(recipe, opts)
     if not (StockPiler3.Watch and StockPiler3.Watch.IsSeedBufferEnabled
@@ -2595,7 +2603,7 @@ function RS.WatchHasSeedBufferShort(recipe, opts)
         return any
     end
 
-    -- Hot path: plan tip / row-stamped seedUids — CountByUid budget only.
+    -- Hot path: plan tip / row-stamped seedUids - CountByUid budget only.
     local knownShort = AnyKnownSeedShort(opts.seedUids)
     if knownShort ~= nil then
         memo.byRecipe[recipeId] = knownShort

@@ -1,5 +1,5 @@
 ----------------------------------------------------------------
--- StockPiler3 Knowledge/Items — learned item rows (plants/mats/potions)
+-- StockPiler3 Knowledge/Items - learned item rows (plants/mats/potions)
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
@@ -128,7 +128,7 @@ local function RoleFromItem(item, bonuses)
     return role ~= "" and role or "ingredient"
 end
 
---- Strip Eternal / Exceptional / Bunched prefixes for Bloodseed↔Powder relatedness.
+--- Strip Eternal / Exceptional / Bunched prefixes for Bloodseed<->Powder relatedness.
 function Items.StripEternalExceptionalBunchedPrefixes(name)
     local s = string.lower(ToNarrow(name))
     s = string.gsub(s, "^bunched%s+", "")
@@ -431,7 +431,7 @@ function Items.ToSpec(item)
         name = row.name,
         rarity = row.rarity,
     }
-    -- Preserve known false; omit when never observed (nil ≠ non-refinable).
+    -- Preserve known false; omit when never observed (nil != non-refinable).
     if row.isRefinable ~= nil then
         out.isRefinable = row.isRefinable == true
     end

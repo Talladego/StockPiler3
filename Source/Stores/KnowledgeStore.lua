@@ -1,5 +1,5 @@
 ----------------------------------------------------------------
--- StockPiler3 Stores/KnowledgeStore — account learned-data facade
+-- StockPiler3 Stores/KnowledgeStore - account learned-data facade
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}

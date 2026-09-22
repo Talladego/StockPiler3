@@ -1,5 +1,5 @@
 ----------------------------------------------------------------
--- StockPiler3 Knowledge/Additives — Soil / Water / Nutrient catalog stubs
+-- StockPiler3 Knowledge/Additives - Soil / Water / Nutrient catalog stubs
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
@@ -355,6 +355,16 @@ function AD.NeedsCurrentStage()
         end
     end
     return false
+end
+
+--- True when a plot needs an additive AND bags have one we can apply now.
+--- Use this for AutoGrow wake/work so grow-wait does not 1s-tick CollectIntents.
+function AD.CanApplyCurrentStage()
+    if AD.IsEnabled() ~= true then
+        return false
+    end
+    local pick = AD.PickNext({})
+    return type(pick) == "table" and (tonumber(pick.plotNum) or 0) > 0
 end
 
 --- Pick one plot+bag slot for the next additive apply.

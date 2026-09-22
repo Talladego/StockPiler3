@@ -1,5 +1,5 @@
 ----------------------------------------------------------------
--- StockPiler3 Stores/PlanSnapshotStore — cached planner output
+-- StockPiler3 Stores/PlanSnapshotStore - cached planner output
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}

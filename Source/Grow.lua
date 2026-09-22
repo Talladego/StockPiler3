@@ -513,6 +513,42 @@ local function PickBufferGrowCandidate(lines, SM, focusKeys, demand, focusGap)
         local line = lines[i]
         local seedUid = tonumber(line.seedUid) or 0
         if seedUid > 0 and CanUseSeedUid(seedUid) and LineAllowedForFocus(line) then
+            -- Never buffer-plant a lower-tier seed for a higher plant (e.g. Dusty L1
+            -- after Majestic L200 exists but is short of the buffer).
+            local plantReq = 0
+            if type(line.spec) == "table" then
+                plantReq = tonumber(line.spec.skillLevel) or tonumber(line.spec.skillReq) or 0
+            end
+            if plantReq <= 0 and (tonumber(line.plantUid) or 0) > 0 then
+                local Items = StockPiler3.Items
+                if Items and Items.ToSpec then
+                    local pSpec = Items.ToSpec(line.plantUid)
+                    plantReq = tonumber(pSpec and pSpec.skillLevel) or 0
+                end
+            end
+            local seedReq = 0
+            if plantReq > 0 then
+                local sample = StockPiler3.Inventory and StockPiler3.Inventory.GetSample
+                    and StockPiler3.Inventory.GetSample(seedUid)
+                if type(sample) == "table" then
+                    seedReq = tonumber(sample.craftingSkillRequirement) or tonumber(sample.skillReq) or 0
+                    if seedReq <= 0 and type(sample.bonuses) == "table" then
+                        seedReq = tonumber(sample.bonuses[9]) or 0
+                    end
+                end
+                if seedReq <= 0 and StockPiler3.Items and StockPiler3.Items.GetByUid then
+                    local row = StockPiler3.Items.GetByUid(seedUid)
+                    seedReq = tonumber(row and (row.craftingSkillRequirement or row.skillReq or row.skillLevel)) or 0
+                    if seedReq <= 0 and type(row) == "table" and type(row.bonuses) == "table" then
+                        seedReq = tonumber(row.bonuses[9]) or 0
+                    end
+                end
+            end
+            if plantReq > 0 and seedReq > 0 and seedReq < plantReq then
+                seedUid = 0
+            end
+        end
+        if seedUid > 0 and CanUseSeedUid(seedUid) and LineAllowedForFocus(line) then
             -- Upgrade Seed owns short plant watches until the target tier exists;
             -- do not seed_buffer intermediate genus rungs into the craft bag.
             local US = StockPiler3.UpgradeSeed
@@ -641,9 +677,6 @@ local function PickPlantStockCandidate(SM)
     local Catalog = StockPiler3.Catalog
     local Items = StockPiler3.Items
     local MS = StockPiler3.MaterialSpec
-    local Refine = StockPiler3.Refine
-    local bufferOn = Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true
-    local buffer = Watch.GetSeedBufferMin and tonumber(Watch.GetSeedBufferMin()) or 5
     local best, bestNeed = nil, -1
     for plantKey, watch in pairs(plantWatches) do
         if type(watch) == "table" and watch.enabled == true
@@ -695,49 +728,31 @@ local function PickPlantStockCandidate(SM)
                                 seed = seed or { uniqueID = seedUid }
                             end
                             if seedUid > 0 and CanUseSeedUid(seedUid) then
-                                local bufferOk = true
-                                if bufferOn then
-                                    local credit = BufferCredit(seedUid)
-                                    if credit < buffer then
-                                        bufferOk = false
-                                    end
-                                end
-                                if bufferOk then
-                                    local bag = OpaqueSeedCredit(seedUid, LiveSeedBag(seedUid))
-                                    local committed = tonumber(Grow._seedCommitted[seedUid]) or 0
-                                    local avail = bag - committed
-                                    if bufferOn then
-                                        -- Match Upgrade cushion: never plant into buffer.
-                                        avail = math.min(avail, math.max(0, bag - buffer))
-                                    end
-                                    if avail < 1 then
-                                        local refinable = 0
-                                        if Refine and Refine.CountRefinablePlants then
-                                            refinable = tonumber(Refine.CountRefinablePlants(plantUid, spec)) or 0
-                                        end
-                                        if refinable > 0 then
-                                            avail = 0
-                                        end
-                                    end
-                                    if avail >= 1 and need > bestNeed then
-                                        bestNeed = need
-                                        best = {
-                                            spec = spec,
-                                            specKey = (MS and MS.ProductKey and MS.ProductKey(spec))
-                                                or ("plant:" .. tostring(plantUid)),
-                                            seed = seed or { uniqueID = seedUid },
-                                            seedUid = seedUid,
-                                            plantUid = plantUid,
-                                            seedHave = bag,
-                                            plantable = math.min(avail, need),
-                                            deficit = need,
-                                            craftsShort = need,
-                                            role = SpecRole(spec),
-                                            plantReason = "plant_stock",
-                                            watchKey = tostring(plantKey),
-                                            pickMode = "plant_stock",
-                                        }
-                                    end
+                                -- Plant watches plant buffer seeds toward the plant
+                                -- target, then Refine tops the seed buffer back up.
+                                -- Do not hold the buffer cushion here (0.3.142 Upgrade
+                                -- Seed "never plant into buffer" broke that cycle).
+                                local bag = OpaqueSeedCredit(seedUid, LiveSeedBag(seedUid))
+                                local committed = tonumber(Grow._seedCommitted[seedUid]) or 0
+                                local avail = bag - committed
+                                if avail >= 1 and need > bestNeed then
+                                    bestNeed = need
+                                    best = {
+                                        spec = spec,
+                                        specKey = (MS and MS.ProductKey and MS.ProductKey(spec))
+                                            or ("plant:" .. tostring(plantUid)),
+                                        seed = seed or { uniqueID = seedUid },
+                                        seedUid = seedUid,
+                                        plantUid = plantUid,
+                                        seedHave = bag,
+                                        plantable = math.min(avail, need),
+                                        deficit = need,
+                                        craftsShort = need,
+                                        role = SpecRole(spec),
+                                        plantReason = "plant_stock",
+                                        watchKey = tostring(plantKey),
+                                        pickMode = "plant_stock",
+                                    }
                                 end
                             end
                         end
@@ -770,7 +785,7 @@ local function ClearPendingPlot(plotNum, opts)
     Grow._pendingSeedUid[plotNum] = nil
 end
 
---- After PlantSeed succeeds: bag is truth — drop seed bag reservation but keep plot
+--- After PlantSeed succeeds: bag is truth - drop seed bag reservation but keep plot
 --- reserved until soil confirms so FindNextEmptyPlot cannot double-plant.
 --- Keep _wavePlantedBySeed until rollback/force clear (do not drop it with bag commit).
 local function ReleaseSeedReservation(plotNum)
@@ -792,7 +807,7 @@ local function ReleaseCommit(plotNum, ok)
         return
     end
     -- ok==true: soil confirmed (seed commit already released after PlantSeed).
-    -- ok==false: plant failed or pending expired — roll back commit only if still held.
+    -- ok==false: plant failed or pending expired - roll back commit only if still held.
     ClearPendingPlot(plotNum, { rollbackCommit = (ok ~= true) })
 end
 
@@ -953,6 +968,10 @@ function Grow.CountInGroundSeeds(seedUid)
     return CountInGroundSeeds(seedUid)
 end
 
+function Grow.CountSeedPlotCredit(seedUid)
+    return CountSeedPlotCredit(seedUid)
+end
+
 function Grow.HasPendingBufferRefine()
     local Refine = StockPiler3.Refine
     if Refine and Refine.HasPendingBufferRefine then
@@ -1038,7 +1057,7 @@ function Grow.MarkPlantJobDirty(reason)
 end
 
 ----------------------------------------------------------------
--- Plant pick — watch deficit → craftable-lift bottlenecks → spare plots
+-- Plant pick - watch deficit -> craftable-lift bottlenecks -> spare plots
 ----------------------------------------------------------------
 
 --- AutoGrow watches with potion deficit (target - have), largest first.
@@ -1190,6 +1209,14 @@ local function ResolveSeedForLiftSpec(spec, SM, demandRow)
             plantUid = found
         end
     end
+    -- Prefer skill-matched plant->seed; demand seedUid may be a stale L1 vendor id.
+    if plantUid > 0 and SM.ResolveSeedUidForPlant then
+        local matched = tonumber(SM.ResolveSeedUidForPlant(plantUid, spec)) or 0
+        if matched > 0 then
+            seedUid = matched
+            seed = { uniqueID = matched, plantUid = plantUid }
+        end
+    end
     if seedUid <= 0 and SM.ResolveSeedForSpec and type(spec) == "table" then
         seed = SM.ResolveSeedForSpec(spec)
         if type(seed) == "table" then
@@ -1201,7 +1228,7 @@ local function ResolveSeedForLiftSpec(spec, SM, demandRow)
     end
     -- Plant known but seed unmapped: still try PickBestSeedUid (learned grows / bag).
     if seedUid <= 0 and plantUid > 0 and SM.PickBestSeedUid then
-        seedUid = tonumber(SM.PickBestSeedUid(plantUid)) or 0
+        seedUid = tonumber(SM.PickBestSeedUid(plantUid, nil, spec)) or 0
         if seedUid > 0 then
             seed = { uniqueID = seedUid, plantUid = plantUid }
         end
@@ -1213,7 +1240,7 @@ local function ResolveSeedForLiftSpec(spec, SM, demandRow)
 end
 
 --- Pick one seed that raises craftable for this watch, or why it cannot.
---- Returns job, why — why is nil on success; "refine-first" | "non-growable" | "no-seed" | "none".
+--- Returns job, why - why is nil on success; "refine-first" | "non-growable" | "no-seed" | "none".
 local function PickCraftableLiftJobForWatch(watch, SM, RS, demand)
     if type(watch) ~= "table" or type(watch.recipe) ~= "table" then
         return nil, "none"
@@ -1266,7 +1293,7 @@ local function PickCraftableLiftJobForWatch(watch, SM, RS, demand)
                 end
                 local ground = CountSeedPlotCredit(seedUid)
                 -- Pending plots are not always in Garden yet; after ReleaseSeedReservation
-                -- _seedCommitted is 0 — still count _pendingPlant or we overfill one role.
+                -- _seedCommitted is 0 - still count _pendingPlant or we overfill one role.
                 local have = bag + ground
                 local craftsHave = math.floor(have / perCraft)
                 if craftsHave < 0 then
@@ -1275,7 +1302,7 @@ local function PickCraftableLiftJobForWatch(watch, SM, RS, demand)
                 local growable = SM.IsGrowableSpec and SM.IsGrowableSpec(spec) == true
                 local isByproduct = SM.IsHarvestByproduct and SM.IsHarvestByproduct(spec) == true
                 -- Remaining item short vs absolute demand, using in-flight credit (not stale
-                -- demandRow.craftsShort alone — that ignores plants just issued).
+                -- demandRow.craftsShort alone - that ignores plants just issued).
                 local absNeed = 0
                 if type(demandRow) == "table" then
                     absNeed = tonumber(demandRow.absolute) or tonumber(demandRow.brewAbsolute) or 0
@@ -1307,7 +1334,7 @@ local function PickCraftableLiftJobForWatch(watch, SM, RS, demand)
             end
         end
     end
-    -- No growable demand-short on this watch → hand off (buy/convert-only or fully stocked plants).
+    -- No growable demand-short on this watch -> hand off (buy/convert-only or fully stocked plants).
     if minCrafts == nil then
         return nil, "non-growable"
     end
@@ -1324,7 +1351,45 @@ local function PickCraftableLiftJobForWatch(watch, SM, RS, demand)
             local committed = tonumber(Grow._seedCommitted[seedUid]) or 0
             local avail = bag - committed
             if seedUid > 0 and CanUseSeedUid(seedUid) and avail >= 1 then
-                plantable[#plantable + 1] = s
+                -- Upgrade Seed owns mid-rung climbs: do not potion_stock-plant a seed
+                -- that is not the skill-matched seed for this mat (L150 Spumepetal was
+                -- filling plots for L200 demand; Items.skillReq is often 0 on bag shells).
+                local US = StockPiler3.UpgradeSeed
+                local underTier = false
+                if US and US.IsEnabled and US.IsEnabled() == true and SM then
+                    local plantUid = tonumber(s.plantUid) or 0
+                    local matched = 0
+                    if plantUid > 0 and SM.ResolveSeedUidForPlant then
+                        matched = tonumber(SM.ResolveSeedUidForPlant(plantUid, s.spec)) or 0
+                    end
+                    if matched > 0 and seedUid ~= matched then
+                        underTier = true
+                    else
+                        local needReq = tonumber(s.spec and s.spec.skillLevel) or 0
+                        local seedReq = 0
+                        local Inv = StockPiler3.Inventory
+                        if Inv and Inv.GetSample then
+                            local sample = Inv.GetSample(seedUid)
+                            if type(sample) == "table" then
+                                seedReq = tonumber(sample.craftingSkillRequirement)
+                                    or tonumber(sample.skillReq) or 0
+                            end
+                        end
+                        if seedReq <= 0 and StockPiler3.Items and StockPiler3.Items.GetByUid then
+                            local row = StockPiler3.Items.GetByUid(seedUid)
+                            if type(row) == "table" then
+                                seedReq = tonumber(row.skillReq) or tonumber(row.skillLevel)
+                                    or tonumber(row.craftingSkillRequirement) or 0
+                            end
+                        end
+                        if needReq > 0 and seedReq > 0 and seedReq < needReq then
+                            underTier = true
+                        end
+                    end
+                end
+                if underTier ~= true then
+                    plantable[#plantable + 1] = s
+                end
             else
                 local refinable = 0
                 if Refine and Refine.CountRefinablePlants then
@@ -1453,6 +1518,18 @@ function Grow.PickPlantCandidate()
         return done(nil)
     end
 
+    -- Upgrade Seed refine-first: skip BuildBalancedSpecDemand (WarmHave.miss) —
+    -- orch trails showed PickPlantCandidate + CollectIntents on every refine tick.
+    local US = StockPiler3.UpgradeSeed
+    if US and US.IsEnabled and US.IsEnabled() == true then
+        if US.NeedsRefineFirst and US.NeedsRefineFirst() == true then
+            if StockPiler3.Refine and StockPiler3.Refine.MarkRefineDue then
+                StockPiler3.Refine.MarkRefineDue("upgrade-seed")
+            end
+            return done(nil)
+        end
+    end
+
     local demand = RS.BuildBalancedSpecDemand and RS.BuildBalancedSpecDemand() or nil
     local watches = CollectPlantWatchOrder(RS)
     local maxGap = 0
@@ -1471,12 +1548,12 @@ function Grow.PickPlantCandidate()
             return done(job)
         end
         if why == "refine-first" then
-            -- Focus watch has plants to convert — idle plots until refine, do not fill
+            -- Focus watch has plants to convert - idle plots until refine, do not fill
             -- lower-gap watches while those seeds are pending.
             needsRefine = true
             break
         end
-        -- no-seed / non-growable → fall back to next watch (lower bottleGap OK).
+        -- no-seed / non-growable -> fall back to next watch (lower bottleGap OK).
         -- Bottle-gap order already preferred focus; empty plots should not idle when
         -- another watch has plantable seeds.
     end
@@ -1485,23 +1562,17 @@ function Grow.PickPlantCandidate()
     end
 
     -- Upgrade Seed: climb lower family rungs toward short watch mats (before buffer /
-    -- SkillUp). Must run for plant-only watches too — gating on potion #watches
+    -- SkillUp). Must run for plant-only watches too - gating on potion #watches
     -- skipped Taut Gobswort while SkillUp filled plots with spiderfrond (3010015).
-    local US = StockPiler3.UpgradeSeed
     if US and US.IsEnabled and US.IsEnabled() == true then
-        if US.NeedsRefineFirst and US.NeedsRefineFirst() == true then
-            if StockPiler3.Refine and StockPiler3.Refine.MarkRefineDue then
-                StockPiler3.Refine.MarkRefineDue("upgrade-seed")
-            end
-            return done(nil)
-        end
         local uj = US.PickPlantJob and US.PickPlantJob() or nil
         if type(uj) == "table" and (tonumber(uj.seedUid) or 0) > 0 then
             LogPlantPick(uj)
             return done(uj)
         end
-        -- Climb still progressing (plant/refine/buy): hold plots.
-        -- Cult-gated (have floor, watch needs higher): release SkillUp / buffer.
+        -- Climb still progressing: hold only when no upgrade target has
+        -- plantable seeds or refinable plants (climbing/need_buy must not
+        -- starve another genus's refine or plant).
         local climb = US.StatusForWatch and US.StatusForWatch() or nil
         if type(climb) ~= "table" and US.GetActiveStatus then
             climb = US.GetActiveStatus()
@@ -1512,12 +1583,14 @@ function Grow.PickPlantCandidate()
                 if US.MaybeNotifyStall then
                     US.MaybeNotifyStall()
                 end
-                -- fall through — cannot climb further until Cult rises
-            else
+                -- fall through - cannot climb further until Cult rises
+            elseif US.ShouldHoldEmptyPlots and US.ShouldHoldEmptyPlots(climb) == true then
                 if US.MaybeNotifyStall then
                     US.MaybeNotifyStall()
                 end
                 return done(nil)
+            elseif US.MaybeNotifyStall then
+                US.MaybeNotifyStall()
             end
         elseif US.MaybeNotifyStall then
             US.MaybeNotifyStall()
@@ -1550,11 +1623,23 @@ function Grow.PickPlantCandidate()
             return done(best)
         end
         if focusGap > 0 then
-            return done(nil)
+            local SkillUpGate = StockPiler3.SkillUp
+            if not (SkillUpGate and SkillUpGate.WatchesAllowIdleSkillUp
+                and SkillUpGate.WatchesAllowIdleSkillUp() == true)
+            then
+                return done(nil)
+            end
+            -- All short watches progress-blocked: fall through to SkillUp.
         end
     elseif #watches > 0 then
-        -- Watches still short, buffer off, no plantable job — do not SkillUp yet.
-        return done(nil)
+        -- Watches still short, buffer off, no plantable job - do not SkillUp yet
+        -- unless every short watch is progress-blocked.
+        local SkillUpGate = StockPiler3.SkillUp
+        if not (SkillUpGate and SkillUpGate.WatchesAllowIdleSkillUp
+            and SkillUpGate.WatchesAllowIdleSkillUp() == true)
+        then
+            return done(nil)
+        end
     end
 
     local best = PickPlantStockCandidate(SM)
@@ -1664,11 +1749,13 @@ function Grow.IssuePlantOne(opId)
     if quietUntil > 0 then
         local now = NowSec()
         if now > 0 and now < quietUntil then
+            Grow.LogSkipPlant("grow-quiet")
             return false
         end
         Grow._plantQuietUntil = 0
     end
     if Grow.ShouldHoldPlantForReadyHarvest() == true then
+        Grow.LogSkipPlant("hold-harvest-batch")
         return false
     end
 
@@ -1685,17 +1772,24 @@ function Grow.IssuePlantOne(opId)
 
     local plotNum = Grow.FindNextEmptyPlot()
     if plotNum <= 0 then
+        Grow.LogSkipPlant("no-empty-plot")
         return done(false)
     end
     local CA = StockPiler3.CultivatorAdapter
     local BA = StockPiler3.BagAdapter
     if not CA or not CA.PlantSeed then
+        Grow.LogSkipPlant("no-cult-adapter")
         return done(false)
     end
     if CA.ReadPlot then
         local live = CA.ReadPlot(plotNum)
         if type(live) == "table" then
             if live.locked == true or NormalizeStage(live.stage) ~= StageEmpty() then
+                Grow.LogSkipPlant("plot-not-empty-live P" .. tostring(plotNum))
+                -- Garden row was empty; live disagrees - soft dirty garden, no fill-block.
+                if StockPiler3.Garden and StockPiler3.Garden.MarkSyncAllDue then
+                    StockPiler3.Garden.MarkSyncAllDue()
+                end
                 return done(false)
             end
         end
@@ -1715,6 +1809,7 @@ function Grow.IssuePlantOne(opId)
             Grow.ClearFillBlocked()
         else
             Grow.SetFillBlocked(true, 5)
+            Grow.LogSkipPlant("no-plant-job")
         end
         return done(false)
     end
@@ -1725,7 +1820,14 @@ function Grow.IssuePlantOne(opId)
         slot, item, backpackType = BA.FindSeedSlot(seedUid)
     end
     if slot <= 0 or type(item) ~= "table" then
-        Grow.SetFillBlocked(true, 5)
+        -- After refine, CountByUid can precede a usable slot (or CanUse gating).
+        -- Soft-wait: keep fast ticks, do not latch a long fillBlocked idle.
+        local Sch = StockPiler3.Scheduler
+        if Sch and Sch.SetAutoGrowIdle then
+            Sch.SetAutoGrowIdle(false)
+        end
+        Grow.SetFillBlocked(true, 1)
+        Grow.LogSkipPlant("no-seed-slot uid=" .. tostring(seedUid))
         return done(false)
     end
 
@@ -1752,7 +1854,8 @@ function Grow.IssuePlantOne(opId)
         if CC and CC.ClearSoilPending then
             CC.ClearSoilPending(plotNum)
         end
-        Grow.SetFillBlocked(true, 5)
+        Grow.SetFillBlocked(true, 2)
+        Grow.LogSkipPlant("plant-seed-api-fail P" .. tostring(plotNum))
         return done(false)
     end
 
@@ -1761,6 +1864,20 @@ function Grow.IssuePlantOne(opId)
     Grow._lastPlantedSeedUid = seedUid
     Grow._commitForceCleared = false
     Grow.InvalidatePlantQueue({})
+    -- Plant quiet: hold plan rebuild / Watch / Footer through CultivationUpdated.
+    local Sch = StockPiler3.Scheduler
+    if Sch and Sch.ArmPlantQuiet then
+        Sch.ArmPlantQuiet()
+    end
+    if Sch and Sch.SkipPlanThisFrame then
+        Sch.SkipPlanThisFrame()
+    end
+    if Sch and Sch.SkipUiThisFrame then
+        Sch.SkipUiThisFrame()
+    end
+    if Sch and Sch.SuppressInventorySideEffects then
+        Sch.SuppressInventorySideEffects(2)
+    end
     LogGrow(string.format(
         "plant P%d seedUid=%d role=%s watch=%s reason=%s opId=%s",
         plotNum,
@@ -1815,7 +1932,8 @@ function Grow.ClearPendingAdditiveIfFilled(plotNum, row)
     end
 end
 
---- True when a growing plot is missing the additive for its current stage.
+--- True when AutoGrow can apply an additive right now (need + bag stock).
+--- Plot-need alone must not keep the 1s AutoGrow tick during grow-wait.
 function Grow.NeedsCurrentStageAdditive()
     if Grow.IsEnabled() ~= true then
         return false
@@ -1823,6 +1941,9 @@ function Grow.NeedsCurrentStageAdditive()
     local AD = StockPiler3.Additives
     if not AD or not AD.IsEnabled or AD.IsEnabled() ~= true then
         return false
+    end
+    if AD.CanApplyCurrentStage then
+        return AD.CanApplyCurrentStage() == true
     end
     if AD.NeedsCurrentStage then
         return AD.NeedsCurrentStage() == true
@@ -1926,6 +2047,17 @@ function Grow.ShouldHoldPlantForReadyHarvest()
 end
 
 local function NudgeHarvestReadiness()
+    local Sch = StockPiler3.Scheduler
+    local hold = (Sch and Sch.SkipUiThisFrameActive and Sch.SkipUiThisFrameActive() == true)
+        or (Sch and Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true)
+        or (Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true)
+        or (Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true)
+    if hold then
+        if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
+            StockPiler3Window.RequestFooterRefresh()
+        end
+        return
+    end
     if StockPiler3Window and StockPiler3Window.SyncActionReadiness then
         StockPiler3Window.SyncActionReadiness({ immediate = true })
     elseif StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
@@ -1941,7 +2073,7 @@ function Grow.ArmHarvestOpLock(seconds)
     if untilT > cur then
         Grow._harvestOpLockUntil = untilT
     end
-    -- Grey Harvest macro while op-lock is active (CanHarvestNow → false).
+    -- Grey Harvest macro while op-lock is active (CanHarvestNow -> false).
     if not wasActive then
         NudgeHarvestReadiness()
     end
@@ -2043,6 +2175,12 @@ function Grow.NotifyHarvestOutcome(plotNum, opts)
         count = tostring(math.max(1, count)),
         name = name,
     }))
+    if opts.specialMoment == true then
+        NotifyChat(T("grow.harvest_special_moment", {
+            plot = tostring(plotNum),
+            name = name,
+        }))
+    end
 end
 
 --- One-shot harvest-ready chat + HELP_TIPS_NEW; clear latch when not ready.
@@ -2051,29 +2189,43 @@ function Grow.MaybeNotifyHarvestReady()
     local canHarvest = Grow.CanHarvestNow() == true
     local ready = allReady == true and canHarvest == true
     local wasReady = Grow._harvestReadyLatched == true
-    -- Enable Harvest as soon as any plot is harvestable (not only all-planted latch).
-    if canHarvest and StockPiler3Window and StockPiler3Window.SyncActionReadiness then
-        if Grow._canHarvestLatched ~= true then
-            StockPiler3Window.SyncActionReadiness({ immediate = true })
-            Grow._canHarvestLatched = true
-        elseif StockPiler3Window.RequestFooterRefresh then
-            StockPiler3Window.RequestFooterRefresh()
+    local Sch = StockPiler3.Scheduler
+    -- Never SyncActionReadiness (CanBrewNow + Macro.Appearance) during cult storms —
+    -- that was the 10s Footer/Macro trail piled on CultivationUpdated x4.
+    local holdFooter = (Sch and Sch.SkipUiThisFrameActive and Sch.SkipUiThisFrameActive() == true)
+        or (Sch and Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true)
+        or (Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true)
+        or (Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true)
+    local function NudgeFooter(forceImmediate)
+        if holdFooter or forceImmediate ~= true then
+            if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
+                StockPiler3Window.RequestFooterRefresh()
+            end
+            return
         end
-    elseif Grow._canHarvestLatched == true then
-        Grow._canHarvestLatched = false
-        if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
+        if StockPiler3Window and StockPiler3Window.SyncActionReadiness then
+            StockPiler3Window.SyncActionReadiness({ immediate = true })
+        elseif StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
             StockPiler3Window.RequestFooterRefresh()
         end
     end
+    -- Enable Harvest as soon as any plot is harvestable (not only all-planted latch).
+    if canHarvest then
+        if Grow._canHarvestLatched ~= true then
+            NudgeFooter(true)
+            Grow._canHarvestLatched = true
+        else
+            NudgeFooter(false)
+        end
+    elseif Grow._canHarvestLatched == true then
+        Grow._canHarvestLatched = false
+        NudgeFooter(false)
+    end
     if ready then
         if not wasReady then
-            if StockPiler3Window and StockPiler3Window.SyncActionReadiness then
-                StockPiler3Window.SyncActionReadiness({ immediate = true })
-            elseif StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
-                StockPiler3Window.RequestFooterRefresh()
-            end
-        elseif StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
-            StockPiler3Window.RequestFooterRefresh()
+            NudgeFooter(true)
+        else
+            NudgeFooter(false)
         end
         Grow._harvestReadyLatched = true
         if Grow._harvestReadyChatSent ~= true then
@@ -2091,8 +2243,8 @@ function Grow.MaybeNotifyHarvestReady()
             end
         end
     else
-        if wasReady and StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
-            StockPiler3Window.RequestFooterRefresh()
+        if wasReady then
+            NudgeFooter(false)
         end
         Grow._harvestReadyLatched = false
         Grow._harvestReadyChatSent = false
@@ -2307,11 +2459,18 @@ function Grow.WakeAfterHarvest(plotNum, opts)
     local Sch = StockPiler3.Scheduler
     local stormFloor = (Sch and tonumber(Sch.HARVEST_STORM_MIN_SEC)) or 1.5
     local stormSec = math.max(plantDelay, stormFloor)
+    -- Storm + skip first so any same-frame knowledge/UI path cannot Flatten.
     if Sch and Sch.ArmHarvestStorm then
         Sch.ArmHarvestStorm(stormSec)
     end
     if Sch and Sch.ArmPlantQuiet then
         Sch.ArmPlantQuiet(stormSec)
+    end
+    if Sch and Sch.SkipPlanThisFrame then
+        Sch.SkipPlanThisFrame()
+    end
+    if Sch and Sch.SkipUiThisFrame then
+        Sch.SkipUiThisFrame()
     end
     local quietUntil = now + stormSec
     if quietUntil > (tonumber(Grow._plantQuietUntil) or 0) then

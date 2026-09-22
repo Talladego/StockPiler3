@@ -107,7 +107,7 @@ function Catalog.ListPotionRecipeEntries()
     return ListEntriesFromKnowledge()
 end
 
---- Peek only — listing potions must not create disabled SV stubs.
+--- Peek only - listing potions must not create disabled SV stubs.
 function Catalog.GetWatch(potionKey)
     if StockPiler3.Watch and StockPiler3.Watch.GetWatch then
         return StockPiler3.Watch.GetWatch(potionKey)
@@ -649,7 +649,7 @@ function Catalog.ListPlantEntries()
         if type(effectKey) == "string" and effectKey ~= "" and RS and RS.NormalizeEffectKeyForUi then
             effectKey = RS.NormalizeEffectKeyForUi(effectKey) or effectKey
         end
-        -- Live fallback: seed map link → seed EFFECT (before recipe / description).
+        -- Live fallback: seed map link -> seed EFFECT (before recipe / description).
         if (not effectKey or effectKey == "") and SM and SM.ResolveSeedEffectId then
             local seedUids = SM.GetSeedUidsForPlant and SM.GetSeedUidsForPlant(plantUid) or nil
             local bestSeed = 0

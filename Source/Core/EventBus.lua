@@ -1,5 +1,5 @@
 ----------------------------------------------------------------
--- StockPiler3 Core/EventBus — internal pub/sub
+-- StockPiler3 Core/EventBus - internal pub/sub
 ----------------------------------------------------------------
 
 StockPiler3.EventBus = StockPiler3.EventBus or {}

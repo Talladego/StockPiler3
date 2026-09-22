@@ -1,5 +1,5 @@
 ----------------------------------------------------------------
--- StockPiler3 Knowledge/SeedMap — single facade (observe / resolve / stats)
+-- StockPiler3 Knowledge/SeedMap - single facade (observe / resolve / stats)
 -- Learn/snapshot ONLY on harvest complete attempts.
 ----------------------------------------------------------------
 
@@ -18,13 +18,13 @@ SM._harvestWatch = SM._harvestWatch or {}
 SM._plantUidCache = SM._plantUidCache or {}
 SM._plantUidCacheSnap = nil
 
--- Permanent purple (Eternal *) — never consumed.
+-- Permanent purple (Eternal *) - never consumed.
 local ETERNAL_SEED_UID = {
     [199801] = true, [199802] = true, [199803] = true, [199804] = true,
     [199805] = true, [199806] = true, [199809] = true, [199810] = true,
     [199811] = true, [199812] = true,
 }
--- Charged purple (Exceptional *) — ~250 grows then spent.
+-- Charged purple (Exceptional *) - ~250 grows then spent.
 local EXCEPTIONAL_SEED_UID = {
     [2018021] = true, [2018022] = true, [2018023] = true,
     [2018024] = true, [2018025] = true, [2018026] = true,
@@ -413,7 +413,7 @@ local function RecordHarvestProduct(seedUid, plantUid, qty)
     if stampedFx > 0 then
         row.effectId = stampedFx
     end
-    -- Infertile / special apo harvest products are never plant→seed refinable.
+    -- Infertile / special apo harvest products are never plant->seed refinable.
     local ME = StockPiler3.MaterialExceptions
     local markSpecial = SM.IsInfertileSeed(seedUid, seedData and seedData.name)
         or (ME and ME.LooksSpecialApoMain and type(plantData) == "table" and ME.LooksSpecialApoMain(plantData))
@@ -471,7 +471,7 @@ function SM.IsOpaqueReplantSeed(seedUid, nameHint)
     return SeedReplantTier(seedUid, nameHint) >= 2
 end
 
---- One-shot hybrid seeds (infertile) — never Eternal/Exceptional opaque credit.
+--- One-shot hybrid seeds (infertile) - never Eternal/Exceptional opaque credit.
 function SM.IsInfertileSeed(seedUid, nameHint)
     seedUid = tonumber(seedUid) or 0
     if seedUid > 0 and INFERTILE_SEED_UID[seedUid] then
@@ -530,26 +530,33 @@ function SM.GetSeedUidsForPlant(plantUid)
         return out
     end
     local seen = {}
+    local function addSeed(seedUid)
+        seedUid = tonumber(seedUid) or 0
+        if seedUid > 0 and not seen[seedUid] and not SM.IsSeedPacketUid(seedUid) then
+            seen[seedUid] = true
+            out[#out + 1] = seedUid
+        end
+    end
     local grows = GrowsTable()
     if type(grows) == "table" then
         for seedKey, bucket in pairs(grows) do
             if type(bucket) == "table" and type(bucket.products) == "table" then
                 local prod = bucket.products[tostring(plantUid)]
                 if type(prod) == "table" then
-                    local seedUid = tonumber(seedKey) or tonumber(bucket.seedUid) or 0
-                    if seedUid > 0 and not seen[seedUid] and not SM.IsSeedPacketUid(seedUid) then
-                        seen[seedUid] = true
-                        out[#out + 1] = seedUid
-                    end
+                    addSeed(tonumber(seedKey) or tonumber(bucket.seedUid) or 0)
                 end
             end
         end
     end
     local entry = RefinesTable() and RefinesTable()[tostring(plantUid)]
     if type(entry) == "table" then
-        local seedUid = tonumber(entry.seedUid) or 0
-        if seedUid > 0 and not seen[seedUid] and not SM.IsSeedPacketUid(seedUid) then
-            out[#out + 1] = seedUid
+        addSeed(entry.seedUid)
+        -- Crit harvest plants often refine back to the lower planted seed; also keep
+        -- every observed seedOut so same-tier seeds (e.g. 3010035 vs 3010034) compete.
+        if type(entry.seedOut) == "table" then
+            for seedKey, _ in pairs(entry.seedOut) do
+                addSeed(seedKey)
+            end
         end
     end
     return out
@@ -580,6 +587,7 @@ function SM.HarvestProducts(seedUid)
 end
 
 --- Cultivation linkage wins; PrimaryPlant never returns unrelated products.
+--- Prefers same-skillReq plant over crit-upgraded higher plants (more samples).
 function SM.PrimaryPlantForSeed(seedUid)
     seedUid = tonumber(seedUid) or 0
     local products = SM.HarvestProducts(seedUid)
@@ -587,7 +595,18 @@ function SM.PrimaryPlantForSeed(seedUid)
         return 0
     end
     local seedData = BagSample(seedUid)
-    local bestUid, bestSamples = 0, -1
+    local function dataSkillReq(data)
+        if type(data) ~= "table" then
+            return 0
+        end
+        local req = tonumber(data.craftingSkillRequirement) or tonumber(data.skillReq) or 0
+        if req <= 0 and type(data.bonuses) == "table" then
+            req = tonumber(data.bonuses[9]) or 0
+        end
+        return req
+    end
+    local seedReq = dataSkillReq(seedData)
+    local bestUid, bestScore = 0, -1
     for i = 1, #products do
         local plantUid = tonumber(products[i].uid) or 0
         if plantUid > 0 then
@@ -596,14 +615,22 @@ function SM.PrimaryPlantForSeed(seedUid)
             if type(seedData) == "table" and type(plantData) == "table" then
                 related = GrowNamesRelated(plantData.name, seedData.name)
             end
-            -- Never mark cult mains not-growable solely because butcher filled ProductKey —
+            -- Never mark cult mains not-growable solely because butcher filled ProductKey -
             -- skip butcher-looking unrelated products here.
             if related and not (LooksButcher(ToNarrow(plantData and plantData.name))
                 and not GrowNamesRelated(plantData.name, seedData.name))
             then
                 local samples = tonumber(products[i].samples) or 0
-                if samples > bestSamples then
-                    bestSamples = samples
+                local plantReq = dataSkillReq(plantData)
+                local score = samples
+                if seedReq > 0 and plantReq == seedReq then
+                    score = score + 100000
+                elseif seedReq > 0 and plantReq > seedReq then
+                    -- Crit tier-up plant: keep as fallback only.
+                    score = score - 1000
+                end
+                if score > bestScore then
+                    bestScore = score
                     bestUid = plantUid
                 end
             end
@@ -616,9 +643,52 @@ function SM.GetPlantUidForSeed(seedUid)
     return SM.PrimaryPlantForSeed(seedUid)
 end
 
---- Prefer Eternal ≫ Exceptional ≫ blue; exclude Seed Packets.
-function SM.PickBestSeedUid(plantUid, seedUids, _spec)
+--- Prefer Eternal >> Exceptional >> blue; exclude Seed Packets.
+--- When plant/spec skillReq is known, prefer matching seed skillReq over bag
+--- ownership (owned L1 must not beat missing L200 for a L200 plant).
+function SM.PickBestSeedUid(plantUid, seedUids, spec)
     plantUid = tonumber(plantUid) or 0
+    local plantReq = 0
+    if type(spec) == "table" then
+        plantReq = tonumber(spec.skillLevel) or tonumber(spec.craftingSkillRequirement)
+            or tonumber(spec.skillReq) or 0
+    end
+    if plantReq <= 0 and plantUid > 0 then
+        local plantData = BagSample(plantUid)
+        if type(plantData) == "table" then
+            plantReq = tonumber(plantData.craftingSkillRequirement) or tonumber(plantData.skillReq) or 0
+            if plantReq <= 0 and type(plantData.bonuses) == "table" then
+                plantReq = tonumber(plantData.bonuses[9]) or 0
+            end
+        end
+        if plantReq <= 0 and StockPiler3.Items and StockPiler3.Items.ToSpec then
+            local pSpec = StockPiler3.Items.ToSpec(plantUid)
+            plantReq = tonumber(pSpec and pSpec.skillLevel) or 0
+        end
+    end
+
+    local function seedSkillReq(uid, item)
+        local req = 0
+        if type(item) == "table" then
+            req = tonumber(item.craftingSkillRequirement) or tonumber(item.skillReq)
+                or tonumber(item.skillLevel) or 0
+            if req <= 0 and type(item.bonuses) == "table" then
+                req = tonumber(item.bonuses[9]) or 0
+            end
+        end
+        if req <= 0 and StockPiler3.Items and StockPiler3.Items.GetByUid then
+            local row = StockPiler3.Items.GetByUid(uid)
+            if type(row) == "table" then
+                req = tonumber(row.craftingSkillRequirement) or tonumber(row.skillReq)
+                    or tonumber(row.skillLevel) or 0
+                if req <= 0 and type(row.bonuses) == "table" then
+                    req = tonumber(row.bonuses[9]) or 0
+                end
+            end
+        end
+        return req
+    end
+
     local candidates = {}
     local seen = {}
     local function addUid(uid)
@@ -652,6 +722,10 @@ function SM.PickBestSeedUid(plantUid, seedUids, _spec)
         for i = 1, #mapped do
             addUid(mapped[i])
         end
+        -- Prefer the skill-matched plant->seed link as an explicit candidate.
+        if SM.ResolveSeedUidForPlant then
+            addUid(SM.ResolveSeedUidForPlant(plantUid, spec))
+        end
     end
     if StockPiler3.Inventory and StockPiler3.Inventory.ForEachItem then
         StockPiler3.Inventory.ForEachItem(function(item)
@@ -661,20 +735,47 @@ function SM.PickBestSeedUid(plantUid, seedUids, _spec)
         end)
     end
 
-    -- Prefer seeds actually in bags. Eternal/Exceptional with count 0 used to beat
-    -- owned blue seeds (tier*100000), so buffer math tracked a UID you cannot plant.
+    local hasExactSkill = false
+    if plantReq > 0 then
+        for i = 1, #candidates do
+            local item = BagSample(candidates[i])
+            if seedSkillReq(candidates[i], item) == plantReq then
+                hasExactSkill = true
+                break
+            end
+        end
+    end
+
+    -- Prefer seeds actually in bags among skill-appropriate candidates.
+    -- ownedBoost must stay below skill-match so missing L200 beats owned L1.
     local bestUid, bestScore = 0, -1
     for i = 1, #candidates do
         local uid = candidates[i]
-        local count = 0
-        if StockPiler3.Inventory and StockPiler3.Inventory.CountByUid then
-            count = tonumber(StockPiler3.Inventory.CountByUid(uid)) or 0
-        end
-        local ownedBoost = count > 0 and 1000000 or 0
-        local score = ownedBoost + (SeedReplantTier(uid) * 100000) + count
-        if score > bestScore then
-            bestScore = score
-            bestUid = uid
+        local item = BagSample(uid)
+        local sReq = seedSkillReq(uid, item)
+        if hasExactSkill and plantReq > 0 and sReq > 0 and sReq < plantReq then
+            -- Drop lower-tier seeds when the exact plant tier exists as a candidate.
+        else
+            local count = 0
+            if StockPiler3.Inventory and StockPiler3.Inventory.CountByUid then
+                count = tonumber(StockPiler3.Inventory.CountByUid(uid)) or 0
+            end
+            local skillScore = 0
+            if plantReq > 0 then
+                if sReq == plantReq then
+                    skillScore = 10000000
+                elseif sReq > plantReq then
+                    skillScore = 100000
+                elseif sReq > 0 and sReq < plantReq then
+                    skillScore = -5000000
+                end
+            end
+            local ownedBoost = count > 0 and 100000 or 0
+            local score = skillScore + ownedBoost + (SeedReplantTier(uid) * 1000) + count
+            if score > bestScore then
+                bestScore = score
+                bestUid = uid
+            end
         end
     end
     return bestUid
@@ -735,56 +836,138 @@ function SM.ResolveSeedUidForPlant(plantUid, plantSpec)
         return 0
     end
 
-    -- 1) Observed refine product → seed (exact ladder rung for this plant).
+    local plantData = BagSample(plantUid)
+    local plantName = plantData and plantData.name
+    if (not plantName or plantName == "") and StockPiler3.Items and StockPiler3.Items.GetByUid then
+        local row = StockPiler3.Items.GetByUid(plantUid)
+        plantName = row and row.name
+    end
+
+    local function seedName(uid)
+        local item = BagSample(uid)
+        if type(item) == "table" and item.name then
+            return item.name
+        end
+        if StockPiler3.Items and StockPiler3.Items.GetByUid then
+            local row = StockPiler3.Items.GetByUid(uid)
+            return row and row.name
+        end
+        return nil
+    end
+
+    -- Score candidates: exact normalized name >> skillReq match >> genus-related.
+    -- Never return a genus-only / lower-seed guess (Wolfpaw Fusk must not resolve
+    -- to Dusty L1 spore just because both are "fusk").
+    local function scoreSeed(uid, isRefinePrimary)
+        uid = tonumber(uid) or 0
+        if uid <= 0 or SM.IsSeedPacketUid(uid) then
+            return -1
+        end
+        local score = 0
+        local sReq = seedSkillReq(uid)
+        local sName = seedName(uid)
+        if plantName and sName then
+            local a = NormalizeGrowName(ToNarrow(plantName))
+            local b = NormalizeGrowName(ToNarrow(sName))
+            if a ~= "" and a == b then
+                score = score + 100000
+            elseif GrowNamesRelated(plantName, sName) then
+                score = score + 1000
+            else
+                return -1
+            end
+        end
+        if plantReq > 0 and sReq == plantReq then
+            score = score + 10000
+        elseif plantReq > 0 and sReq > 0 and sReq < plantReq then
+            -- Lower seed that crit into this plant (refine often returns it).
+            score = score - 5000
+        end
+        if isRefinePrimary then
+            score = score + 10
+        end
+        if sReq > 0 then
+            score = score + math.min(sReq, 200)
+        end
+        return score
+    end
+
+    local linked = SM.GetSeedUidsForPlant(plantUid) or {}
     local entry = RefinesTable() and RefinesTable()[tostring(plantUid)]
     local refineSeed = type(entry) == "table" and (tonumber(entry.seedUid) or 0) or 0
-    if refineSeed > 0 and not SM.IsSeedPacketUid(refineSeed) then
-        return refineSeed
-    end
 
-    -- 2) Among grow/refine-linked seeds, prefer matching plant skillReq.
-    local linked = SM.GetSeedUidsForPlant(plantUid) or {}
-    local matchUid, anyUid = 0, 0
+    local bestUid, bestScore = 0, -1
+    local function consider(uid, isPrimary)
+        local sc = scoreSeed(uid, isPrimary == true)
+        if sc > bestScore then
+            bestScore = sc
+            bestUid = tonumber(uid) or 0
+        end
+    end
     for i = 1, #linked do
-        local uid = tonumber(linked[i]) or 0
-        if uid > 0 and not SM.IsSeedPacketUid(uid) then
-            if anyUid <= 0 then
-                anyUid = uid
+        consider(linked[i], (tonumber(linked[i]) or 0) == refineSeed)
+    end
+    consider(refineSeed, true)
+
+    -- Bag / account same-genus seed at plant skill (covers missing grow link).
+    -- Also scan when plantReq is unknown but plantName is known (exact name match),
+    -- otherwise Wolfpaw Fusk plant with no bag sample never finds Wolfpaw Fusk Spore.
+    if bestScore < 100000 and (plantReq > 0 or (plantName and plantName ~= "")) then
+        local plantGenus = SM.GenusKeyFromName(plantName)
+        local function considerItem(item)
+            if type(item) ~= "table" then
+                return
             end
-            if plantReq > 0 and seedSkillReq(uid) == plantReq then
-                matchUid = uid
-                break
+            if not IsBagSeedOrSporeItem(item) then
+                return
+            end
+            local uid = tonumber(item.uniqueID) or tonumber(item.uid) or 0
+            if uid <= 0 or SM.IsSeedPacketUid(uid) then
+                return
+            end
+            if plantGenus ~= "" and SM.GenusKeyFromName(item.name) ~= plantGenus then
+                return
+            end
+            local req = tonumber(item.craftingSkillRequirement) or tonumber(item.skillReq)
+                or tonumber(item.skillLevel) or 0
+            if req <= 0 and type(item.bonuses) == "table" then
+                req = tonumber(item.bonuses[9]) or 0
+            end
+            local exact = plantName and item.name
+                and NormalizeGrowName(ToNarrow(plantName)) == NormalizeGrowName(ToNarrow(item.name))
+            if (plantReq > 0 and req == plantReq) or exact == true then
+                consider(uid, false)
             end
         end
-    end
-    if matchUid > 0 then
-        return matchUid
+        local Inv = StockPiler3.Inventory
+        if Inv and Inv.ForEachItem then
+            Inv.ForEachItem(considerItem)
+        end
+        local items = StockPiler3.Account and StockPiler3.Account.items
+        if type(items) == "table" then
+            for key, row in pairs(items) do
+                if type(row) == "table" then
+                    if row.uniqueID == nil and tonumber(key) then
+                        row = {
+                            uniqueID = tonumber(key),
+                            name = row.name,
+                            craftingSkillRequirement = row.craftingSkillRequirement
+                                or row.skillReq or row.skillLevel,
+                            cultivationType = row.cultivationType,
+                            bonuses = row.bonuses,
+                        }
+                    end
+                    considerItem(row)
+                end
+            end
+        end
     end
 
-    -- 3) Same-skillReq via PickBest among filtered list only.
-    if plantReq > 0 and #linked > 0 then
-        local same = {}
-        for i = 1, #linked do
-            local uid = tonumber(linked[i]) or 0
-            if uid > 0 and seedSkillReq(uid) == plantReq then
-                same[#same + 1] = uid
-            end
-        end
-        if #same > 0 and SM.PickBestSeedUid then
-            local best = tonumber(SM.PickBestSeedUid(plantUid, same, plantSpec)) or 0
-            if best > 0 then
-                return best
-            end
-            return same[1]
-        end
+    if bestUid > 0 and bestScore >= 10000 then
+        -- Exact name (100000+) or same skillReq (10000+). Reject genus-only guesses.
+        return bestUid
     end
-
-    if anyUid > 0 then
-        return anyUid
-    end
-    if SM.PickBestSeedUid then
-        return tonumber(SM.PickBestSeedUid(plantUid, linked, plantSpec)) or 0
-    end
+    -- Do not fall back to PickBestSeedUid (prefers Eternal/L1 in bags).
     return 0
 end
 
@@ -817,7 +1000,7 @@ function SM.IsOneWayHarvestSpec(spec)
         local row = StockPiler3.Items and StockPiler3.Items.GetByUid and StockPiler3.Items.GetByUid(uid)
         if type(row) == "table" and row.isRefinable == false then
             local seeds = SM.GetSeedUidsForPlant(uid)
-            -- Linked to grow but not refinable → one-way.
+            -- Linked to grow but not refinable -> one-way.
             if type(seeds) == "table" and #seeds > 0 then
                 return true
             end
@@ -874,7 +1057,7 @@ function SM.ResolveIsRefinable(spec)
     return nil
 end
 
---- Byproduct stabilizer (Arboreal Resin etc.) — not planted / not butcher mains.
+--- Byproduct stabilizer (Arboreal Resin etc.) - not planted / not butcher mains.
 function SM.IsHarvestByproduct(spec)
     if type(spec) ~= "table" then
         return false
@@ -896,7 +1079,7 @@ function SM.IsHarvestByproduct(spec)
     if n == "" and type(learned) == "table" then
         n = string.lower(ToNarrow(learned.name))
     end
-    -- Resin / Arboreal only — do not treat chitin/scales or isRefinable==false as byproduct.
+    -- Resin / Arboreal only - do not treat chitin/scales or isRefinable==false as byproduct.
     if string.find(n, "resin", 1, true) or string.find(n, "arboreal", 1, true) then
         return true
     end
@@ -1006,7 +1189,7 @@ end
 
 --- Cultivation main/extender/stimulant/goldweed growable; resin byproducts not.
 --- Cultivation linkage (grows/refines) wins over butcher ProductMatches.
---- Explicit isRefinable==false blocks optimistic cult-role → plant (chitin/scales/etc.).
+--- Explicit isRefinable==false blocks optimistic cult-role -> plant (chitin/scales/etc.).
 function SM.IsGrowableSpec(spec)
     if type(spec) ~= "table" then
         return false
@@ -1212,6 +1395,13 @@ function SM.ResolveSeedForSpec(spec)
         return nil
     end
     local plantUid = SM.FindPlantUidForSpec(spec)
+    -- Skill-matched plant->seed first (never let owned L1 vendor seeds win).
+    if plantUid > 0 and SM.ResolveSeedUidForPlant then
+        local matched = tonumber(SM.ResolveSeedUidForPlant(plantUid, spec)) or 0
+        if matched > 0 then
+            return { uniqueID = matched, uid = matched, plantUid = plantUid }
+        end
+    end
     local seedUids = {}
     if plantUid > 0 then
         seedUids = SM.GetSeedUidsForPlant(plantUid) or {}
@@ -1403,7 +1593,14 @@ function SM.BeginPendingHarvest(plotNum, seedUid)
         lootDirty = false,
         chatCriticalFailure = chatFail,
         chatCriticalSuccess = chatOk,
+        chatSpecialMoment = false,
     }
+    if CC and CC.ConsumeHarvestSpecialMomentSticky
+        and CC.ConsumeHarvestSpecialMomentSticky() == true
+    then
+        SM._pendingHarvest.chatSpecialMoment = true
+        SM._pendingHarvest.chatCriticalSuccess = true
+    end
     -- Snapshot plant counts for delta (no learn yet).
     if StockPiler3.Inventory and StockPiler3.Inventory.ForEachItem then
         StockPiler3.Inventory.ForEachItem(function(item)
@@ -1477,7 +1674,7 @@ function SM.TryCompletePendingHarvest(force)
     local plotNum = tonumber(pending.plotNum) or 0
     local learned = false
     local structural = false
-    local bestUid, bestDelta, bestName = 0, 0, nil
+    local products = {}
     local bucket = nil
     if seedUid > 0 then
         bucket = EnsureGrowBucket(seedUid)
@@ -1485,6 +1682,9 @@ function SM.TryCompletePendingHarvest(force)
             bucket.harvestAttempts = (tonumber(bucket.harvestAttempts) or 0) + 1
             if pending.chatCriticalSuccess == true then
                 bucket.chatCriticalSuccess = (tonumber(bucket.chatCriticalSuccess) or 0) + 1
+            end
+            if pending.chatSpecialMoment == true then
+                bucket.specialMomentHits = (tonumber(bucket.specialMomentHits) or 0) + 1
             end
         end
         for uid, count in pairs(after) do
@@ -1502,28 +1702,53 @@ function SM.TryCompletePendingHarvest(force)
                         StockPiler3.Items.StoreItem(sample, "plant")
                     end
                 end
-                -- Prefer largest non-seed plant gain for harvest chat.
-                if delta > bestDelta and sample and not IsBagSeedOrSporeItem(sample) then
-                    local skip = SM.IsHarvestByproduct(sample) == true
-                    if not skip then
-                        bestDelta = delta
-                        bestUid = uid
-                        bestName = sample.name
+                -- Collect all non-seed plant gains for harvest chat (Special Moment
+                -- often adds a higher-tier plant alongside the normal yield).
+                if sample and not IsBagSeedOrSporeItem(sample)
+                    and SM.IsHarvestByproduct(sample) ~= true
+                then
+                    local sReq = tonumber(sample.craftingSkillRequirement)
+                        or tonumber(sample.skillReq) or 0
+                    if sReq <= 0 and type(sample.bonuses) == "table" then
+                        sReq = tonumber(sample.bonuses[9]) or 0
                     end
+                    products[#products + 1] = {
+                        uid = uid,
+                        delta = delta,
+                        name = sample.name,
+                        skillReq = sReq,
+                    }
                 end
             end
         end
     end
+    local specialMoment = pending.chatSpecialMoment == true
     SM._pendingHarvest = nil
     if structural then
         TouchIfStructural("harvest")
     end
-    if learned and bestUid > 0 and StockPiler3.Grow and StockPiler3.Grow.NotifyHarvestOutcome then
-        StockPiler3.Grow.NotifyHarvestOutcome(plotNum, {
-            name = bestName,
-            count = bestDelta,
-            uniqueID = bestUid,
-        })
+    if learned and #products > 0 and StockPiler3.Grow and StockPiler3.Grow.NotifyHarvestOutcome then
+        table.sort(products, function(a, b)
+            local sa = tonumber(a.skillReq) or 0
+            local sb = tonumber(b.skillReq) or 0
+            if sa ~= sb then
+                return sa > sb
+            end
+            return (tonumber(a.delta) or 0) > (tonumber(b.delta) or 0)
+        end)
+        -- Always announce every distinct plant product (usually 1; SM can be 2+).
+        local maxLines = 4
+        for i = 1, math.min(maxLines, #products) do
+            local p = products[i]
+            local special = specialMoment == true and i == 1
+                and (tonumber(p.skillReq) or 0) > 0
+            StockPiler3.Grow.NotifyHarvestOutcome(plotNum, {
+                name = p.name,
+                count = p.delta,
+                uniqueID = p.uid,
+                specialMoment = special == true,
+            })
+        end
     end
     return learned
 end
@@ -1599,7 +1824,7 @@ function SM.MarkRefineConvertFailed(plantUid, reason)
         return
     end
     if HasProvenSeedConvert(plantUid) then
-        -- Session cooldown only — not permanent blacklist.
+        -- Session cooldown only - not permanent blacklist.
         local sec = tonumber(SM.REFINE_CONVERT_FAIL_COOLDOWN_SEC) or 45
         SM._refineConvertFailedUntil[plantUid] = NowSec() + sec
         SM._refineConvertFailed[plantUid] = nil
@@ -1948,7 +2173,7 @@ local function ItemSkillReq(item)
     return req
 end
 
---- Last-token genus after normalize (e.g. "majestic goldweed" → "goldweed").
+--- Last-token genus after normalize (e.g. "majestic goldweed" -> "goldweed").
 function SM.GenusKeyFromName(name)
     local n = NormalizeGrowName(ToNarrow(name))
     if n == "" then
@@ -2028,12 +2253,19 @@ local function SortRungs(rungs)
     end)
 end
 
-local function NoteSeedPlant(families, seedUid, plantUid, skillReq, name, role, effectId)
+local function NoteSeedPlant(families, seedUid, plantUid, skillReq, name, role, effectId, opts)
+    opts = type(opts) == "table" and opts or {}
     seedUid = tonumber(seedUid) or 0
     plantUid = tonumber(plantUid) or 0
     skillReq = tonumber(skillReq) or 0
     if skillReq < 1 then
         return
+    end
+    -- Heal plant-only notes from grows/refines/vendor links before bucketing.
+    -- Crit tier-up notes pass healSeed=false so a lower planted seed cannot claim
+    -- the higher plant's rung before a same-tier seed is known.
+    if plantUid > 0 and seedUid <= 0 and opts.healSeed ~= false and SM.ResolveSeedUidForPlant then
+        seedUid = tonumber(SM.ResolveSeedUidForPlant(plantUid, nil)) or 0
     end
     local genus = SM.GenusKeyFromName(name)
     if genus == "" and plantUid > 0 then
@@ -2058,19 +2290,126 @@ local function NoteSeedPlant(families, seedUid, plantUid, skillReq, name, role, 
         return
     end
     if seedUid > 0 then
-        rung.seedUid = seedUid
+        local function uidReq(uid)
+            uid = tonumber(uid) or 0
+            if uid <= 0 then
+                return 0
+            end
+            local sample = BagSample(uid)
+            local req = 0
+            if type(sample) == "table" then
+                req = tonumber(sample.craftingSkillRequirement) or tonumber(sample.skillReq) or 0
+                if req <= 0 and type(sample.bonuses) == "table" then
+                    req = tonumber(sample.bonuses[9]) or 0
+                end
+            end
+            if req <= 0 and StockPiler3.Items and StockPiler3.Items.GetByUid then
+                local row = StockPiler3.Items.GetByUid(uid)
+                if type(row) == "table" then
+                    req = tonumber(row.craftingSkillRequirement) or tonumber(row.skillReq) or 0
+                    if req <= 0 and type(row.bonuses) == "table" then
+                        req = tonumber(row.bonuses[9]) or 0
+                    end
+                end
+            end
+            return req
+        end
+        local newReq = uidReq(seedUid)
+        -- Never pin a known lower-tier seed onto a higher plant rung
+        -- (Dusty L1 spore must not own Wolfpaw/Shaded rungs).
+        if newReq > 0 and newReq < skillReq then
+            local seedSample = BagSample(seedUid)
+            local plantSample = plantUid > 0 and BagSample(plantUid) or nil
+            local exact = false
+            if type(seedSample) == "table" and type(plantSample) == "table" then
+                local a = NormalizeGrowName(ToNarrow(plantSample.name))
+                local b = NormalizeGrowName(ToNarrow(seedSample.name))
+                exact = a ~= "" and a == b
+            end
+            if not exact then
+                seedUid = 0
+            end
+        end
+    end
+    if seedUid > 0 then
+        local curSeed = tonumber(rung.seedUid) or 0
+        if curSeed <= 0 then
+            rung.seedUid = seedUid
+        elseif curSeed ~= seedUid then
+            local function uidReq(uid)
+                uid = tonumber(uid) or 0
+                if uid <= 0 then
+                    return 0
+                end
+                local sample = BagSample(uid)
+                local req = 0
+                if type(sample) == "table" then
+                    req = tonumber(sample.craftingSkillRequirement) or tonumber(sample.skillReq) or 0
+                    if req <= 0 and type(sample.bonuses) == "table" then
+                        req = tonumber(sample.bonuses[9]) or 0
+                    end
+                end
+                if req <= 0 and StockPiler3.Items and StockPiler3.Items.GetByUid then
+                    local row = StockPiler3.Items.GetByUid(uid)
+                    if type(row) == "table" then
+                        req = tonumber(row.craftingSkillRequirement) or tonumber(row.skillReq) or 0
+                        if req <= 0 and type(row.bonuses) == "table" then
+                            req = tonumber(row.bonuses[9]) or 0
+                        end
+                    end
+                end
+                return req
+            end
+            local curReq = uidReq(curSeed)
+            local newReq = uidReq(seedUid)
+            if newReq == skillReq and curReq ~= skillReq then
+                rung.seedUid = seedUid
+            elseif curReq ~= skillReq and newReq ~= skillReq and newReq > curReq then
+                rung.seedUid = seedUid
+            end
+        end
     end
     if plantUid > 0 then
-        rung.plantUid = plantUid
+        local curPlant = tonumber(rung.plantUid) or 0
+        if curPlant <= 0 or seedUid > 0 then
+            rung.plantUid = plantUid
+        end
     end
     if name and name ~= "" and (rung.name == nil or rung.name == "") then
         rung.name = ToNarrow(name)
     end
 end
 
+local function HealFamilyRungSeeds(families)
+    if type(families) ~= "table" then
+        return
+    end
+    for _, bucket in pairs(families) do
+        if type(bucket) == "table" and type(bucket.rungs) == "table" then
+            for i = 1, #bucket.rungs do
+                local rung = bucket.rungs[i]
+                local plantUid = tonumber(rung.plantUid) or 0
+                local seedUid = tonumber(rung.seedUid) or 0
+                if plantUid > 0 and seedUid <= 0 and SM.ResolveSeedUidForPlant then
+                    seedUid = tonumber(SM.ResolveSeedUidForPlant(plantUid, nil)) or 0
+                    if seedUid > 0 then
+                        rung.seedUid = seedUid
+                    end
+                end
+            end
+        end
+    end
+end
+
 --- Build all known family ladders from grows/refines/bags/account/vendor.
---- Returns map familyKey → { key, genus, role, effectId, rungs[] }.
+--- Returns map familyKey -> { key, genus, role, effectId, rungs[] }.
+--- Cached by Knowledge gen so dumps / climb ticks do not rebuild every frame.
 function SM.BuildAllFamilyLadders()
+    local Know = StockPiler3.Knowledge
+    local gen = Know and Know.GetGen and Know.GetGen() or 0
+    if type(SM._familyLadderCache) == "table" and SM._familyLadderCacheGen == gen then
+        return SM._familyLadderCache
+    end
     local families = {}
     local Items = StockPiler3.Items
     local MS = StockPiler3.MaterialSpec
@@ -2114,10 +2453,22 @@ function SM.BuildAllFamilyLadders()
                         local plantUid = tonumber(plantKey) or 0
                         local plantSample = BagSample(plantUid)
                         local plantReq = ItemSkillReq(plantSample or {})
-                        local req = plantReq > 0 and plantReq or seedReq
                         local role, effectId = roleEffectForUid(plantUid > 0 and plantUid or seedUid)
-                        local name = (plantSample and plantSample.name) or (seedSample and seedSample.name) or ""
-                        NoteSeedPlant(families, seedUid, plantUid, req, name, role, effectId)
+                        local plantName = (plantSample and plantSample.name) or ""
+                        local seedName = (seedSample and seedSample.name) or ""
+                        -- Crit / special harvest can yield a higher-tier plant from a
+                        -- lower seed. Do not pin that higher rung to the lower seedUid
+                        -- (Fusk L100 spore must not own the L125 rung when L125 spore exists).
+                        if plantReq > 0 and seedReq > 0 and plantReq > seedReq then
+                            NoteSeedPlant(families, seedUid, 0, seedReq, seedName, role, effectId)
+                            NoteSeedPlant(families, 0, plantUid, plantReq, plantName, role, effectId, {
+                                healSeed = false,
+                            })
+                        else
+                            local req = plantReq > 0 and plantReq or seedReq
+                            local name = plantName ~= "" and plantName or seedName
+                            NoteSeedPlant(families, seedUid, plantUid, req, name, role, effectId)
+                        end
                     end
                 elseif seedReq >= 1 then
                     local role, effectId = roleEffectForUid(seedUid)
@@ -2204,7 +2555,15 @@ function SM.BuildAllFamilyLadders()
     for _, bucket in pairs(families) do
         SortRungs(bucket.rungs)
     end
+    HealFamilyRungSeeds(families)
+    SM._familyLadderCache = families
+    SM._familyLadderCacheGen = gen
     return families
+end
+
+function SM.InvalidateFamilyLadderCache()
+    SM._familyLadderCache = nil
+    SM._familyLadderCacheGen = nil
 end
 
 function SM.GetFamilyLadder(familyKey)
@@ -2256,17 +2615,50 @@ function SM.GetGenusLadder(genus)
                 end
             end
             if type(bucket.rungs) == "table" then
+                local srcRole = tostring(bucket.role or "")
+                local srcKnown = srcRole ~= "" and srcRole ~= "unknown"
                 for i = 1, #bucket.rungs do
                     local src = bucket.rungs[i]
                     local rung = EnsureRung(merged, tonumber(src.skillReq) or 0)
                     if rung then
                         local seedUid = tonumber(src.seedUid) or 0
                         local plantUid = tonumber(src.plantUid) or 0
-                        if seedUid > 0 and (tonumber(rung.seedUid) or 0) <= 0 then
-                            rung.seedUid = seedUid
+                        local curSeed = tonumber(rung.seedUid) or 0
+                        local curPlant = tonumber(rung.plantUid) or 0
+                        local wantReq = tonumber(rung.skillReq) or 0
+                        local function uidReq(uid)
+                            uid = tonumber(uid) or 0
+                            if uid <= 0 then
+                                return 0
+                            end
+                            local sample = BagSample(uid)
+                            return ItemSkillReq(sample or {})
                         end
-                        if plantUid > 0 and (tonumber(rung.plantUid) or 0) <= 0 then
-                            rung.plantUid = plantUid
+                        if seedUid > 0 then
+                            if curSeed <= 0 then
+                                rung.seedUid = seedUid
+                                curSeed = seedUid
+                            elseif curSeed ~= seedUid then
+                                local curReq = uidReq(curSeed)
+                                local newReq = uidReq(seedUid)
+                                if newReq == wantReq and curReq ~= wantReq then
+                                    rung.seedUid = seedUid
+                                    curSeed = seedUid
+                                elseif curReq ~= wantReq and newReq ~= wantReq and newReq > curReq then
+                                    rung.seedUid = seedUid
+                                    curSeed = seedUid
+                                elseif srcKnown and curReq ~= wantReq and newReq == 0 then
+                                    -- keep current
+                                end
+                            end
+                        end
+                        if plantUid > 0 then
+                            -- Prefer plant from a seed-linked / known-role bucket over plant-only unknown.
+                            if curPlant <= 0 or (seedUid > 0 and curSeed > 0 and srcKnown) then
+                                rung.plantUid = plantUid
+                            elseif curPlant <= 0 or (curSeed <= 0 and seedUid > 0) then
+                                rung.plantUid = plantUid
+                            end
                         end
                         if src.name and src.name ~= "" and (rung.name == nil or rung.name == "") then
                             rung.name = src.name
@@ -2280,6 +2672,32 @@ function SM.GetGenusLadder(genus)
         return nil
     end
     SortRungs(merged.rungs)
+    -- Final heal: invent missing seeds from grows/refines via ResolveSeedUidForPlant.
+    for i = 1, #merged.rungs do
+        local rung = merged.rungs[i]
+        local plantUid = tonumber(rung.plantUid) or 0
+        local seedUid = tonumber(rung.seedUid) or 0
+        local wantReq = tonumber(rung.skillReq) or 0
+        if plantUid > 0 and seedUid <= 0 and SM.ResolveSeedUidForPlant then
+            seedUid = tonumber(SM.ResolveSeedUidForPlant(plantUid, nil)) or 0
+            if seedUid > 0 then
+                local sample = BagSample(seedUid)
+                local sReq = ItemSkillReq(sample or {})
+                -- Reject lower-tier guesses on higher rungs (same rule as NoteSeedPlant).
+                if sReq > 0 and sReq < wantReq then
+                    local plantSample = BagSample(plantUid)
+                    local a = NormalizeGrowName(ToNarrow(plantSample and plantSample.name))
+                    local b = NormalizeGrowName(ToNarrow(sample and sample.name))
+                    if a == "" or a ~= b then
+                        seedUid = 0
+                    end
+                end
+            end
+            if seedUid > 0 then
+                rung.seedUid = seedUid
+            end
+        end
+    end
     if next(roles) ~= nil then
         -- Keep a stable preferred role for dump/status (extender/main/etc. over ingredient).
         local prefer = { "extender", "stabilizer", "multiplier", "stimulant", "main", "goldweed" }
@@ -2313,6 +2731,9 @@ end
 
 --- Best owned (bag) seed on the ladder with skillReq <= climbCap.
 --- Skips infertile climb seeds. Prefers highest skillReq then Eternal tier.
+--- A seed UID may only score at a rung it legitimately owns: its own skillReq,
+--- or a contiguous same-seedUid band above it (Fusk L1+L25 share 3010030).
+--- Prevents L1 spore attached to a bogus L150 plant rung from beating L125.
 function SM.BestOwnedSeedOnLadder(ladder, climbCap, opts)
     opts = type(opts) == "table" and opts or {}
     if type(ladder) ~= "table" or type(ladder.rungs) ~= "table" then
@@ -2323,6 +2744,42 @@ function SM.BestOwnedSeedOnLadder(ladder, climbCap, opts)
         return nil
     end
     local Inv = StockPiler3.Inventory
+    local function seedItemReq(seedUid)
+        seedUid = tonumber(seedUid) or 0
+        if seedUid <= 0 then
+            return 0
+        end
+        local sample = BagSample(seedUid)
+        local req = ItemSkillReq(sample or {})
+        if req <= 0 and StockPiler3.Items and StockPiler3.Items.GetByUid then
+            req = ItemSkillReq(StockPiler3.Items.GetByUid(seedUid) or {})
+        end
+        return req
+    end
+    local function seedOwnsRung(seedUid, seedReq, rungReq)
+        seedUid = tonumber(seedUid) or 0
+        seedReq = tonumber(seedReq) or 0
+        rungReq = tonumber(rungReq) or 0
+        if seedUid <= 0 or rungReq < 1 then
+            return false
+        end
+        if seedReq <= 0 or seedReq == rungReq then
+            return true
+        end
+        if rungReq < seedReq then
+            return false
+        end
+        -- Contiguous same-seedUid band from seedReq to rungReq (no other seed in between).
+        for i = 1, #ladder.rungs do
+            local r = ladder.rungs[i]
+            local req = tonumber(r.skillReq) or 0
+            local s = tonumber(r.seedUid) or 0
+            if req > seedReq and req <= rungReq and s > 0 and s ~= seedUid then
+                return false
+            end
+        end
+        return true
+    end
     local best = nil
     local bestScore = -1
     for i = 1, #ladder.rungs do
@@ -2330,6 +2787,12 @@ function SM.BestOwnedSeedOnLadder(ladder, climbCap, opts)
         local req = tonumber(rung.skillReq) or 0
         if req >= 1 and req <= climbCap then
             local seedUid = tonumber(rung.seedUid) or 0
+            if seedUid > 0 and not (SM.IsInfertileSeed and SM.IsInfertileSeed(seedUid)) then
+                local seedReq = seedItemReq(seedUid)
+                if not seedOwnsRung(seedUid, seedReq, req) then
+                    seedUid = 0
+                end
+            end
             if seedUid > 0 and not (SM.IsInfertileSeed and SM.IsInfertileSeed(seedUid)) then
                 local count = Inv and Inv.CountByUid and tonumber(Inv.CountByUid(seedUid)) or 0
                 if count > 0 then
@@ -2342,13 +2805,18 @@ function SM.BestOwnedSeedOnLadder(ladder, climbCap, opts)
                 end
                 if count > 0 then
                     local tier = SeedReplantTier(seedUid)
-                    local score = (req * 100000) + (tier * 1000) + count
+                    -- Score by the seed's real tier when known, not a bogus higher rung.
+                    local scoreReq = seedItemReq(seedUid)
+                    if scoreReq < 1 then
+                        scoreReq = req
+                    end
+                    local score = (scoreReq * 100000) + (tier * 1000) + count
                     if score > bestScore then
                         bestScore = score
                         best = {
                             seedUid = seedUid,
                             plantUid = tonumber(rung.plantUid) or 0,
-                            skillReq = req,
+                            skillReq = scoreReq,
                             count = count,
                             familyKey = ladder.key,
                             genus = ladder.genus,
@@ -2358,6 +2826,62 @@ function SM.BestOwnedSeedOnLadder(ladder, climbCap, opts)
                 end
             end
         end
+    end
+    -- Bag seeds of this genus whose skillReq matches a rung (or any owned skill <= cap)
+    -- even when the ladder rung still has seedUid=0 (Wolfpaw Spore before grow link).
+    local genus = string.lower(tostring(ladder.genus or ""))
+    if genus ~= "" and Inv and Inv.ForEachItem then
+        local rungPlantByReq = {}
+        for i = 1, #ladder.rungs do
+            local r = ladder.rungs[i]
+            local req = tonumber(r.skillReq) or 0
+            if req >= 1 then
+                rungPlantByReq[req] = tonumber(r.plantUid) or 0
+            end
+        end
+        Inv.ForEachItem(function(item)
+            if type(item) ~= "table" or not IsBagSeedOrSporeItem(item) then
+                return
+            end
+            local uid = tonumber(item.uniqueID) or tonumber(item.uid) or 0
+            if uid <= 0 or (SM.IsSeedPacketUid and SM.IsSeedPacketUid(uid)) then
+                return
+            end
+            if SM.IsInfertileSeed and SM.IsInfertileSeed(uid) then
+                return
+            end
+            if SM.GenusKeyFromName(item.name) ~= genus then
+                return
+            end
+            local sReq = ItemSkillReq(item)
+            if sReq < 1 or sReq > climbCap then
+                return
+            end
+            if opts.mainsOnly == true then
+                local role = tostring(ladder.role or "")
+                if role ~= "" and role ~= "main" and role ~= "unknown" then
+                    return
+                end
+            end
+            local count = Inv.CountByUid and tonumber(Inv.CountByUid(uid)) or 0
+            if count < 1 then
+                return
+            end
+            local tier = SeedReplantTier(uid)
+            local score = (sReq * 100000) + (tier * 1000) + count
+            if score > bestScore then
+                bestScore = score
+                best = {
+                    seedUid = uid,
+                    plantUid = rungPlantByReq[sReq] or 0,
+                    skillReq = sReq,
+                    count = count,
+                    familyKey = ladder.key,
+                    genus = ladder.genus,
+                    role = ladder.role,
+                }
+            end
+        end)
     end
     return best
 end
@@ -2392,9 +2916,13 @@ function SM.BestUpgradePlantOnLadder(ladder, climbCap, ownedSeedReq, opts)
                 local spec = Items and Items.ToSpec and Items.ToSpec(plantUid) or nil
                 local refinable = tonumber(Refine.CountRefinablePlants(plantUid, spec)) or 0
                 if refinable > 0 and req > bestReq then
+                    local seedUid = tonumber(rung.seedUid) or 0
+                    if seedUid <= 0 and SM.ResolveSeedUidForPlant then
+                        seedUid = tonumber(SM.ResolveSeedUidForPlant(plantUid, nil)) or 0
+                    end
                     bestReq = req
                     best = {
-                        seedUid = tonumber(rung.seedUid) or 0,
+                        seedUid = seedUid,
                         plantUid = plantUid,
                         skillReq = req,
                         refinable = refinable,

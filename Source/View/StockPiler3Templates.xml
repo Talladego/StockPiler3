@@ -95,7 +95,7 @@
 
         <!-- Potion row: Watch | Name | Effect | Power | Stability | Super-Crit | Yield | Stock | Recipe | Forget.
              SCrit mirrors SPECIAL_CHANCE on recipe mats; may become display-only if we
-             ignore Super-Critical for stocking fingerprints (crit → different potion uid). -->
+             ignore Super-Critical for stocking fingerprints (crit -> different potion uid). -->
         <Window name="StockPiler3PotionRow">
             <Size>
                 <AbsPoint x="1000" y="32" />

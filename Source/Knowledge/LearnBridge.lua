@@ -1,5 +1,5 @@
 ----------------------------------------------------------------
--- StockPiler3 Knowledge/LearnBridge — harvest-complete queue + hooks
+-- StockPiler3 Knowledge/LearnBridge - harvest-complete queue + hooks
 -- Do not pull Refine into the harvest trail.
 ----------------------------------------------------------------
 
@@ -52,7 +52,7 @@ local function DrainHarvestCompleteLearn(force)
     if not SM or not SM.TryCompletePendingHarvest then
         return false
     end
-    -- Harvest trail only — do not call Refine here.
+    -- Harvest trail only - do not call Refine here.
     local learned = SM.TryCompletePendingHarvest(force == true) == true
     SkipPlanAndUiThisFrame()
     return learned
@@ -181,6 +181,13 @@ function LB.OnCultivationUpdated()
         if newStage ~= empty or prevStage == nil or prevStage == empty then
             return
         end
+        -- Arm storm + skip plan/UI before WakeAfterHarvest fans out (Garden dirty
+        -- already fired; still block knowledge->RefreshActiveTab same frame).
+        local Sch = StockPiler3.Scheduler
+        if Sch and Sch.ArmHarvestStorm then
+            Sch.ArmHarvestStorm()
+        end
+        SkipPlanAndUiThisFrame()
         -- Queue harvest-complete learn; drain on UPDATE_PROCESSED.
         QueueHarvestCompleteLearn(pn, seedUid)
         if StockPiler3.Grow and StockPiler3.Grow.WakeAfterHarvest then
@@ -281,7 +288,7 @@ function LB.OnUpdateProcessed()
         LB._harvestCompletePending = false
         LB._harvestCompleteSeenUpdate = false
     end
-    -- Refine completes outside harvest trail (EngineEventBridge → Refine.OnUpdate).
+    -- Refine completes outside harvest trail (EngineEventBridge -> Refine.OnUpdate).
 end
 
 function LB.Initialize()

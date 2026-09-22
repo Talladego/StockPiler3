@@ -212,6 +212,13 @@ function StockPiler3Window.FlushPendingFooterRefresh()
     if Sch and Sch.SkipUiHoldFooter and Sch.SkipUiHoldFooter() == true then
         return
     end
+    if Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true then
+        return
+    end
+    local RP = StockPiler3.RefinePipeline
+    if RP and RP.HasOutstanding and RP.HasOutstanding() == true then
+        return
+    end
     local brewJob = StockPiler3.Brew and type(StockPiler3.Brew._job) == "table"
     if not brewJob then
         if Sch and Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
@@ -260,7 +267,9 @@ function StockPiler3Window.Initialize()
     for _, tab in ipairs(StockPiler3Window.Tabs) do
         ButtonSetText(tab.name, T(tab.labelKey))
     end
-    StockPiler3Window.SelectTab(StockPiler3Window.SelectedTab)
+    -- Defer Watch paint: sync SelectTab->RefreshActiveTab Flattened with WarmHave
+    -- inside PatchWatchRowsLiveCounts on the same frame as CultivationUpdated x4.
+    StockPiler3Window.SelectTab(StockPiler3Window.SelectedTab, { deferRefresh = true })
 end
 
 function StockPiler3Window.RefreshActiveTab()
@@ -311,10 +320,15 @@ function StockPiler3Window.PrimeTabListsIfNeeded()
     end
     StockPiler3Window._tabListsPrimed = true
     local selected = StockPiler3Window.SelectedTab or StockPiler3Window.TABS_POTIONS
+    -- Layout only. Never call tab.refresh here — that ran WarmHave inside WatchRows
+    -- on the same frame as SelectTab/OnShow (SP2 Flatten).
     for index, tab in ipairs(StockPiler3Window.Tabs) do
+        if DoesWindowExist(tab.name) then
+            ButtonSetPressedFlag(tab.name, index == selected)
+        end
         if DoesWindowExist(tab.window) then
-            WindowSetShowing(tab.window, true)
-            if type(WindowForceProcessAnchors) == "function" then
+            WindowSetShowing(tab.window, index == selected)
+            if index == selected and type(WindowForceProcessAnchors) == "function" then
                 if StockPiler3.Debug and StockPiler3.Debug.TryCall then
                     StockPiler3.Debug.TryCall("WindowForceProcessAnchors", WindowForceProcessAnchors, tab.window)
                 else
@@ -322,22 +336,7 @@ function StockPiler3Window.PrimeTabListsIfNeeded()
                 end
             end
         end
-        if tab.refresh then
-            tab.refresh()
-        end
-        if DoesWindowExist(tab.window) and index ~= selected then
-            WindowSetShowing(tab.window, false)
-        end
     end
-    for index, tab in ipairs(StockPiler3Window.Tabs) do
-        if DoesWindowExist(tab.name) then
-            ButtonSetPressedFlag(tab.name, index == selected)
-        end
-        if DoesWindowExist(tab.window) then
-            WindowSetShowing(tab.window, index == selected)
-        end
-    end
-    StockPiler3Window.RefreshFooterButtons()
 end
 
 function StockPiler3Window.OnShow()
@@ -356,9 +355,17 @@ function StockPiler3Window.OnShow()
     if StockPiler3TabWatch and StockPiler3TabWatch.ClearRowPaintCache then
         StockPiler3TabWatch.ClearRowPaintCache()
     end
+    if StockPiler3TabWatch and StockPiler3TabWatch.PrimeRowChrome then
+        StockPiler3TabWatch.PrimeRowChrome()
+    end
     StockPiler3Window.PrimeTabListsIfNeeded()
-    StockPiler3Window.RefreshActiveTab()
-    StockPiler3Window.RequestListRepopulate()
+    -- Coalesced paint after FrameWork prewarm + PlanRebuild (never sync Flatten).
+    if StockPiler3.Ui and StockPiler3.Ui.MarkWatchUiDirty then
+        StockPiler3.Ui.MarkWatchUiDirty()
+    else
+        StockPiler3Window.RequestListRepopulate()
+    end
+    StockPiler3Window.RequestFooterRefresh()
 end
 
 function StockPiler3Window.OnClose()
@@ -519,7 +526,8 @@ function StockPiler3Window.OnMouseOverBrew()
     Tooltips.AnchorTooltip(Tooltips.ANCHOR_WINDOW_TOP)
 end
 
-function StockPiler3Window.SelectTab(tabNumber)
+function StockPiler3Window.SelectTab(tabNumber, opts)
+    opts = type(opts) == "table" and opts or {}
     tabNumber = tonumber(tabNumber)
     if tabNumber == nil or tabNumber < StockPiler3Window.TABS_POTIONS or tabNumber > StockPiler3Window.TABS_MAX then
         return
@@ -543,6 +551,19 @@ function StockPiler3Window.SelectTab(tabNumber)
                 end
             end
         end
+    end
+    if opts.deferRefresh == true then
+        if StockPiler3.Ui and StockPiler3.Ui.MarkWatchUiDirty then
+            StockPiler3.Ui.MarkWatchUiDirty()
+        end
+        if tabNumber == StockPiler3Window.TABS_WATCH
+            and StockPiler3TabWatch
+            and StockPiler3TabWatch.PrimeRowChrome
+        then
+            StockPiler3TabWatch.PrimeRowChrome()
+        end
+        StockPiler3Window.RequestListRepopulate()
+        return
     end
     StockPiler3Window.RefreshActiveTab()
     StockPiler3Window.RequestListRepopulate()

@@ -60,7 +60,7 @@ local function FormatSignedStat(n)
     return StockPiler3.ViewList.FormatSignedStat(n, { zeroAsDash = true })
 end
 
--- Match Potions tab: SPECIAL_CHANCE is already a percent points value (1 → "1%").
+-- Match Potions tab: SPECIAL_CHANCE is already a percent points value (1 -> "1%").
 local function FormatPercentStat(n)
     return StockPiler3.ViewList.FormatPercentStat(n)
 end

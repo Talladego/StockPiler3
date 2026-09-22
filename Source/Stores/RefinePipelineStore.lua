@@ -1,5 +1,5 @@
 ----------------------------------------------------------------
--- StockPiler3 Stores/RefinePipelineStore — in-flight refine ledger
+-- StockPiler3 Stores/RefinePipelineStore - in-flight refine ledger
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}

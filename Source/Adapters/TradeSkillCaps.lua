@@ -1,5 +1,5 @@
 ----------------------------------------------------------------
--- StockPiler3 Adapters/TradeSkillCaps — live cult/apo skill levels
+-- StockPiler3 Adapters/TradeSkillCaps - live cult/apo skill levels
 -- Read GameData on each call (SP2 style). Engine often leaves tradeSkills
 -- empty until TRADE_SKILL_UPDATED; never cache across that event.
 ----------------------------------------------------------------
@@ -107,8 +107,12 @@ function Caps.AreTradeSkillsReady()
 end
 
 function Caps.MarkTradeSkillsReady()
-    Caps._skillsReady = true
     Caps.Refresh()
+    -- Do not latch ready on an empty reading (login often fires with one skill
+    -- still at 0). AreTradeSkillsReady still auto-latches once either is >0.
+    if Caps.GetCultSkill() > 0 or Caps.GetApoSkill() > 0 then
+        Caps._skillsReady = true
+    end
 end
 
 function Caps.ResetTradeSkillsReady()

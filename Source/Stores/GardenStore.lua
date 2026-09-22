@@ -1,5 +1,5 @@
 ----------------------------------------------------------------
--- StockPiler3 Stores/GardenStore — plot cache (soft dirty vs planGen)
+-- StockPiler3 Stores/GardenStore - plot cache (soft dirty vs planGen)
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
@@ -58,7 +58,7 @@ end
 
 local function ApplyPlotRow(plotNum, row)
     local prev = Garden._plots[plotNum]
-    -- Match SP2: plant/empty/lock/additive fill — not stageTimer pulses (those storm DIRTY).
+    -- Match SP2: plant/empty/lock/additive fill - not stageTimer pulses (those storm DIRTY).
     local anyChange = type(prev) ~= "table" or prev.stage ~= row.stage
         or prev.seedUid ~= row.seedUid or prev.plantUid ~= row.plantUid
         or (prev.locked == true) ~= (row.locked == true)
@@ -219,6 +219,11 @@ function Garden.FlushPendingSyncAll()
         return
     end
     Garden.SyncAll()
+end
+
+--- Queue SyncAll for next OnUpdateProcessed (loading-end / coalesced paths).
+function Garden.MarkSyncAllDue()
+    Garden._syncAllDue = true
 end
 
 function Garden.OnCultivationUpdated()

@@ -1,5 +1,5 @@
 ----------------------------------------------------------------
--- StockPiler3 Adapters/BagAdapter — backpack + craft bag I/O
+-- StockPiler3 Adapters/BagAdapter - backpack + craft bag I/O
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
@@ -194,7 +194,7 @@ function BA.Dump(emit, opts)
     end
     local bags = opts.force == true and BA.FetchForce() or BA.FetchLight()
     emit("=== StockPiler3 bags ===")
-    emit("  note: tooltip Use: = bonus[type=3].reference → GetAbilityDesc(abilityId, iLevel)")
+    emit("  note: tooltip Use: = bonus[type=3].reference -> GetAbilityDesc(abilityId, iLevel)")
     emit("  note: apo EFFECT id = craftingBonus[bonusReference=6].bonusValue (mains), not potion Use:")
     if #bags == 0 then
         emit("  (no bag data)")

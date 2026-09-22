@@ -76,6 +76,10 @@ local function ShouldSkipPump()
         if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
             return true
         end
+        -- Plant/refine quiet: never WarmHave/Demand bag work under CultivationUpdated.
+        if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+            return true
+        end
         if Sch._skipPlanThisFrame == true then
             return true
         end
@@ -207,17 +211,45 @@ function FW.StartOnce(id, gen, fn)
     })
 end
 
---- WarmHave / Demand / seed-lines style helpers (call into Planner when present).
+--- WarmHave / Demand / seed-lines: one phase per Pump frame (budget=1).
+--- WarmHave itself is two resume steps (collect vs bag) so recipe hydrate
+--- never shares a frame with the bag walk — and never with Watch paint.
 function FW.EnqueueWarmHave(gen)
-    return FW.StartOnce("prewarm-warm-have", gen, function()
-        local P = StockPiler3.Planner
-        -- Must warm watched recipe specs — nil WarmSpecHaveCache marks empty warm.
-        if P and P.WarmHave then
-            P.WarmHave()
-        elseif P and P.WarmSpecHaveCacheForWatches then
-            P.WarmSpecHaveCacheForWatches()
-        end
-    end)
+    return FW.Start({
+        id = "prewarm-warm-have",
+        gen = gen,
+        stepsPerFrame = 1,
+        resume = function(state)
+            local P = StockPiler3.Planner
+            if not P then
+                return "done"
+            end
+            if state.phase == nil then
+                state.phase = "collect"
+                if P.BeginWarmHaveSlice then
+                    local result = P.BeginWarmHaveSlice()
+                    if result == "done" then
+                        return "done"
+                    end
+                    return "continue"
+                end
+                if P.WarmHave then
+                    P.WarmHave()
+                elseif P.WarmSpecHaveCacheForWatches then
+                    P.WarmSpecHaveCacheForWatches()
+                end
+                return "done"
+            end
+            if state.phase == "collect" then
+                state.phase = "bag"
+                if P.FinishWarmHaveSlice then
+                    P.FinishWarmHaveSlice()
+                end
+                return "done"
+            end
+            return "done"
+        end,
+    })
 end
 
 function FW.EnqueueDemand(gen)
@@ -240,6 +272,13 @@ function FW.EnqueueSeedLines(gen)
             Grow.CollectAutoGrowSeedLines({ cacheOnly = true })
         end
     end)
+end
+
+--- True while any prewarm job is queued/running (hold PlanRebuild + Watch flush).
+function FW.IsPrewarmBusy()
+    return FW.IsActive("prewarm-warm-have")
+        or FW.IsActive("prewarm-demand")
+        or FW.IsActive("prewarm-seed-lines")
 end
 
 --- Drain up to frame budget (default 1). Returns true if any step ran.

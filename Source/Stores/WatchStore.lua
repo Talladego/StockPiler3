@@ -1,5 +1,5 @@
 ----------------------------------------------------------------
--- StockPiler3 Stores/WatchStore — per-character watches + toggles
+-- StockPiler3 Stores/WatchStore - per-character watches + toggles
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
@@ -455,6 +455,8 @@ end
 
 --- True when potion watch may be enabled at current Apo skill.
 --- Returns ok, need, have. When skills are not ready yet, returns true (defer).
+--- Apo=0 while Cult already loaded is treated as not-ready (login race); never
+--- treat a missing Apo reading as "player has 0 Apo".
 function Watch.CanEnablePotionWatch(recipeKey)
     if not SkillsReady() then
         return true, 0, 0
@@ -465,6 +467,9 @@ function Watch.CanEnablePotionWatch(recipeKey)
     end
     local Caps = StockPiler3.TradeSkillCaps
     local have = Caps and Caps.GetApoSkill and tonumber(Caps.GetApoSkill()) or 0
+    if have <= 0 then
+        return true, need, have
+    end
     if have < need then
         return false, need, have
     end
@@ -472,6 +477,7 @@ function Watch.CanEnablePotionWatch(recipeKey)
 end
 
 --- True when plant watch may be enabled at current Cult skill.
+--- Cult=0 is treated as not-ready (same login-race defer as Apo).
 function Watch.CanEnablePlantWatch(plantKey)
     if not SkillsReady() then
         return true, 0, 0
@@ -482,6 +488,9 @@ function Watch.CanEnablePlantWatch(plantKey)
     end
     local Caps = StockPiler3.TradeSkillCaps
     local have = Caps and Caps.GetCultSkill and tonumber(Caps.GetCultSkill()) or 0
+    if have <= 0 then
+        return true, need, have
+    end
     if have < need then
         return false, need, have
     end
@@ -491,14 +500,18 @@ end
 --- Disable enabled watches whose craft/grow skill exceeds current levels.
 --- opts.notify == true prints a one-line summary when any were disabled.
 --- Returns count disabled.
+--- Never persists disables while Apo/Cult still read as 0 (partial skill update).
 function Watch.DisableOverSkillWatches(opts)
     opts = type(opts) == "table" and opts or {}
     if not SkillsReady() then
         return 0
     end
+    local Caps = StockPiler3.TradeSkillCaps
+    local apoHave = Caps and Caps.GetApoSkill and tonumber(Caps.GetApoSkill()) or 0
+    local cultHave = Caps and Caps.GetCultSkill and tonumber(Caps.GetCultSkill()) or 0
     local disabledN = 0
     local watches = Watch.GetWatches and Watch.GetWatches() or nil
-    if type(watches) == "table" then
+    if type(watches) == "table" and apoHave > 0 then
         for key, watch in pairs(watches) do
             if type(watch) == "table" and watch.enabled == true then
                 local ok = Watch.CanEnablePotionWatch(key)
@@ -510,7 +523,7 @@ function Watch.DisableOverSkillWatches(opts)
         end
     end
     local plants = Watch.GetPlantWatches and Watch.GetPlantWatches() or nil
-    if type(plants) == "table" then
+    if type(plants) == "table" and cultHave > 0 then
         for key, watch in pairs(plants) do
             if type(watch) == "table" and watch.enabled == true then
                 local ok = Watch.CanEnablePlantWatch(key)

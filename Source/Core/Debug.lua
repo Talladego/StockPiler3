@@ -1,5 +1,5 @@
 ----------------------------------------------------------------
--- StockPiler3 Core/Debug — logging, TryCall, event trace ring
+-- StockPiler3 Core/Debug - logging, TryCall, event trace ring
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}

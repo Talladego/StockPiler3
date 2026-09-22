@@ -1,5 +1,5 @@
 ----------------------------------------------------------------
--- StockPiler3 Macro — ActionBar Harvest / Brew macros
+-- StockPiler3 Macro - ActionBar Harvest / Brew macros
 -- (WarTriage / GatherButton / SP1 pattern). Macros only; does
 -- not hijack stock Cultivating / Apothecary craft skills.
 ----------------------------------------------------------------
@@ -259,7 +259,7 @@ local function InvalidateSlotCache()
 end
 
 --- Stable fingerprint of harvest/brew hotbar placements (sorted slot ids).
---- Caches slot lists so Refresh does not walk ActionBars 4× per apply.
+--- Caches slot lists so Refresh does not walk ActionBars 4x per apply.
 local function SlotFingerprint()
     local harvestId = tonumber(Macro.GetMacroId()) or 0
     local brewId = tonumber(Macro.GetBrewMacroId()) or 0
@@ -509,7 +509,7 @@ local function clearBrewGameActionForButton(button)
 end
 
 --- Stock UpdateEnabledState skips tint reset when iconType is USE_EMPTY_ICON and the
---- slot is disabled — our forceGrey tint then sticks on Blank-Action-Bar-Icon-Slot
+--- slot is disabled - our forceGrey tint then sticks on Blank-Action-Bar-Icon-Slot
 --- after Harvest/Brew is dragged away. WarTriage only tints current macro slots and
 --- does not hook UpdateEnabledState, so it rarely leaves this residue.
 local function restoreVacatedMacroSlot(button)
@@ -872,7 +872,7 @@ end
 
 --- Engine ActionBars.UpdateSlotEnabledState / SetActionData re-enable DO_MACRO slots
 --- after SP2 greys them. Appearance-key early-out then skips re-apply until Harvest
---- readiness flips — Brew stays lit while footer is correctly grey. Force SP2
+--- readiness flips - Brew stays lit while footer is correctly grey. Force SP2
 --- readiness on every UpdateEnabledState for our macros.
 local function installUpdateEnabledStateHook()
     if not ActionButton or type(ActionButton.UpdateEnabledState) ~= "function" then
@@ -1052,7 +1052,7 @@ function Macro.OnHotBarUpdated()
     -- Rescan bars for fingerprint; only clear bind cache when slots actually moved.
     InvalidateSlotCache()
     local fp = SlotFingerprint()
-    -- Unrelated hotbar noise must not wipe appearance key / force Begin — that
+    -- Unrelated hotbar noise must not wipe appearance key / force Begin - that
     -- was Macro.Appearance x67 storms under trail hold (0.4.23 uilog).
     if Macro._lastSlotFingerprint == fp then
         return

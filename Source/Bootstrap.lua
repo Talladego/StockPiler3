@@ -3,7 +3,7 @@
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
-StockPiler3.Version = L"0.3.147"
+StockPiler3.Version = L"0.3.186"
 
 local function T(key, tokens)
     return StockPiler3.Util.T(key, tokens)
@@ -47,6 +47,7 @@ local function PrintHelp()
     Print(T("boot.help.tabs"))
     Print(T("boot.help.debug"))
     Print(T("boot.help.dumps"))
+    Print(T("boot.help.dumpall"))
     Print(T("boot.help.bags"))
     Print(T("boot.help.fingerprint"))
     Print(T("boot.help.events"))
@@ -94,6 +95,102 @@ local function DumpAudit(emit)
     for i = 1, #unexpected do
         emit("audit|  " .. tostring(unexpected[i]))
     end
+end
+
+--- One-shot dump of every plan / bag / diagnostic into uilog (/sp3 dumpall).
+local function DumpAll()
+    local emit = function(msg)
+        EmitLog(msg)
+    end
+    local function section(name)
+        emit("--- dumpall: " .. tostring(name) .. " ---")
+    end
+
+    emit("=== dumpall begin v" .. tostring(StockPiler3.Version) .. " ===")
+
+    section("state")
+    if StockPiler3.Orchestrator and StockPiler3.Orchestrator.DumpState then
+        StockPiler3.Orchestrator.DumpState(emit)
+    end
+
+    section("bags")
+    if StockPiler3.BagAdapter and StockPiler3.BagAdapter.Dump then
+        StockPiler3.BagAdapter.Dump(emit, { force = true })
+    elseif StockPiler3.Inventory and StockPiler3.Inventory.RefreshAllIfNeeded then
+        StockPiler3.Inventory.RefreshAllIfNeeded({ force = true })
+        emit("bags| refresh forced (BagAdapter.Dump unavailable)")
+    end
+
+    section("plan")
+    if StockPiler3.Planner and StockPiler3.Planner.Dump then
+        StockPiler3.Planner.Dump(emit)
+    end
+
+    section("watchplan")
+    if StockPiler3.Planner and StockPiler3.Planner.DumpWatchPlan then
+        StockPiler3.Planner.DumpWatchPlan(emit)
+    end
+
+    section("growplan")
+    if StockPiler3.Planner and StockPiler3.Planner.DumpGrowPlan then
+        StockPiler3.Planner.DumpGrowPlan(emit)
+    elseif StockPiler3.Grow and StockPiler3.Grow.DumpGrowPlan then
+        StockPiler3.Grow.DumpGrowPlan(emit)
+    end
+
+    section("brewplan")
+    if StockPiler3.Planner and StockPiler3.Planner.DumpBrewPlan then
+        StockPiler3.Planner.DumpBrewPlan(emit)
+    elseif StockPiler3.Brew and StockPiler3.Brew.DumpPlan then
+        StockPiler3.Brew.DumpPlan(emit)
+    end
+
+    section("buyplan")
+    if StockPiler3.Buy and StockPiler3.Buy.DumpBuyPlan then
+        StockPiler3.Buy.DumpBuyPlan({ force = true })
+    end
+
+    section("skillplan")
+    if StockPiler3.SkillUp and StockPiler3.SkillUp.DumpSkillPlan then
+        StockPiler3.SkillUp.DumpSkillPlan(emit)
+    else
+        emit("skillplan| dump unavailable")
+    end
+
+    section("families")
+    if StockPiler3.SeedMap and StockPiler3.SeedMap.DumpFamilies then
+        StockPiler3.SeedMap.DumpFamilies(emit)
+    else
+        emit("families| dump unavailable")
+    end
+
+    section("upgradeplan")
+    if StockPiler3.UpgradeSeed and StockPiler3.UpgradeSeed.Dump then
+        StockPiler3.UpgradeSeed.Dump(emit)
+    else
+        emit("upgradeplan| dump unavailable")
+    end
+
+    section("stats")
+    if StockPiler3.SeedMap and StockPiler3.SeedMap.DumpCraftCycleStats then
+        StockPiler3.SeedMap.DumpCraftCycleStats(emit)
+    else
+        emit("stats| craft-cycle dump unavailable")
+    end
+
+    section("mem")
+    DumpMem(emit)
+
+    section("audit")
+    DumpAudit(emit)
+
+    section("events")
+    if StockPiler3.Debug and StockPiler3.Debug.DumpEventRing then
+        StockPiler3.Debug.DumpEventRing(emit)
+    end
+
+    emit("=== dumpall end ===")
+    Print(T("boot.dumpall_dumped"))
 end
 
 function StockPiler3.OnSlash(input)
@@ -145,6 +242,10 @@ function StockPiler3.OnSlash(input)
     end
     if lower == "debug off" then
         SetDebugEnabled(false)
+        return
+    end
+    if lower == "dumpall" or lower == "dump all" or lower == "all" then
+        DumpAll()
         return
     end
     if lower == "plan" then
@@ -260,7 +361,7 @@ function StockPiler3.OnSlash(input)
         end
         return
     end
-    -- /sp3 fingerprint <uidA> [uidB] — ProductKey + ProductMatches (butcher twin check).
+    -- /sp3 fingerprint <uidA> [uidB] - ProductKey + ProductMatches (butcher twin check).
     local fpA, fpB = string.match(lower, "^fingerprint%s+(%d+)%s*(%d*)$")
     if fpA then
         if StockPiler3.MaterialSpec and StockPiler3.MaterialSpec.DumpFingerprintCompare then
@@ -345,7 +446,7 @@ function StockPiler3.Initialize()
     end
     local s = StockPiler3.Settings
     if type(s) == "table" and StockPiler3Window then
-        -- 0.3.89 inserted Plants as tab 2; bump old Watch (2) → 3 once.
+        -- 0.3.89 inserted Plants as tab 2; bump old Watch (2) -> 3 once.
         if s._sp389WatchTabBump ~= true then
             if tonumber(s.selectedTab) == 2 then
                 s.selectedTab = 3
@@ -400,6 +501,12 @@ function StockPiler3.Initialize()
     EmitLog("init v" .. tostring(StockPiler3.Version)
         .. " debug=" .. tostring(StockPiler3.Debug and StockPiler3.Debug.Enabled == true))
     Print(T("boot.loaded", { version = StockPiler3.Version }))
+    if StockPiler3.Scheduler and StockPiler3.Scheduler.BeginSessionSettle then
+        StockPiler3.Scheduler.BeginSessionSettle()
+    end
+    if StockPiler3.Scheduler and StockPiler3.Scheduler.SkipUiThisFrame then
+        StockPiler3.Scheduler.SkipUiThisFrame()
+    end
     if StockPiler3.Scheduler and StockPiler3.Scheduler.EnqueueBagFlush then
         StockPiler3.Scheduler.EnqueueBagFlush(true)
     end

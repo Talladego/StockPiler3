@@ -1,5 +1,5 @@
 ----------------------------------------------------------------
--- StockPiler3 Persistence/Settings — profile + account ensure
+-- StockPiler3 Persistence/Settings - profile + account ensure
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
@@ -70,7 +70,7 @@ function P.CopyTable(value)
     return copy
 end
 
--- NO potionKnownRecipeOnly — known-recipe filter omitted in SP3.
+-- NO potionKnownRecipeOnly - known-recipe filter omitted in SP3.
 StockPiler3.DefaultSettings = {
     settingsVersion = 1,
     charactersVersion = 1,
@@ -305,8 +305,8 @@ function P.EnsureAccount()
             a[k] = nil
         end
     end
-    -- Only shape knowledge tables here — never migrate (would recurse via
-    -- Recipes→GetAccount→EnsureAccount). Bootstrap calls MigrateFingerprints after.
+    -- Only shape knowledge tables here - never migrate (would recurse via
+    -- Recipes->GetAccount->EnsureAccount). Bootstrap calls MigrateFingerprints after.
     if StockPiler3.Knowledge and StockPiler3.Knowledge.Ensure then
         StockPiler3.Knowledge.Ensure()
     end

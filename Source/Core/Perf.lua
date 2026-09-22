@@ -1,5 +1,5 @@
 ----------------------------------------------------------------
--- StockPiler3 Core/Perf — LibPerf.Scope bridge or in-addon hitch logger
+-- StockPiler3 Core/Perf - LibPerf.Scope bridge or in-addon hitch logger
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}

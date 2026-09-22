@@ -1,5 +1,5 @@
 ----------------------------------------------------------------
--- StockPiler3 Planner — pure gen-keyed plan from store snapshots
+-- StockPiler3 Planner - pure gen-keyed plan from store snapshots
 -- Have/demand caches live here. Callees above callers (Lua 5.0).
 -- Stub-safe vs missing RecipeSpec / Grow / Refine.
 ----------------------------------------------------------------
@@ -12,7 +12,7 @@ Planner._planGen = 0
 Planner._closedLiveSnapGen = nil
 Planner._craftsMemo = nil
 
--- Have cache (empty table ≠ warm — need warmed-for-snap flag).
+-- Have cache (empty table != warm - need warmed-for-snap flag).
 Planner._specHaveCache = nil
 Planner._specHaveSnapGen = nil
 Planner._specHaveWarmedSnap = nil
@@ -259,18 +259,41 @@ end
 -- Spec-have cache (one-pass WarmSpecHaveCache)
 ----------------------------------------------------------------
 
+--- Plant/refine quiet + harvest storm: keep prior have/demand counts instead of
+--- WarmHave.miss bag scans on every Inv.ApplySlots snap bump.
+local function HoldHaveCacheQuiet()
+    local Sch = StockPiler3.Scheduler
+    if not Sch then
+        return false
+    end
+    if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
+        return true
+    end
+    if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+        return true
+    end
+    return false
+end
+
+local function MarkHaveCacheWarmed(snapGen)
+    Planner._specHaveWarmedSnap = tonumber(snapGen) or CurrentSnapGen()
+end
+
 local function EnsureHaveCacheForSnap()
     local snapGen = CurrentSnapGen()
     if Planner._specHaveSnapGen ~= snapGen or type(Planner._specHaveCache) ~= "table" then
+        if HoldHaveCacheQuiet() and type(Planner._specHaveCache) == "table" then
+            -- Remount stale counts onto the new snap; orch decisions tolerate
+            -- +/-1 until quiet ends and FrameWork re-warms.
+            Planner._specHaveSnapGen = snapGen
+            MarkHaveCacheWarmed(snapGen)
+            return Planner._specHaveCache, snapGen
+        end
         Planner._specHaveCache = {}
         Planner._specHaveSnapGen = snapGen
         Planner._specHaveWarmedSnap = nil
     end
     return Planner._specHaveCache, snapGen
-end
-
-local function MarkHaveCacheWarmed(snapGen)
-    Planner._specHaveWarmedSnap = tonumber(snapGen) or CurrentSnapGen()
 end
 
 local function IsHaveCacheWarmForSnap()
@@ -285,6 +308,12 @@ end
 local function WarmSpecHaveCache(specs)
     if type(specs) ~= "table" then
         MarkHaveCacheWarmed(CurrentSnapGen())
+        return 0
+    end
+    -- During quiet: never bag-walk; remount marks warm via EnsureHaveCacheForSnap.
+    if HoldHaveCacheQuiet() and type(Planner._specHaveCache) == "table" then
+        local _, snapGen = EnsureHaveCacheForSnap()
+        MarkHaveCacheWarmed(snapGen)
         return 0
     end
     local cache, snapGen = EnsureHaveCacheForSnap()
@@ -384,33 +413,153 @@ local function WarmSpecHaveCache(specs)
     return filled + #pending
 end
 
-local function WarmSpecHaveCacheForWatches()
+local function CollectWatchedHaveSpecs()
     local Watch = StockPiler3.Watch
     local RS = RecipeSpec()
     local watches = Watch and Watch.GetWatches and Watch.GetWatches() or {}
     local specs = {}
-    if type(watches) == "table" then
-        for watchKey, watch in pairs(watches) do
-            if type(watch) == "table" and watch.enabled == true and RS and RS.RecipeSpecForPotion then
-                local recipe = RS.RecipeSpecForPotion(watchKey)
-                if type(recipe) == "table" then
-                    if RS.HydrateRecipeSlots then
-                        RS.HydrateRecipeSlots(recipe)
-                    end
-                    local slots = recipe.slots
-                    if type(slots) == "table" then
-                        for i = 1, #slots do
-                            local spec = slots[i] and slots[i].spec
-                            if type(spec) == "table" then
-                                specs[#specs + 1] = spec
-                            end
+    if type(watches) ~= "table" then
+        return specs
+    end
+    for watchKey, watch in pairs(watches) do
+        if type(watch) == "table" and watch.enabled == true and RS and RS.RecipeSpecForPotion then
+            local recipe = RS.RecipeSpecForPotion(watchKey)
+            if type(recipe) == "table" then
+                if RS.HydrateRecipeSlots then
+                    RS.HydrateRecipeSlots(recipe)
+                end
+                local slots = recipe.slots
+                if type(slots) == "table" then
+                    for i = 1, #slots do
+                        local spec = slots[i] and slots[i].spec
+                        if type(spec) == "table" then
+                            specs[#specs + 1] = spec
                         end
                     end
                 end
             end
         end
     end
-    return WarmSpecHaveCache(specs)
+    return specs
+end
+
+local function WarmSpecHaveCacheForWatches()
+    return WarmSpecHaveCache(CollectWatchedHaveSpecs())
+end
+
+--- Frame-slice WarmHave: frame 1 collects + CountByUid; frame 2 bag-passes pending.
+local function BeginWarmHaveSlice()
+    Planner._warmHaveSlice = nil
+    if HoldHaveCacheQuiet() then
+        if type(Planner._specHaveCache) == "table" then
+            local _, snapGen = EnsureHaveCacheForSnap()
+            MarkHaveCacheWarmed(snapGen)
+        end
+        return "done"
+    end
+    local specs = CollectWatchedHaveSpecs()
+    if type(specs) ~= "table" or #specs == 0 then
+        MarkHaveCacheWarmed(CurrentSnapGen())
+        return "done"
+    end
+    local cache, snapGen = EnsureHaveCacheForSnap()
+    local Inv = StockPiler3.Inventory
+    local pending = {}
+    local pendingKeys = {}
+    local keyIndex = {}
+    local filled = 0
+    for i = 1, #specs do
+        local spec = specs[i]
+        local key = SpecKey(spec)
+        if key ~= nil and cache[key] == nil then
+            local bound = SpecBoundUid(spec)
+            if bound > 0 and Inv and Inv.CountByUid then
+                cache[key] = tonumber(Inv.CountByUid(bound)) or 0
+                filled = filled + 1
+            elseif pendingKeys[key] ~= true then
+                pendingKeys[key] = true
+                local entry = { key = key, spec = spec }
+                pending[#pending + 1] = entry
+                keyIndex[key] = entry
+            end
+        end
+    end
+    if #pending == 0 then
+        MarkHaveCacheWarmed(snapGen)
+        return "done"
+    end
+    Planner._warmHaveSlice = {
+        snapGen = snapGen,
+        pending = pending,
+        keyIndex = keyIndex,
+        filled = filled,
+    }
+    return "continue"
+end
+
+local function FinishWarmHaveSlice()
+    local slice = Planner._warmHaveSlice
+    Planner._warmHaveSlice = nil
+    if type(slice) ~= "table" or type(slice.pending) ~= "table" then
+        MarkHaveCacheWarmed(CurrentSnapGen())
+        return
+    end
+    local cache, snapGen = EnsureHaveCacheForSnap()
+    if snapGen ~= (tonumber(slice.snapGen) or -1) then
+        -- Snap moved mid-slice; full warm next prewarm.
+        return
+    end
+    PerfMark("WarmHave.miss")
+    local pending = slice.pending
+    local keyIndex = slice.keyIndex or {}
+    local totals = {}
+    for i = 1, #pending do
+        totals[pending[i].key] = 0
+    end
+    local MS = MaterialSpec()
+    local Inv = StockPiler3.Inventory
+    if Inv and Inv.ForEachItem then
+        Inv.ForEachItem(function(item)
+            if type(item) ~= "table" then
+                return
+            end
+            if Inv.CanUseCraftingItem and Inv.CanUseCraftingItem(item) ~= true then
+                return
+            end
+            local qty = tonumber(item.stackCount) or tonumber(item.stackcount) or 1
+            if qty < 1 then
+                qty = 1
+            end
+            local productKey = nil
+            if MS and MS.ProductKey then
+                productKey = MS.ProductKey(item)
+            end
+            if type(productKey) == "string" and productKey ~= "" and keyIndex[productKey] then
+                totals[productKey] = (totals[productKey] or 0) + qty
+                return
+            end
+            for i = 1, #pending do
+                local entry = pending[i]
+                local match = false
+                if MS and MS.ProductMatches then
+                    match = MS.ProductMatches(item, entry.spec) == true
+                elseif MS and MS.Matches then
+                    match = MS.Matches(item, entry.spec) == true
+                else
+                    local uid = tonumber(item.uniqueID) or 0
+                    match = uid > 0 and uid == SpecBoundUid(entry.spec)
+                end
+                if match then
+                    totals[entry.key] = (totals[entry.key] or 0) + qty
+                end
+            end
+        end)
+    end
+    for i = 1, #pending do
+        local entry = pending[i]
+        cache[entry.key] = tonumber(totals[entry.key]) or 0
+    end
+    MarkHaveCacheWarmed(snapGen)
 end
 
 local function CountItemsMatchingSpec(spec, opts)
@@ -544,7 +693,7 @@ local function SpecIsHarvestByproduct(spec)
     return false
 end
 
---- Prefer main → goldweed/stab → extender → multiplier when growing convert feedstock for resin.
+--- Prefer main -> goldweed/stab -> extender -> multiplier when growing convert feedstock for resin.
 local function ByproductConvertRoleRank(role)
     role = tostring(role or "")
     if role == "main" then
@@ -727,7 +876,7 @@ local function WatchWantsAutoGrow(watchKey, watch)
 end
 
 --- Grow needs master+row AutoGrow; buy acting set needs enabled+row AutoGrow
---- (master AutoGrow may be off — AutoBuy still runs at vendors).
+--- (master AutoGrow may be off - AutoBuy still runs at vendors).
 local function WatchInActingSet(watchKey, watch, mode)
     if mode == "buy" then
         watch = ResolveWatchRow(watchKey, watch)
@@ -770,6 +919,17 @@ local function BuildBalancedSpecDemand()
     local cacheKey = tostring(snapGen) .. ":" .. tostring(watchGen) .. ":" .. tostring(planGen)
     if type(Planner._demandCache) == "table" and Planner._demandCacheKey == cacheKey then
         return Planner._demandCache
+    end
+    -- Plant/refine quiet: reuse last demand (ignore snap bump). Avoids WarmHave.miss
+    -- on every IssueOne → Inv.ApplySlots while orch still decides next action.
+    if HoldHaveCacheQuiet() and type(Planner._demandCache) == "table" then
+        local prev = tostring(Planner._demandCacheKey or "")
+        local suffix = ":" .. tostring(watchGen) .. ":" .. tostring(planGen)
+        if string.len(prev) >= string.len(suffix)
+            and string.sub(prev, -string.len(suffix)) == suffix
+        then
+            return Planner._demandCache
+        end
     end
     PerfBegin("BuildBalancedSpecDemand")
     local demand = {}
@@ -1074,7 +1234,7 @@ local function CollectFocus(mode)
             end
         end
     else
-        -- Cold boot: no plan yet — resolve watches once.
+        -- Cold boot: no plan yet - resolve watches once.
         local watches = Watch and Watch.GetWatches and Watch.GetWatches() or {}
         if type(watches) == "table" and RS then
             for watchKey, watch in pairs(watches) do
@@ -1176,7 +1336,7 @@ local function CollectFocus(mode)
         end
         return ToNarrow(a and a.name) < ToNarrow(b and b.name)
     end)
-    -- Buy: keep all short watches for focus→fallback; Grow uses max-gap only.
+    -- Buy: keep all short watches for focus->fallback; Grow uses max-gap only.
     -- Sort full list by tier then gap so fallback respects priority too.
     if mode == "buy" then
         table.sort(candidates, function(a, b)
@@ -1370,15 +1530,27 @@ local function CollectAutoGrowSeedLines()
                                 or (MS and MS.ProductKey and MS.ProductKey(spec))
                                 or ""
                             if productKey ~= "" and seen[productKey] ~= true then
-                                local seed = SM.ResolveSeedForSpec and SM.ResolveSeedForSpec(spec)
-                                local seedUid = 0
                                 local plantUid = 0
-                                if type(seed) == "table" then
-                                    seedUid = tonumber(seed.uniqueID) or 0
-                                    plantUid = tonumber(seed.plantUid) or 0
-                                end
-                                if plantUid <= 0 and SM.FindPlantUidForSpec then
+                                if SM.FindPlantUidForSpec then
                                     plantUid = tonumber(SM.FindPlantUidForSpec(spec)) or 0
+                                end
+                                local seedUid = 0
+                                local seed = nil
+                                -- Prefer skill-matched link (owned L1 must not become the buffer seed).
+                                if plantUid > 0 and SM.ResolveSeedUidForPlant then
+                                    seedUid = tonumber(SM.ResolveSeedUidForPlant(plantUid, spec)) or 0
+                                    if seedUid > 0 then
+                                        seed = { uniqueID = seedUid, plantUid = plantUid }
+                                    end
+                                end
+                                if seedUid <= 0 and SM.ResolveSeedForSpec then
+                                    seed = SM.ResolveSeedForSpec(spec)
+                                    if type(seed) == "table" then
+                                        seedUid = tonumber(seed.uniqueID) or 0
+                                        if plantUid <= 0 then
+                                            plantUid = tonumber(seed.plantUid) or 0
+                                        end
+                                    end
                                 end
                                 if seedUid <= 0 and plantUid > 0 and SM.PickBestSeedUid then
                                     local seedUids = SM.GetSeedUidsForPlant and SM.GetSeedUidsForPlant(plantUid) or {}
@@ -1468,7 +1640,7 @@ local function CollectAutoGrowSeedLines()
 end
 
 ----------------------------------------------------------------
--- Shared craftable (deficit crafts only) — plan-row SoT
+-- Shared craftable (deficit crafts only) - plan-row SoT
 ----------------------------------------------------------------
 
 local function ApplyDeficitCraftableShared(rows)
@@ -1573,7 +1745,7 @@ local function ApplyDeficitCraftableShared(rows)
             end
             row.craftableShared = contested
             row.contestedSpecKeys = contested and contestedSpecKeys or nil
-            -- Tip note override: contested → (Shared)
+            -- Tip note override: contested -> (Shared)
             if contested and type(row.statusTipSlots) == "table" then
                 for t = 1, #row.statusTipSlots do
                     local e = row.statusTipSlots[t]
@@ -1589,7 +1761,7 @@ local function ApplyDeficitCraftableShared(rows)
     end
 end
 
---- Contested specs that are all non-growable → "flasks" | "materials" | nil (growable contest).
+--- Contested specs that are all non-growable -> "flasks" | "materials" | nil (growable contest).
 local function ContestedBuyOnlyKind(row)
     if type(row) ~= "table" or row.craftableShared ~= true then
         return nil
@@ -1652,8 +1824,8 @@ local function RowCoveredForReady(row)
     return target > 0 and (have + craftable) >= target
 end
 
---- Ready ↔ Shared / buy-only-shared paint from craftableShared (armed watches only).
---- Buy-only contests paint Buy flasks/materials (craftableShared stays true → AutoBrew blocked).
+--- Ready <-> Shared / buy-only-shared paint from craftableShared (armed watches only).
+--- Buy-only contests paint Buy flasks/materials (craftableShared stays true -> AutoBrew blocked).
 --- Returns true when any row's shared flag or statusKey changed.
 local function ApplySharedStatusFlip(rows)
     if type(rows) ~= "table" then
@@ -1694,7 +1866,7 @@ local function ApplySharedStatusFlip(rows)
                 and armed
                 and RowCoveredForReady(row)
             then
-                -- Shared buy paint cleared after vendor fill → Ready (AutoBrew can run).
+                -- Shared buy paint cleared after vendor fill -> Ready (AutoBrew can run).
                 row.contestedSpecKeys = nil
                 row.statusKey = "ready_to_craft"
                 row.statusText = T("plan.status.ready_to_craft")
@@ -1756,18 +1928,21 @@ local function SetMaterialsShortStatus(row, growable, buyLabel)
         if WatchWantsAutoGrow(key, watch) then
             row.statusKey = "restocking"
             row.statusText = T("plan.status.restocking")
+            row.statusLines = nil
             return
         end
         row.statusKey = "enable_autogrow"
         row.statusText = T("plan.status.enable_autogrow")
+        row.statusLines = nil
         return
     end
     row.statusKey = "buy_ingredients"
     row.statusText = buyLabel or T("plan.status.buy_ingredients")
+    row.statusLines = nil
 end
 
---- After live patches / toggle: Enable AutoGrow ↔ Restocking must track current toggles.
---- Also demotes Seed buffer → Enable AutoGrow when master/per-watch AutoGrow turns off.
+--- After live patches / toggle: Enable AutoGrow <-> Restocking must track current toggles.
+--- Also demotes Seed buffer -> Enable AutoGrow when master/per-watch AutoGrow turns off.
 local function ReconcileAutoGrowStatus(row)
     if type(row) ~= "table" then
         return false
@@ -1775,8 +1950,31 @@ local function ReconcileAutoGrowStatus(row)
     if row.skillUp == true or row.addonOwned == true then
         return false
     end
+    -- Plant watches: flip Enable AutoGrow <-> Restocking / Stocked immediately on toggle.
+    -- Full seed-buffer / Upgrade Seed paint waits for ApplyPlantWatchStatus (live patch / rebuild).
     if row.kind == "plant" or row.isPlantWatch == true then
-        return false
+        local Watch = StockPiler3.Watch
+        local plantKey = row.plantKey or row.id or row.potionKey
+        local armed = Watch and Watch.ShouldAutoGrowPlant
+            and Watch.ShouldAutoGrowPlant(plantKey) == true
+        row.autoGrow = armed == true
+        local key = tostring(row.statusKey or "")
+        local deficit = tonumber(row.potionDeficit) or 0
+        local prev = key
+        if deficit <= 0 then
+            row.statusKey = "plant_stocked"
+            row.statusText = T("plan.status.plant_stocked")
+            row.statusLines = nil
+        elseif not armed then
+            row.statusKey = "enable_autogrow"
+            row.statusText = T("plan.status.enable_autogrow")
+            row.statusLines = nil
+        elseif key == "enable_autogrow" then
+            row.statusKey = "restocking"
+            row.statusText = T("plan.status.restocking")
+            row.statusLines = nil
+        end
+        return tostring(row.statusKey or "") ~= prev
     end
     local key = tostring(row.statusKey or "")
     if key ~= "enable_autogrow" and key ~= "restocking" and key ~= "need_seeds"
@@ -1797,6 +1995,7 @@ local function ReconcileAutoGrowStatus(row)
     if armed and key == "enable_autogrow" then
         row.statusKey = "restocking"
         row.statusText = T("plan.status.restocking")
+        row.statusLines = nil
     elseif (not armed) and (key == "restocking" or key == "need_seeds" or key == "upgrading_seed") then
         row.statusKey = "enable_autogrow"
         row.statusText = T("plan.status.enable_autogrow")
@@ -1805,7 +2004,7 @@ local function ReconcileAutoGrowStatus(row)
     return tostring(row.statusKey or "") ~= prev
 end
 
---- Immediate Enable↔Restocking flip after master/per-watch AutoGrow toggles (no rebuild wait).
+--- Immediate Enable<->Restocking flip after master/per-watch AutoGrow toggles (no rebuild wait).
 local function ReconcileAutoGrowStatusesForRows(rows)
     if type(rows) ~= "table" then
         return false
@@ -1827,14 +2026,22 @@ local function ApplySeedBufferStatus(row)
     end
     local US = StockPiler3.UpgradeSeed
     local climb = nil
+    local climbs = nil
     if US and US.IsEnabled and US.IsEnabled() == true then
         if row.isPlantWatch == true or row.kind == "plant" or (tonumber(row.plantUid) or 0) > 0 then
             climb = US.StatusForPlant and US.StatusForPlant(row.plantUid, row.spec) or nil
         end
-        if type(climb) ~= "table" and US.StatusForWatch then
-            -- Potion rows without plantUid: only paint a climb that still has
-            -- live targets (StatusForWatch). Do not fall back to stale _active.
-            climb = US.StatusForWatch()
+        if type(climb) ~= "table" then
+            -- Potion rows: all live genus climbs (Spumepetal + Fusk, etc.).
+            if US.ListClimbStatuses then
+                climbs = US.ListClimbStatuses()
+            end
+            if type(climbs) == "table" and #climbs > 0 then
+                climb = climbs[1]
+            elseif US.StatusForWatch then
+                -- Prefer live targets; do not fall back to stale _active alone.
+                climb = US.StatusForWatch()
+            end
         end
     end
     if type(climb) == "table" and (climb.why == "planting" or climb.why == "refining"
@@ -1853,22 +2060,38 @@ local function ApplySeedBufferStatus(row)
         if needReq > 0 and needReq < capShow then
             capShow = needReq
         end
-        row.statusText = T("plan.status.upgrading_seed_progress", {
-            genus = genus,
-            have = tostring(haveReq),
-            cap = tostring(capShow),
-        })
-        local lines = {
-            T("tip.watch.upgrade_seeds"),
-        }
-        if climb.why == "need_cult" or (needReq > 0 and climbCap > 0 and climbCap < needReq) then
-            lines[#lines + 1] = T("plan.status.upgrading_seed_cult_note", {
-                need = tostring(needReq),
-                floor = tostring(climbCap),
+        local multi = type(climbs) == "table" and #climbs > 1
+        if multi then
+            -- Compact row label; per-slot Have/Need notes carry each genus.
+            local names = {}
+            for i = 1, #climbs do
+                local g = tostring(climbs[i].genus or "")
+                if g ~= "" then
+                    names[#names + 1] = g
+                end
+            end
+            if #names > 0 then
+                row.statusText = T("plan.status.upgrading_seed_multi", {
+                    genera = table.concat(names, "+"),
+                    count = tostring(#names),
+                })
+            else
+                row.statusText = T("plan.status.upgrading_seed")
+            end
+        else
+            row.statusText = T("plan.status.upgrading_seed_progress", {
+                genus = genus,
+                have = tostring(haveReq),
+                cap = tostring(capShow),
             })
-        elseif climb.why == "need_buy" then
-            lines[#lines + 1] = T("plan.status.upgrading_seed_buy_note")
         end
+        -- Detail lives on tip slot Have/Need notes (FormatClimbSlotNote).
+        local lines = {}
+        local autoGrowOn = Watch and Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() == true
+        if autoGrowOn ~= true then
+            lines[#lines + 1] = T("plan.status.upgrading_seed_autogrow_off")
+        end
+        lines[#lines + 1] = T("tip.watch.upgrade_seeds")
         row.statusLines = lines
         row.craftableShared = false
         return
@@ -1979,7 +2202,7 @@ local function SeedBufferShort(recipe, potionKey, row)
 end
 
 --- If any seed cushion is short, stamp seedBufferShort on every AutoGrow watch that
---- uses that seed. Only demote Ready / Stocked → Seed buffer — never overwrite Buy
+--- uses that seed. Only demote Ready / Stocked -> Seed buffer - never overwrite Buy
 --- flasks/seeds/materials when bags are the real blocker.
 local function PropagateSharedSeedBufferStatus(rows)
     if type(rows) ~= "table" or #rows == 0 then
@@ -2108,7 +2331,7 @@ end
 
 local function ApplyReadyStatus(row)
     local pk = type(row) == "table" and (row.potionKey or row.potionRecipeKey or row.id) or nil
-    -- With Cultivation: covered but AutoGrow off → Enable AutoGrow (not Ready).
+    -- With Cultivation: covered but AutoGrow off -> Enable AutoGrow (not Ready).
     -- Apo-only: Ready whenever bags cover the craft (manual + AutoBrew).
     if CanAutoGrowSkill() and not WatchWantsAutoGrow(pk, nil) then
         row.statusKey = "enable_autogrow"
@@ -2207,7 +2430,7 @@ local function ApplySpecPlanStatus(row, target, recipe, demand)
     StampRowSeedBufferUids(row)
 
     -- Ready only when have+craftable covers target (see covered early-return above).
-    -- Partial craftable with bottleGap>0 → Restocking / Buy, so AutoGrow can fill first.
+    -- Partial craftable with bottleGap>0 -> Restocking / Buy, so AutoGrow can fill first.
 
     -- Prefer Refine / Seed buffer over Buy seeds when refinable plants remain.
     -- Seed buffer status only when buffer is actually short for this watch (has seed lines).
@@ -2226,12 +2449,12 @@ local function ApplySpecPlanStatus(row, target, recipe, demand)
         if limiting.buySeedOrMat == true and (tonumber(limiting.seedUid) or 0) > 0 then
             buyLabel = T("watch.note.buy_seeds")
         end
-        -- Plant short is growable: master off → Enable AutoGrow, master on → Restocking.
+        -- Plant short is growable: master off -> Enable AutoGrow, master on -> Restocking.
         SetMaterialsShortStatus(row, true, buyLabel)
         return
     end
     if byproductShort ~= nil then
-        -- Byproduct short with no plant feedstock → red buy, not yellow restocking.
+        -- Byproduct short with no plant feedstock -> red buy, not yellow restocking.
         local hasFeedstock = false
         for i = 1, #allEntries do
             local e = allEntries[i]
@@ -2250,12 +2473,12 @@ local function ApplySpecPlanStatus(row, target, recipe, demand)
         return
     end
     -- Seed buffer before container/vendor buy paint (matches DemoteToMaterialsShort).
-    -- Otherwise Publish paints Buy flasks then live patch flips to Seed buffer — stall chat lies.
+    -- Otherwise Publish paints Buy flasks then live patch flips to Seed buffer - stall chat lies.
     if SeedBufferShort(recipe, target.potionKey, row) then
         ApplySeedBufferStatus(row)
         return
     end
-    -- Container-only short (craftable==0) → Buy flasks, not Restocking.
+    -- Container-only short (craftable==0) -> Buy flasks, not Restocking.
     if containerShort ~= nil then
         row.statusKey = "buy_ingredients"
         row.statusText = T("watch.note.buy_flasks")
@@ -2291,6 +2514,8 @@ local function ApplyLiveWatchStatus(row, recipe, deficit, have, craftable, targe
         or key == "restocking"
         or key == "buy_ingredients"
         or key == "enable_autogrow"
+        or key == "need_skill"
+        or key == "need_apothecary"
     if not flippable then
         return
     end
@@ -2351,12 +2576,14 @@ local function ApplyLiveWatchStatus(row, recipe, deficit, have, craftable, targe
         if containerShort then
             row.statusKey = "buy_ingredients"
             row.statusText = T("watch.note.buy_flasks")
+            row.statusLines = nil
             row.craftableShared = false
             return
         end
         if buyShort then
             row.statusKey = "buy_ingredients"
             row.statusText = T("plan.status.buy_ingredients")
+            row.statusLines = nil
             row.craftableShared = false
             return
         end
@@ -2365,16 +2592,15 @@ local function ApplyLiveWatchStatus(row, recipe, deficit, have, craftable, targe
         else
             row.statusKey = "buy_ingredients"
             row.statusText = T("plan.status.buy_ingredients")
+            row.statusLines = nil
         end
         row.craftableShared = false
     end
 
     if deficit <= 0 then
         if SeedBufferShort(recipe, potionKey, row) then
-            -- upgrading_seed ~= need_seeds → re-apply (climb-end → need_seeds / refresh).
-            if key ~= "need_seeds" then
-                ApplySeedBufferStatus(row)
-            end
+            -- Always re-apply so need_seeds <-> upgrading_seed text stays live.
+            ApplySeedBufferStatus(row)
         elseif key ~= "potion_stocked" then
             ApplyStockedStatus(row)
         end
@@ -2384,14 +2610,14 @@ local function ApplyLiveWatchStatus(row, recipe, deficit, have, craftable, targe
     local covered = target > 0 and (have + (tonumber(craftable) or 0)) >= target
     if covered then
         if SeedBufferShort(recipe, potionKey, row) then
-            if key ~= "need_seeds" then
-                ApplySeedBufferStatus(row)
-            end
+            ApplySeedBufferStatus(row)
         elseif key == "buy_ingredients" and row.craftableShared == true then
             -- Shared buy-only paint; PolishSharedContest refreshes flasks vs Ready.
             return
-        elseif key ~= "ready_to_craft" and key ~= "ready_to_craft_shared" then
+        else
             ApplyReadyStatus(row)
+            ApplyNeedApothecaryStatus(row)
+            ApplyNeedSkillStatus(row)
         end
         return
     end
@@ -2400,9 +2626,11 @@ local function ApplyLiveWatchStatus(row, recipe, deficit, have, craftable, targe
         or key == "potion_stocked" or key == "buy_ingredients"
         or key == "restocking"
         or key == "enable_autogrow"
+        or key == "need_skill"
+        or key == "need_apothecary"
     then
         -- Uncovered target: never Ready (partial craftable waits for AutoGrow / buy).
-        -- Seed buffer only gates Ready/stocked — buy shortages keep Buy flasks/seeds.
+        -- Seed buffer only gates Ready/stocked - buy shortages keep Buy flasks/seeds.
         if SeedBufferShort(recipe, potionKey, row)
             and (key == "ready_to_craft" or key == "ready_to_craft_shared" or key == "potion_stocked")
         then
@@ -2418,8 +2646,8 @@ local function ApplyLiveWatchStatus(row, recipe, deficit, have, craftable, targe
         DemoteToMaterialsShort()
         return
     end
-    -- Climb ended but buffer still short: refresh → need_seeds (or keep climbing).
-    if key == "upgrading_seed" and SeedBufferShort(recipe, potionKey, row) then
+    -- Buffer still short: always re-apply so need_seeds <-> upgrading_seed stays live.
+    if (key == "need_seeds" or key == "upgrading_seed") and SeedBufferShort(recipe, potionKey, row) then
         ApplySeedBufferStatus(row)
         return
     end
@@ -2448,7 +2676,7 @@ local function ApplyLiveWatchStatus(row, recipe, deficit, have, craftable, targe
 end
 
 ----------------------------------------------------------------
--- Seed-buffer tip (PeekCachedIntents only — never CollectIntents)
+-- Seed-buffer tip (PeekCachedIntents only - never CollectIntents)
 ----------------------------------------------------------------
 
 local function BuildSeedBufferTipData(opts)
@@ -2641,7 +2869,7 @@ local function StampRowCraftMatIndex(row)
     row._craftMatKeys = keys
 end
 
---- Resolve last net uid delta into touch sets. unresolved=true → full craftable recount.
+--- Resolve last net uid delta into touch sets. unresolved=true -> full craftable recount.
 local function BuildDeltaTouchSets(delta)
     local uids = {}
     local keys = {}
@@ -2756,7 +2984,7 @@ local function PolishWatchRowsStatus(rows)
                 ApplyReadyStatus(row)
                 key = "ready_to_craft"
             end
-            -- Uncovered Ready (partial craftable / race) → Enable AutoGrow / Restocking / Buy.
+            -- Uncovered Ready (partial craftable / race) -> Enable AutoGrow / Restocking / Buy.
             if (not covered or craftable <= 0)
                 and (key == "ready_to_craft" or key == "ready_to_craft_shared")
             then
@@ -2798,7 +3026,7 @@ local function PolishWatchRowsStatus(rows)
             ReconcileAutoGrowStatus(row)
         end
     end
-    -- Shared contest + Ready↔Shared after promote/demote (plan-row SoT).
+    -- Shared contest + Ready<->Shared after promote/demote (plan-row SoT).
     PolishSharedContest(rows)
     for i = 1, #rows do
         StampCraftableSafety(rows[i])
@@ -3138,6 +3366,96 @@ local function PatchPlanSnapshotLiveStatus(row)
     end
 end
 
+local function RefreshSkillUpWatchRows(rows, opts)
+    opts = type(opts) == "table" and opts or {}
+    if type(rows) ~= "table" or #rows == 0 then
+        return false
+    end
+    local SkillUp = StockPiler3.SkillUp
+    if not (SkillUp and SkillUp.BuildWatchStatusRows) then
+        return false
+    end
+    local fresh = SkillUp.BuildWatchStatusRows() or {}
+    if type(fresh) ~= "table" then
+        return false
+    end
+    local byKey = {}
+    for i = 1, #fresh do
+        local sr = fresh[i]
+        if type(sr) == "table" then
+            local k = tostring(sr.potionKey or sr.id or "")
+            if k ~= "" then
+                byKey[k] = sr
+            end
+        end
+    end
+    local dirty = false
+    for i = 1, #rows do
+        local row = rows[i]
+        if type(row) == "table" and (row.skillUp == true or row.addonOwned == true) then
+            local k = tostring(row.potionKey or row.id or "")
+            local sr = byKey[k]
+            if type(sr) == "table" then
+                local prevKey = tostring(row.statusKey or "")
+                local prevText = row.statusText
+                local prevLines = row.statusLines
+                row.statusKey = sr.statusKey
+                row.statusText = sr.statusText
+                row.statusLines = sr.statusLines
+                row.seedUid = sr.seedUid
+                row.plantUid = sr.plantUid
+                row.mainUid = sr.mainUid
+                row.autoGrow = sr.autoGrow
+                row.hideBrew = sr.hideBrew
+                row.hideAutoGrow = sr.hideAutoGrow
+                row.craftable = sr.craftable
+                row.craftableSafe = sr.craftableSafe
+                row.craftableText = sr.craftableText
+                row.potionHave = sr.potionHave
+                row.potionMin = sr.potionMin
+                row.potionDeficit = sr.potionDeficit
+                row.target = sr.target
+                row.skillReq = sr.skillReq
+                row.iconNum = sr.iconNum
+                -- Recipe must travel with ready_to_craft or Brew load skips no-recipe
+                -- while the footer stays lit (craftable>0 without slots).
+                row.recipe = sr.recipe
+                row.recipeYield = sr.recipeYield
+                local newKey = tostring(row.statusKey or "")
+                if newKey ~= prevKey or row.statusText ~= prevText
+                    or row.statusLines ~= prevLines
+                then
+                    dirty = true
+                    if opts.syncSnapshot ~= false then
+                        PatchPlanSnapshotLiveStatus(row)
+                    end
+                end
+            elseif row.skillUp == true then
+                -- Apo/Cult SkillUp no longer emitted (e.g. skill hit 200): disarm Ready
+                -- so bag flush cannot re-load a stale board.
+                if (tonumber(row.craftable) or 0) > 0
+                    or type(row.recipe) == "table"
+                    or tostring(row.statusKey or "") == "ready_to_craft"
+                then
+                    row.craftable = 0
+                    row.craftableSafe = false
+                    row.craftableText = L""
+                    row.recipe = nil
+                    row.potionDeficit = 0
+                    row.hideBrew = true
+                    row.statusKey = "skill_done"
+                    row.statusText = T("skillup.watch.done")
+                    dirty = true
+                    if opts.syncSnapshot ~= false then
+                        PatchPlanSnapshotLiveStatus(row)
+                    end
+                end
+            end
+        end
+    end
+    return dirty
+end
+
 local function PatchWatchRowsLiveCounts(rows, opts)
     opts = type(opts) == "table" and opts or {}
     local syncSnapshot = opts.syncSnapshot ~= false
@@ -3203,7 +3521,7 @@ local function PatchWatchRowsLiveCounts(rows, opts)
     for i = 1, #rows do
         local row = rows[i]
         if type(row) == "table" and (row.skillUp == true or row.addonOwned == true) then
-            -- Ephemeral SkillUp status rows — leave SkillUp-authored fields alone.
+            -- Refreshed after the plant/potion loop (see RefreshSkillUpWatchRows).
         elseif type(row) == "table" and (row.kind == "plant" or row.isPlantWatch == true) then
             local uid = tonumber(row.uniqueID) or tonumber(row.plantUid) or 0
             if uid > 0 then
@@ -3235,6 +3553,7 @@ local function PatchWatchRowsLiveCounts(rows, opts)
                 local prevDeficit = tonumber(row.potionDeficit) or 0
                 local prevCraftable = tonumber(row.craftable) or 0
                 local prevKey = tostring(row.statusKey or "")
+                local prevText = row.statusText
                 row.potionHave = have
                 row.stockText = towstring(tostring(have))
                 local min = tonumber(row.potionMin) or tonumber(row.target) or 0
@@ -3274,7 +3593,7 @@ local function PatchWatchRowsLiveCounts(rows, opts)
                 then
                     contestDirty = true
                 end
-                if syncSnapshot and newKey ~= prevKey then
+                if syncSnapshot and (newKey ~= prevKey or row.statusText ~= prevText) then
                     PatchPlanSnapshotLiveStatus(row)
                 end
                 if (prevKey == "need_seeds" or prevKey == "upgrading_seed"
@@ -3306,6 +3625,9 @@ local function PatchWatchRowsLiveCounts(rows, opts)
             end
         end
     end
+    -- SkillUp rows are not count-patched above; rebuild status so waiting → planting
+    -- flips when watches stock without a full plan rebuild.
+    RefreshSkillUpWatchRows(rows, { syncSnapshot = syncSnapshot })
     -- Shared contest: mat buys (flasks) often leave potion deficit/craftable unchanged,
     -- so contestDirty alone misses clearing craftableShared / Buy-flasks paint.
     local needSharedPolish = contestDirty
@@ -3616,12 +3938,29 @@ function Planner.WarmHave()
     return WarmSpecHaveCacheForWatches()
 end
 
+--- Frame-slice: collect+CountByUid this frame; bag pass next (see FrameWork.EnqueueWarmHave).
+function Planner.BeginWarmHaveSlice()
+    return BeginWarmHaveSlice()
+end
+
+function Planner.FinishWarmHaveSlice()
+    return FinishWarmHaveSlice()
+end
+
 function Planner.CountItemsMatchingSpec(spec, opts)
     return CountItemsMatchingSpec(spec, opts)
 end
 
 function Planner.BuildBalancedSpecDemand()
     return BuildBalancedSpecDemand()
+end
+
+--- Quiet-end: force next EnsureHaveCache / demand build to refresh counts.
+function Planner.InvalidateHaveCacheAfterQuiet()
+    Planner._specHaveSnapGen = -1
+    Planner._specHaveWarmedSnap = nil
+    Planner._demandCacheKey = nil
+    Planner._warmHaveSlice = nil
 end
 
 function Planner.BottleGap(target, stock, craftable)
@@ -3818,8 +4157,8 @@ function Planner.PatchWatchRowsLiveCounts(rows, opts)
     return PatchWatchRowsLiveCounts(rows, opts)
 end
 
---- Flip Enable AutoGrow ↔ Restocking on current plan + optional extra rows (listData).
---- Call from Watch UI after master/per-watch AutoGrow toggles — do not wait for rebuild.
+--- Flip Enable AutoGrow <-> Restocking on current plan + optional extra rows (listData).
+--- Call from Watch UI after master/per-watch AutoGrow toggles - do not wait for rebuild.
 function Planner.ReconcileAutoGrowStatusesNow(extraRows)
     local changed = false
     local PS = StockPiler3.PlanSnapshot
@@ -3828,8 +4167,11 @@ function Planner.ReconcileAutoGrowStatusesNow(extraRows)
         if ReconcileAutoGrowStatusesForRows(plan.rows) then
             changed = true
         end
-        -- Armed set changed → Shared contest membership must refresh.
+        -- Armed set changed -> Shared contest membership must refresh.
         if PolishSharedContest(plan.rows) then
+            changed = true
+        end
+        if RefreshSkillUpWatchRows(plan.rows, { syncSnapshot = true }) then
             changed = true
         end
     end
@@ -3838,6 +4180,9 @@ function Planner.ReconcileAutoGrowStatusesNow(extraRows)
             changed = true
         end
         if PolishSharedContest(extraRows) then
+            changed = true
+        end
+        if RefreshSkillUpWatchRows(extraRows, { syncSnapshot = false }) then
             changed = true
         end
     end
@@ -4272,7 +4617,7 @@ function Planner.DumpGrowPlan(emit)
                 if not anyShort then
                     nilReason = "no-demand-short"
                 elseif not anyGrowableShort then
-                    -- Flasks / butcher / resin only — grow correctly handed off.
+                    -- Flasks / butcher / resin only - grow correctly handed off.
                     nilReason = anyBuyOnlyShort and "buy-only-short" or "no-growable-short"
                 elseif not anyPlantUid then
                     nilReason = "no-plant-uid"

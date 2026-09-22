@@ -1,5 +1,5 @@
 ----------------------------------------------------------------
--- StockPiler3 Adapters/CultivatorAdapter — cultivation read + plant/harvest
+-- StockPiler3 Adapters/CultivatorAdapter - cultivation read + plant/harvest
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}

@@ -11,7 +11,7 @@ local Brew = StockPiler3.Brew
 Brew.ADOPT_BLOCK_SEC = 1.5
 Brew.BREW_OP_LOCK_SEC = 1.25
 -- After load-done, engine SuccessChance / GetSlottedItem can lag a few frames.
--- Unloading immediately loops load→unload while the footer stays lit.
+-- Unloading immediately loops load->unload while the footer stays lit.
 Brew.LOAD_SETTLE_SEC = 1.25
 -- Probe interval for auto-loaded boards that never get another crafting-updated
 -- (settle hold then silence). Stuck loaded blocks AutoGrow + plan rebuild.
@@ -163,6 +163,11 @@ local function RowIsReadyToCraft(row)
     end
     -- SkillUp Apo synthetic row: bags can craft; no watch / AutoGrow arm required.
     if row.skillUp == true then
+        local SkillUp = StockPiler3.SkillUp
+        -- Apo at max (or toggle off) must not stay Ready from a stale plan row.
+        if not SkillUp or SkillUp.ShouldApoBrew == nil or SkillUp.ShouldApoBrew() ~= true then
+            return false
+        end
         if (tonumber(row.craftable) or 0) <= 0 then
             return false
         end
@@ -203,7 +208,7 @@ local function RowIsReadyToCraft(row)
     if row.craftableShared == true then
         return false
     end
-    -- Wait until bags+craftable cover the watch target (partial mats → AutoGrow first).
+    -- Wait until bags+craftable cover the watch target (partial mats -> AutoGrow first).
     local have = tonumber(row.potionHave) or 0
     local target = tonumber(row.potionMin) or tonumber(row.target) or 0
     if target > 0 and (have + craftable) < target then
@@ -428,9 +433,9 @@ local function AssignCraftingSlot(role, supplementSlot)
 end
 
 --- Expand saved recipe slots into apo craft-slot steps.
---- Phase 1: every fingerprint role at learned perCraft (exact recipe — no skipped modifiers).
+--- Phase 1: every fingerprint role at learned perCraft (exact recipe - no skipped modifiers).
 --- Phase 2: stabilizer top-ups into leftover slots only (does not drop phase-1 roles).
---- Returns steps, ok — ok=false if a saved role cannot be placed (refuse incomplete load).
+--- Returns steps, ok - ok=false if a saved role cannot be placed (refuse incomplete load).
 local function BuildLoadSteps(recipe)
     local steps = {}
     if type(recipe) ~= "table" or type(recipe.slots) ~= "table" then
@@ -491,7 +496,7 @@ local function BuildLoadSteps(recipe)
                 craftingSlot, supplementSlot = AssignCraftingSlot(role, supplementSlot)
                 if craftingSlot == nil then
                     LogBrew(string.format(
-                        "load phase1 fail role=%s uid=%s (no craft slot) — refuse incomplete recipe load",
+                        "load phase1 fail role=%s uid=%s (no craft slot) - refuse incomplete recipe load",
                         role, tostring(uid)
                     ))
                     return steps, false
@@ -707,7 +712,7 @@ local function FindCraftingBagItemBySpec(wantSpec, exemplarUid, reserved)
         end
     end
 
-    -- Fallback: Inventory.ForEachItem (no bag slot numbers — try FindSeedSlot on matched uid).
+    -- Fallback: Inventory.ForEachItem (no bag slot numbers - try FindSeedSlot on matched uid).
     if bestSlot <= 0 and StockPiler3.Inventory and StockPiler3.Inventory.ForEachItem then
         StockPiler3.Inventory.ForEachItem(function(item)
             if type(item) ~= "table" then
@@ -899,7 +904,7 @@ local function InLoadSettle()
 end
 
 --- Auto-unload on engine/board reasons only after post-load settle (and not mid-load).
---- board-incomplete must wait settle too — GetSlottedItem lags after AddCraftingItem.
+--- board-incomplete must wait settle too - GetSlottedItem lags after AddCraftingItem.
 local function ShouldAutoUnloadForEngine(why)
     why = tostring(why or "")
     local gated = why == "board-incomplete"
@@ -1052,7 +1057,7 @@ function Brew.CanBrewNow()
             return false
         end
         -- Auto board: enable only while this session row is uncontested Ready.
-        -- (Drop craftOk loophole — fail/wrong-tier must darken Brew until Ready again.)
+        -- (Drop craftOk loophole - fail/wrong-tier must darken Brew until Ready again.)
         return RowIsReadyToCraft(FindSessionRow())
     end
 
@@ -1065,7 +1070,7 @@ function Brew.CanBrewNow()
 end
 
 --- Chat/sound when a watch newly enters uncontested Ready to brew.
---- Latches per potionKey — not CanBrewNow (busy mid-craft would re-fire every brew).
+--- Latches per potionKey - not CanBrewNow (busy mid-craft would re-fire every brew).
 function Brew.MaybeNotifyBrewReady()
     local plan = CurrentPlan()
     local rows = plan and plan.rows
@@ -1174,6 +1179,28 @@ local function BeginLoadJob(row, source)
         return false
     end
     local recipe = row.recipe
+    -- SkillUp: never trust a stale plan recipe after Apo max / toggle off.
+    -- Always rebuild (or abort) so post-200 bag flush cannot re-load the board.
+    if row.skillUp == true then
+        local SkillUp = StockPiler3.SkillUp
+        if not SkillUp or SkillUp.ShouldApoBrew == nil or SkillUp.ShouldApoBrew() ~= true then
+            LogBrew("load skip skillup-disabled")
+            return false
+        end
+        if SkillUp.BuildApoBrewRow then
+            local skillRow = SkillUp.BuildApoBrewRow({ quiet = true })
+            if type(skillRow) == "table" and type(skillRow.recipe) == "table" then
+                recipe = skillRow.recipe
+                row.recipe = recipe
+                row.craftable = skillRow.craftable
+                row.mainUid = skillRow.mainUid
+                row.recipeYield = skillRow.recipeYield
+            else
+                LogBrew("load skip skillup-no-board")
+                return false
+            end
+        end
+    end
     if type(recipe) ~= "table" then
         local RS = StockPiler3.RecipeSpec
         local key = row.potionRecipeKey or row.potionKey or row.id
@@ -1365,7 +1392,7 @@ local function AdvanceLoadJob()
         local idx = tonumber(job.index) or 1
         if type(slots) ~= "table" or idx > #slots then
             -- All recipe steps were AddItem'd (a miss aborts above). Do not sync-check
-            -- GetSlottedItem here — engine bag/board lag one or more frames after Add,
+            -- GetSlottedItem here - engine bag/board lag one or more frames after Add,
             -- which falsely aborted complete loads as load-incomplete.
             Brew._job = nil
             SetSessionPhase("loaded", "load-done")
@@ -1400,7 +1427,7 @@ local function AdvanceLoadJob()
             local added = a.AddItemToCrafting(craftSlot, bagSlot, bagType)
             if added ~= true then
                 LogBrew(string.format(
-                    "load add-fail role=%s exemplar=%s bag=%s craftSlot=%s — abort",
+                    "load add-fail role=%s exemplar=%s bag=%s craftSlot=%s - abort",
                     tostring(slot.role), tostring(exemplarUid), tostring(bagSlot), tostring(craftSlot)
                 ))
                 AbortIncompleteLoad("load-add-fail-" .. tostring(slot.role or "?"))
@@ -1417,9 +1444,9 @@ local function AdvanceLoadJob()
                 tostring(craftSlot)
             ))
         else
-            -- Missing any saved recipe slot → abort (do not invent a stable partial board).
+            -- Missing any saved recipe slot -> abort (do not invent a stable partial board).
             LogBrew(string.format(
-                "load miss role=%s exemplar=%s — abort exact recipe load",
+                "load miss role=%s exemplar=%s - abort exact recipe load",
                 tostring(slot.role), tostring(exemplarUid)
             ))
             AbortIncompleteLoad("load-miss-" .. tostring(slot.role or "?"))
@@ -1662,7 +1689,7 @@ function Brew.TryBrewClick()
             if Brew.ValidateApothecaryPerform() == true then
                 return "go"
             end
-            -- Ready on plan but board/engine unsafe — unload so the next click
+            -- Ready on plan but board/engine unsafe - unload so the next click
             -- can reload. Do not fall through into BeginLoadJob while loaded.
             local why = PerformBlockReason() or "click-perform-blocked"
             LogBrew("click unload perform-blocked reason=" .. tostring(why))
@@ -1683,7 +1710,7 @@ function Brew.TryBrewClick()
             ForceBrewUiRefresh()
             return "blocked"
         end
-        -- Still loaded + Ready + covered but didn't return "go" — stay blocked
+        -- Still loaded + Ready + covered but didn't return "go" - stay blocked
         -- without starting another load on top of this board.
         return "blocked"
     end
@@ -1903,7 +1930,8 @@ function Brew.RefreshSessionAfterBrew()
         return
     end
 
-    -- SkillUp Apo: no watch target — keep board while craftable + engine OK.
+    -- SkillUp Apo: always unload after a completed brew (any load trigger).
+    -- Auto re-arms via bag flush only while ShouldApoBrew is still true.
     if session.skillUp == true then
         Brew._brewHaveBefore = nil
         if session.craftable ~= nil then
@@ -1915,23 +1943,12 @@ function Brew.RefreshSessionAfterBrew()
             "after-brew skillup craftable=%s valid=%s",
             tostring(craftLeft), tostring(stillValid)
         ))
-        if stillValid ~= true or craftLeft <= 0 then
-            Brew.ClearLoadedSession({ reason = "after-brew-skillup-done" })
-            -- Rebuild next SkillUp board if mats remain.
-            if StockPiler3.Scheduler and StockPiler3.Scheduler.EnqueueBagFlush then
-                StockPiler3.Scheduler.EnqueueBagFlush(true)
-            end
-            ForceBrewUiRefresh()
-            return
-        end
-        -- Refresh craftable from bags for the next click.
+        Brew.ClearLoadedSession({ reason = "after-brew-skillup-done" })
         local SkillUp = StockPiler3.SkillUp
-        if SkillUp and SkillUp.BuildApoBrewRow then
-            local nextRow = SkillUp.BuildApoBrewRow()
-            if type(nextRow) == "table" then
-                session.craftable = tonumber(nextRow.craftable) or craftLeft
-                Brew._skillUpRow = nextRow
-            end
+        if SkillUp and SkillUp.ShouldApoBrew and SkillUp.ShouldApoBrew() == true
+            and StockPiler3.Scheduler and StockPiler3.Scheduler.EnqueueBagFlush
+        then
+            StockPiler3.Scheduler.EnqueueBagFlush(true)
         end
         ForceBrewUiRefresh()
         return
@@ -1969,7 +1986,6 @@ function Brew.RefreshSessionAfterBrew()
         StockPiler3.Scheduler.EnqueuePlanRebuild()
     end
     local stillValid = Brew.ValidateApothecaryPerform() == true
-    local craftLeft = tonumber(session.craftable) or 0
     local deficit = tonumber(session.potionDeficit)
     if deficit == nil and PotionTargetMin(session) > 0 then
         deficit = math.max(0, PotionTargetMin(session) - (tonumber(session.potionHave) or 0))
@@ -2000,39 +2016,21 @@ function Brew.RefreshSessionAfterBrew()
 
     if deficit <= 0 then
         PatchPlanRowTargetMet(session, session.potionHave)
-        if Brew._loadSource == "manual" and craftLeft > 0 and stillValid then
-            -- Manual may keep an overstock board loaded; footer stays dark (CanBrewNow).
-            SetSessionPhase("loaded", "after-brew-overstock")
-            session.potionDeficit = 0
-            Brew._postBrewClearArmed = false
-            ForceBrewUiRefresh()
-            return
-        end
-        LogBrew("target met — unload have=" .. tostring(session.potionHave)
+        LogBrew("target met - unload have=" .. tostring(session.potionHave)
             .. "/" .. tostring(session.potionMin))
         Brew.ClearLoadedSession({ reason = "after-brew-target-met" })
         return
     end
-    if stillValid ~= true then
-        Brew.ClearLoadedSession({ reason = "after-brew-board-empty" })
-        return
-    end
-    -- Auto: leave board when this watch is no longer uncontested Ready (fail / wrong-tier /
-    -- shared / buy / restocking). Footer stays dark until PickReadyWatch again.
-    if Brew._loadSource ~= "manual" then
-        local row = FindSessionRow()
-        if not RowIsReadyToCraft(row) then
-            Brew.ClearLoadedSession({ reason = "after-brew-not-ready" })
-            return
-        end
-    end
-    if Brew.MaybeClearLoadedIfCannotContinue("after-brew") then
-        return
-    end
-    -- Bags often lag one snap behind Perform; re-check Ready / watch-uid advance then.
-    Brew._postBrewClearArmed = true
-    Brew._brewHaveBefore = haveBefore
-    if StockPiler3.Scheduler and StockPiler3.Scheduler.EnqueueBagFlush then
+    -- Always unload after a completed brew (manual / auto / any load trigger).
+    -- Auto may re-arm via bag flush when the watch is still uncontested Ready.
+    local row = FindSessionRow()
+    local wantContinue = stillValid == true
+        and Brew._loadSource ~= "manual"
+        and RowIsReadyToCraft(row) == true
+    Brew.ClearLoadedSession({ reason = "after-brew-done" })
+    if wantContinue == true
+        and StockPiler3.Scheduler and StockPiler3.Scheduler.EnqueueBagFlush
+    then
         StockPiler3.Scheduler.EnqueueBagFlush(true)
     end
     ForceBrewUiRefresh()
@@ -2051,18 +2049,8 @@ function Brew.OnInventorySnapshot()
     end
     SyncSessionStockFromBags(session)
     if not RowNeedsMorePotions(session) then
-        if Brew._loadSource == "manual"
-            and (tonumber(session.craftable) or 0) > 0
-            and Brew.ValidateApothecaryPerform() == true
-        then
-            session.potionDeficit = 0
-            Brew._postBrewClearArmed = false
-            Brew._brewHaveBefore = nil
-            ForceBrewUiRefresh()
-            return
-        end
         PatchPlanRowTargetMet(session, session.potionHave)
-        LogBrew("post-brew bag sync — unload have="
+        LogBrew("post-brew bag sync - unload have="
             .. tostring(session.potionHave) .. "/" .. tostring(session.potionMin))
         Brew.ClearLoadedSession({ reason = "after-brew-bags" })
         return
@@ -2113,7 +2101,7 @@ function Brew.MaybeClearLoadedIfCannotContinue(reason)
     local deficit = tonumber(session.potionDeficit) or 0
     local row = FindSessionRow()
     -- Unload when target met, or when this watch is no longer uncontested Ready
-    -- (mats short / shared / buy / restocking — AutoGrow/AutoBuy must refill first).
+    -- (mats short / shared / buy / restocking - AutoGrow/AutoBuy must refill first).
     if deficit <= 0 or not RowNeedsMorePotions(session) or not RowIsReadyToCraft(row) then
         if deficit <= 0 or not RowNeedsMorePotions(session) then
             PatchPlanRowTargetMet(session, session.potionHave)
