@@ -101,7 +101,7 @@ local function IsUidOnCooldown(uid)
     return true
 end
 
-local function ArmNoSpendCooldown(uid)
+local function ArmNoSpendCooldown(uid, durationSec)
     uid = tonumber(uid) or 0
     if uid <= 0 then
         return
@@ -110,7 +110,11 @@ local function ArmNoSpendCooldown(uid)
     if now <= 0 then
         return
     end
-    Buy._noSpendCooldownUntil[uid] = now + (tonumber(Buy.NO_SPEND_COOLDOWN_SEC) or 2)
+    local dur = tonumber(durationSec)
+    if dur == nil or dur <= 0 then
+        dur = tonumber(Buy.NO_SPEND_COOLDOWN_SEC) or 2
+    end
+    Buy._noSpendCooldownUntil[uid] = now + dur
 end
 
 local function ClearNoSpendCooldown(uid)
@@ -137,6 +141,31 @@ local function ClearLateAttemptsForUid(uid)
         end
     end
     Buy._lateBuyAttempts = keep
+end
+
+--- Qty still open in late-confirm grace for this uid (0 if none / expired).
+--- Blocks IssueOne from rebuying the same uid while bag/money may still catch up (#9).
+local function OpenLateQtyForUid(uid)
+    uid = tonumber(uid) or 0
+    if uid <= 0 then
+        return 0
+    end
+    local list = Buy._lateBuyAttempts
+    if type(list) ~= "table" or #list < 1 then
+        return 0
+    end
+    local now = NowSec()
+    local total = 0
+    for i = 1, #list do
+        local pending = list[i]
+        if type(pending) == "table" and (tonumber(pending.uid) or 0) == uid then
+            local expires = tonumber(pending.expiresAt) or 0
+            if expires <= 0 or now <= 0 or now < expires then
+                total = total + math.max(1, tonumber(pending.qty) or 1)
+            end
+        end
+    end
+    return total
 end
 
 local function ArmPostBuyGap()
@@ -455,6 +484,9 @@ local function TryLateConfirmBuys()
                     tostring(uid),
                     math.max(1, tonumber(pending.qty) or 1)
                 ))
+                if uid > 0 then
+                    ClearNoSpendCooldown(uid)
+                end
             else
                 keep[#keep + 1] = pending
             end
@@ -500,7 +532,9 @@ local function ResolvePendingBuy()
                 bagNow
             ))
             StashLateBuyAttempt(pending)
-            ArmNoSpendCooldown(uid)
+            -- Hold the uid for the full late-confirm grace (not the short chill),
+            -- so IssueOne cannot rebuy while bag/money may still land (#9).
+            ArmNoSpendCooldown(uid, Buy.LATE_CONFIRM_GRACE_SEC)
             Buy._pendingBuy = nil
             return "no-spend"
         end
@@ -515,7 +549,7 @@ local function ResolvePendingBuy()
             live
         ))
         StashLateBuyAttempt(pending)
-        ArmNoSpendCooldown(uid)
+        ArmNoSpendCooldown(uid, Buy.LATE_CONFIRM_GRACE_SEC)
         Buy._pendingBuy = nil
         return "no-spend"
     end
@@ -1176,12 +1210,13 @@ function Buy.IssueOne(opId)
             local uid = tonumber(item.uniqueID) or tonumber(item.id) or tonumber(job.uid) or 0
             if key == nil or slotNum == nil then
                 LogBuy("skip bad-slot-or-key job=" .. tostring(job.specKey or job.uid or i))
-            elseif IsUidOnCooldown(uid) then
-                -- Recent buy-no-spend for this uid - stay armed until cooldown ends.
+            elseif IsUidOnCooldown(uid) or OpenLateQtyForUid(uid) > 0 then
+                -- Recent buy-no-spend / open late-confirm for this uid - stay armed (#9).
                 cooldownBlocked = true
             else
                 local deficit = tonumber(job.deficit) or 0
-                local remaining = math.max(0, deficit - VisitAcquired(key))
+                local lateQty = OpenLateQtyForUid(uid)
+                local remaining = math.max(0, deficit - VisitAcquired(key) - lateQty)
                 if remaining >= 1 then
                     local vendorMax = 100
                     local stackCount = tonumber(item.stackCount) or 1
@@ -1214,7 +1249,7 @@ function Buy.IssueOne(opId)
                                 ))
                                 return done(false)
                             end
-                            -- Retry owns confirm - drop stale late stash for this uid.
+                            -- No open late stash for this uid (blocked above); clear any stale.
                             ClearLateAttemptsForUid(uid)
                             -- Broadcast only - confirm on money/bag movement next tick.
                             Buy._pendingBuy = {

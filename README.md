@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.209** — Soft plant_stock gate, Craft tip, Plants SCrit isolation, Special Moment TTL (#7).
+**Version 0.3.210** — AutoBuy: block rebuy while late-confirm grace is open (#9).
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -132,6 +132,7 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.210 | AutoBuy: hold uid through late-confirm grace; no rebuy / ClearLate stash race (#9) |
 | 0.3.209 | Drop every-load recipe-subset scrub; allowlist plant EFFECT migrate latch |
 | 0.3.208 | Plants SCrit: apo plant SPECIAL_CHANCE only; never copy cult seed Super-Crit |
 | 0.3.207 | Plants tab: hide nameless refine/grow uid stubs; DB enrich before list |
