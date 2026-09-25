@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.229** — Watch Load/Brew chip tooltips match the button (Load vs Brew), including over-target green Craftable.
+**Version 0.3.230** — Soft priority / coalesced watch-toggle / recipe-learn PlanRebuild (cut Status.Craftable spikes).
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -132,6 +132,7 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.230 | Soft prio (no PlanRebuild); Potions toggle one rebuild; recipe learn nudge coalesce |
 | 0.3.229 | Watch Load/Brew tips match chip state (Load vs Brew; green Craftable) |
 | 0.3.228 | Manual Load/Brew when Craftable green even if potion target already met |
 | 0.3.227 | Watch tab ListBox visiblerows 11 (was overflowing one row past clip) |

@@ -4456,6 +4456,25 @@ function Planner.ReconcileAutoGrowStatusesNow(extraRows)
     return changed
 end
 
+--- Priority-only soft change: refresh shared contest + focus (no BuildFull).
+function Planner.AfterPrioritySoftChange(extraRows)
+    local PS = StockPiler3.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    local seen = {}
+    local function polish(rows)
+        if type(rows) ~= "table" or seen[rows] then
+            return
+        end
+        seen[rows] = true
+        PolishSharedContest(rows)
+    end
+    if type(plan) == "table" then
+        polish(plan.rows)
+    end
+    polish(extraRows)
+    InvalidateFocusCaches()
+end
+
 function Planner.HasReadyToCraft()
     local Brew = StockPiler3.Brew
     if Brew and Brew.HasReadyToCraft then

@@ -803,6 +803,99 @@ local function AdjustTarget(data, delta)
     AfterTargetChipChanged(data, potionKey, oldTarget, newTarget)
 end
 
+--- Patch plan + listData tiers, re-sort potion watches, polish shared contest (no BuildFull).
+local function AfterPrioritySoftChange(potionKey, newTier)
+    newTier = tonumber(newTier) or 1
+    local keyStr = tostring(potionKey or "")
+    local function patchRows(rows)
+        if type(rows) ~= "table" or keyStr == "" then
+            return
+        end
+        for i = 1, #rows do
+            local row = rows[i]
+            if type(row) == "table"
+                and not IsPlantWatchRow(row)
+                and not IsEphemeralWatchRow(row)
+            then
+                local rowKey = row.potionRecipeKey or row.id or row.potionKey
+                if rowKey ~= nil and tostring(rowKey) == keyStr then
+                    row.priorityTier = newTier
+                    row.priorityTierText = towstring(tostring(newTier))
+                end
+            end
+        end
+    end
+    local function rowKindRank(row)
+        if IsPlantWatchRow(row) then
+            return 2
+        end
+        if IsEphemeralWatchRow(row) then
+            return 3
+        end
+        return 1
+    end
+    local function narrowName(row)
+        local n = row and row.name
+        if StockPiler3.Util and StockPiler3.Util.ToNarrow then
+            return string.lower(StockPiler3.Util.ToNarrow(n) or "")
+        end
+        return string.lower(tostring(n or ""))
+    end
+    local function sortWatchRows(rows)
+        if type(rows) ~= "table" or #rows < 2 then
+            return
+        end
+        table.sort(rows, function(a, b)
+            local ka, kb = rowKindRank(a), rowKindRank(b)
+            if ka ~= kb then
+                return ka < kb
+            end
+            if ka ~= 1 then
+                return narrowName(a) < narrowName(b)
+            end
+            local ta = tonumber(a and a.priorityTier) or 1
+            local tb = tonumber(b and b.priorityTier) or 1
+            if ta ~= tb then
+                return ta < tb
+            end
+            local na, nb = narrowName(a), narrowName(b)
+            if na ~= nb then
+                return na < nb
+            end
+            return tostring(a and (a.potionKey or a.id) or "")
+                < tostring(b and (b.potionKey or b.id) or "")
+        end)
+    end
+
+    local PS = StockPiler3.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    local planRows = type(plan) == "table" and plan.rows or nil
+    patchRows(planRows)
+    local listData = StockPiler3TabWatch.listData
+    if listData ~= planRows then
+        patchRows(listData)
+    end
+    sortWatchRows(planRows)
+    if listData ~= planRows then
+        sortWatchRows(listData)
+    end
+    if type(listData) == "table" then
+        StockPiler3TabWatch.displayOrder = {}
+        for i = 1, #listData do
+            StockPiler3TabWatch.displayOrder[i] = i
+        end
+    end
+    if StockPiler3.Planner and StockPiler3.Planner.AfterPrioritySoftChange then
+        StockPiler3.Planner.AfterPrioritySoftChange(listData)
+    end
+    StockPiler3TabWatch._rowPaintKey = nil
+    if DoesWindowExist("SP3TabWatchList") and type(StockPiler3TabWatch.displayOrder) == "table" then
+        ListBoxSetDisplayOrder("SP3TabWatchList", StockPiler3TabWatch.displayOrder)
+    elseif StockPiler3TabWatch.UpdateRows then
+        StockPiler3TabWatch.UpdateRows()
+    end
+end
+
 local function AdjustPriority(data, delta)
     if type(data) ~= "table" or IsPlantWatchRow(data) or IsEphemeralWatchRow(data) then
         return
@@ -826,9 +919,8 @@ local function AdjustPriority(data, delta)
     end
     data.priorityTier = newTier
     data.priorityTierText = towstring(tostring(newTier))
-    AfterWatchSettingsChanged()
-    -- Force rebuild so list re-sorts by tier.
-    StockPiler3TabWatch.Refresh({ forcePlan = true })
+    -- Soft path: prio does not change craftable; avoid BumpWatch / PlanRebuild.
+    AfterPrioritySoftChange(potionKey, newTier)
 end
 
 function StockPiler3TabWatch.Initialize()

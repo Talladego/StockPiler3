@@ -258,7 +258,8 @@ function Watch.SetPriorityTier(recipeKey, tier)
         tier = n
     end
     watch.priorityTier = tier
-    Watch.BumpGen()
+    -- Soft: priority does not change craftable/demand structure. Callers patch UI
+    -- / focus caches; do not BumpGen (that forces BuildFull via StructuralNonRefineKey).
     return watch
 end
 

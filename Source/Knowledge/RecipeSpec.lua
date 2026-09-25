@@ -2100,6 +2100,14 @@ function RS.StoreLearnedRecipeSpec(materials, outputs, opts)
         and StockPiler3.Knowledge.Touch
     then
         StockPiler3.Knowledge.Touch("recipe")
+        if StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Invalidate then
+            StockPiler3.PlanSnapshot.Invalidate()
+        end
+        local Sch = StockPiler3.Scheduler
+        if Sch and Sch.EnqueuePlanRebuild then
+            -- Nudge: coalesce with bag-flush rebuild after brew, not a second full build.
+            Sch.EnqueuePlanRebuild({ nudge = true })
+        end
     end
     return true
 end

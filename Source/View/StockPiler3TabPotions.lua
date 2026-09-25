@@ -502,20 +502,13 @@ local function RowDataFromActiveChild()
 end
 
 local function AfterWatchToggle()
-    if StockPiler3.Watch and StockPiler3.Watch.BumpGen then
-        StockPiler3.Watch.BumpGen()
-    end
+    -- SetEnabled already BumpGen'd; do not double-bump or sync-Build (double Status.Craftable).
     if StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Invalidate then
         StockPiler3.PlanSnapshot.Invalidate()
     end
-    -- Sync-build so Watch tab has rows immediately (coalesce alone left empty plan).
-    if StockPiler3.Planner and StockPiler3.Planner.Build then
-        StockPiler3.Planner.Build({ force = true })
-    else
-        local Sch = StockPiler3.Scheduler
-        if Sch and Sch.EnqueuePlanRebuild then
-            Sch.EnqueuePlanRebuild()
-        end
+    local Sch = StockPiler3.Scheduler
+    if Sch and Sch.EnqueuePlanRebuild then
+        Sch.EnqueuePlanRebuild()
     end
     if StockPiler3.Ui and StockPiler3.Ui.MarkWatchUiDirty then
         StockPiler3.Ui.MarkWatchUiDirty()
@@ -523,7 +516,8 @@ local function AfterWatchToggle()
     if StockPiler3TabWatch and StockPiler3TabWatch.Refresh
         and StockPiler3Window and StockPiler3Window.SelectedTab == StockPiler3Window.TABS_WATCH
     then
-        StockPiler3TabWatch.Refresh({ forcePlan = true })
+        -- Paint follows coalesced rebuild; forcePlan would enqueue a second rebuild.
+        StockPiler3TabWatch.Refresh({ forcePlan = false })
     end
 end
 
