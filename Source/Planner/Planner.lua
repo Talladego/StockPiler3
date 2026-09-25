@@ -2127,7 +2127,6 @@ local function ApplySeedBufferStatus(row)
         or climb.why == "climbing")
     then
         row.statusKey = "upgrading_seed"
-        local genus = tostring(climb.genus or "seed")
         local haveReq = tonumber(climb.haveReq) or 0
         local needReq = tonumber(climb.needReq) or 0
         local climbCap = tonumber(climb.climbCap) or 0
@@ -2140,25 +2139,11 @@ local function ApplySeedBufferStatus(row)
         end
         local multi = type(climbs) == "table" and #climbs > 1
         if multi then
-            -- Compact row label; per-slot Have/Need notes carry each genus.
-            local names = {}
-            for i = 1, #climbs do
-                local g = tostring(climbs[i].genus or "")
-                if g ~= "" then
-                    names[#names + 1] = g
-                end
-            end
-            if #names > 0 then
-                row.statusText = T("plan.status.upgrading_seed_multi", {
-                    genera = table.concat(names, "+"),
-                    count = tostring(#names),
-                })
-            else
-                row.statusText = T("plan.status.upgrading_seed")
-            end
+            row.statusText = T("plan.status.upgrading_seed_multi", {
+                count = tostring(#climbs),
+            })
         else
             row.statusText = T("plan.status.upgrading_seed_progress", {
-                genus = genus,
                 have = tostring(haveReq),
                 cap = tostring(capShow),
             })
@@ -3182,10 +3167,70 @@ local function ApplyPlantWatchStatus(row, potionRows)
     row.priorityTierText = L"-"
     row.plantPrioSentinel = true
     local bufferShort = PlantSeedBufferShort(row.seedUid, row.plantUid, row.spec)
+    local US = StockPiler3.UpgradeSeed
+    local function ApplyMissingSeedStatus()
+        local gap = US and US.DescribePlantWatchSeedGap
+            and US.DescribePlantWatchSeedGap(row.plantUid, row.spec) or nil
+        local upgradeOn = US and US.IsEnabled and US.IsEnabled() == true
+        local missingTarget = type(gap) == "table" and gap.haveTarget ~= true
+        if missingTarget and upgradeOn ~= true then
+            -- No watched-tier seed/plant: tell the player how to unblock.
+            row.statusKey = "need_seeds"
+            row.statusText = T("plan.status.need_seed_or_upgrade")
+            if gap.haveLower == true then
+                row.statusLines = {
+                    T("tip.watch.need_seed_or_upgrade_lower", {
+                        have = tostring(gap.lowerReq or 0),
+                        need = tostring(gap.needReq or 0),
+                    }),
+                }
+            else
+                row.statusLines = {
+                    T("tip.watch.need_seed_or_upgrade"),
+                }
+            end
+            row.seedBufferShort = true
+            return true
+        end
+        if missingTarget and upgradeOn == true then
+            -- Upgrade Seeds owns arrive climb; keep a clear plant-row hint.
+            row.statusKey = "need_seeds"
+            if type(gap) == "table" and gap.haveLower == true then
+                row.statusText = T("plan.status.need_seed_upgrade_on")
+                row.statusLines = {
+                    T("tip.watch.need_seed_upgrade_on", {
+                        have = tostring(gap.lowerReq or 0),
+                        need = tostring(gap.needReq or 0),
+                    }),
+                }
+            else
+                row.statusText = T("plan.status.need_seed_buy")
+                row.statusLines = {
+                    T("tip.watch.need_seed_buy"),
+                }
+            end
+            row.seedBufferShort = true
+            return true
+        end
+        row.statusKey = "need_seeds"
+        row.statusText = T("plan.status.need_seeds")
+        row.statusLines = {
+            T("tip.watch.seed_buffer"),
+        }
+        row.seedBufferShort = true
+        return true
+    end
     if deficit <= 0 then
         -- Stocked: stock UI only. Seed buffer short -> need_seeds (never climb text;
         -- ephemeral Upgrade row owns upgrading status).
         if bufferShort then
+            -- Still have target seed credit path for cushion-only shorts.
+            local gap = US and US.DescribePlantWatchSeedGap
+                and US.DescribePlantWatchSeedGap(row.plantUid, row.spec) or nil
+            if type(gap) == "table" and gap.haveTarget ~= true then
+                ApplyMissingSeedStatus()
+                return
+            end
             row.statusKey = "need_seeds"
             row.statusText = T("plan.status.need_seeds")
             row.statusLines = {
@@ -3208,13 +3253,7 @@ local function ApplyPlantWatchStatus(row, potionRows)
         return
     end
     if bufferShort then
-        -- need_seeds only - ApplySeedBufferStatus must not paint upgrading on plants.
-        row.statusKey = "need_seeds"
-        row.statusText = T("plan.status.need_seeds")
-        row.statusLines = {
-            T("tip.watch.seed_buffer"),
-        }
-        row.seedBufferShort = true
+        ApplyMissingSeedStatus()
         return
     end
     row.seedBufferShort = false
@@ -3459,25 +3498,83 @@ local function PatchPlanSnapshotLiveStatus(row)
     end
     local keyStr = tostring(row.potionRecipeKey or row.id or row.potionKey or "")
     local uid = tonumber(row.uniqueID) or 0
-    for i = 1, #plan.rows do
-        local snap = plan.rows[i]
-        if type(snap) == "table" then
-            local snapKey = tostring(snap.potionRecipeKey or snap.id or snap.potionKey or "")
-            local snapUid = tonumber(snap.uniqueID) or 0
-            if (keyStr ~= "" and snapKey == keyStr) or (uid > 0 and snapUid == uid) then
-                snap.potionHave = row.potionHave
-                snap.potionDeficit = row.potionDeficit
-                snap.craftable = row.craftable
-                snap.statusKey = row.statusKey
-                snap.statusText = row.statusText
-                snap.statusLines = row.statusLines
-                snap.craftableShared = row.craftableShared
-                snap.seedBufferShort = row.seedBufferShort == true
-                snap.craftableSafe = row.craftableSafe == true
-                return
+    local rowEph = row.upgradeWatch == true or row.skillUp == true or row.addonOwned == true
+    local rowPlant = row.kind == "plant" or row.isPlantWatch == true
+
+    local function sameKind(snap)
+        local snapEph = snap.upgradeWatch == true or snap.skillUp == true or snap.addonOwned == true
+        local snapPlant = snap.kind == "plant" or snap.isPlantWatch == true
+        -- Upgrade ephemeral rows reuse the watched plant uniqueID; never match across kinds.
+        if rowEph ~= snapEph then
+            return false
+        end
+        if rowPlant ~= snapPlant then
+            return false
+        end
+        return true
+    end
+
+    local function apply(snap)
+        snap.potionHave = row.potionHave
+        snap.potionDeficit = row.potionDeficit
+        snap.craftable = row.craftable
+        snap.statusKey = row.statusKey
+        snap.statusText = row.statusText
+        snap.statusLines = row.statusLines
+        snap.craftableShared = row.craftableShared
+        snap.seedBufferShort = row.seedBufferShort == true
+        snap.craftableSafe = row.craftableSafe == true
+    end
+
+    -- Prefer exact watch key (plant:uid vs upgrade_seed:uid).
+    if keyStr ~= "" then
+        for i = 1, #plan.rows do
+            local snap = plan.rows[i]
+            if type(snap) == "table" then
+                local snapKey = tostring(snap.potionRecipeKey or snap.id or snap.potionKey or "")
+                if snapKey == keyStr then
+                    apply(snap)
+                    return
+                end
             end
         end
     end
+    -- UID fallback only within the same row kind.
+    if uid > 0 then
+        for i = 1, #plan.rows do
+            local snap = plan.rows[i]
+            if type(snap) == "table" then
+                local snapUid = tonumber(snap.uniqueID) or 0
+                if snapUid == uid and sameKind(snap) then
+                    apply(snap)
+                    return
+                end
+            end
+        end
+    end
+end
+
+local function RemovePlanSnapshotRowByKey(keyStr)
+    keyStr = tostring(keyStr or "")
+    if keyStr == "" then
+        return false
+    end
+    local PS = StockPiler3.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    if type(plan) ~= "table" or type(plan.rows) ~= "table" then
+        return false
+    end
+    for i = #plan.rows, 1, -1 do
+        local snap = plan.rows[i]
+        if type(snap) == "table" then
+            local snapKey = tostring(snap.potionRecipeKey or snap.id or snap.potionKey or "")
+            if snapKey == keyStr then
+                table.remove(plan.rows, i)
+                return true
+            end
+        end
+    end
+    return false
 end
 
 local function RefreshSkillUpWatchRows(rows, opts)
@@ -3500,7 +3597,8 @@ local function RefreshSkillUpWatchRows(rows, opts)
             fresh[#fresh + 1] = sk[i]
         end
     end
-    if #fresh < 1 and not (SkillUp and SkillUp.BuildWatchStatusRows)
+    -- Still run when fresh is empty so completed Upgrade/SkillUp ephemerals are dropped.
+    if not (SkillUp and SkillUp.BuildWatchStatusRows)
         and not (UpgradeSeed and UpgradeSeed.BuildWatchStatusRows)
     then
         return false
@@ -3516,7 +3614,8 @@ local function RefreshSkillUpWatchRows(rows, opts)
         end
     end
     local dirty = false
-    for i = 1, #rows do
+    local removed = false
+    for i = #rows, 1, -1 do
         local row = rows[i]
         if type(row) == "table" and (row.skillUp == true or row.addonOwned == true
             or row.upgradeWatch == true)
@@ -3558,27 +3657,28 @@ local function RefreshSkillUpWatchRows(rows, opts)
                         PatchPlanSnapshotLiveStatus(row)
                     end
                 end
-            elseif row.skillUp == true then
-                -- Apo/Cult SkillUp no longer emitted (e.g. skill hit 200): disarm Ready
-                -- so bag flush cannot re-load a stale board.
-                if (tonumber(row.craftable) or 0) > 0
-                    or type(row.recipe) == "table"
-                    or tostring(row.statusKey or "") == "ready_to_craft"
-                then
-                    row.craftable = 0
-                    row.craftableSafe = false
-                    row.craftableText = L""
-                    row.recipe = nil
-                    row.potionDeficit = 0
-                    row.hideBrew = true
-                    row.statusKey = "skill_done"
-                    row.statusText = T("skillup.watch.done")
-                    dirty = true
-                    if opts.syncSnapshot ~= false then
-                        PatchPlanSnapshotLiveStatus(row)
-                    end
+            else
+                -- Ephemeral no longer emitted (arrive done / Cult-max buffer full /
+                -- SkillUp off or at cap): drop the row instead of leaving a zombie.
+                table.remove(rows, i)
+                dirty = true
+                removed = true
+                if opts.syncSnapshot ~= false then
+                    RemovePlanSnapshotRowByKey(k)
                 end
             end
+        end
+    end
+    if removed then
+        if StockPiler3Window and StockPiler3Window.RequestListRepopulate then
+            StockPiler3Window.RequestListRepopulate()
+        end
+        local Grow = StockPiler3.Grow
+        if Grow and Grow.MarkPlantJobDirty then
+            Grow.MarkPlantJobDirty("ephemeral-cleared")
+        end
+        if UpgradeSeed and UpgradeSeed.InvalidateUpgradeTargetsCache then
+            UpgradeSeed.InvalidateUpgradeTargetsCache()
         end
     end
     return dirty

@@ -15,7 +15,7 @@ Classify.EFFECT_KEYS = {
     "hywouheal", "hywoustr", "hyresist", "hywouarmpen", "hywouinit",
     "hytounocrit", "hyhpregencritdmg", "hywsarmpen",
     -- Non-main plant roles (Plants tab Effect column / filter).
-    "stabilizer", "extender", "multiplier",
+    "stabilizer", "extender", "multiplier", "stimulant",
 }
 
 local EFFECT_SHORT = {
@@ -54,6 +54,7 @@ local EFFECT_SHORT = {
     stabilizer = "Stab",
     extender = "Ext",
     multiplier = "Mult",
+    stimulant = "Stim",
 }
 
 -- Memoize short labels (finite key set).

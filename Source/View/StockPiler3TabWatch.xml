@@ -199,7 +199,7 @@
                 </Button>
                 <Label name="$parentCombatPauseLabel" font="font_chat_text" maxchars="28" textalign="leftcenter" handleinput="false">
                     <Size>
-                        <AbsPoint x="110" y="28" />
+                        <AbsPoint x="128" y="28" />
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
@@ -214,7 +214,7 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="742" y="94" />
+                            <AbsPoint x="760" y="94" />
                         </Anchor>
                     </Anchors>
                     <EventHandlers>
@@ -228,7 +228,7 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="766" y="90" />
+                            <AbsPoint x="784" y="90" />
                         </Anchor>
                     </Anchors>
                 </Label>
@@ -437,7 +437,7 @@
                     </Anchors>
                 </Button>
 
-                <ListBox name="$parentList" scrollbar="EA_ScrollBar_DefaultVerticalChain" rowdef="StockPiler3WatchRow" visiblerows="12" rowspacing="2">
+                <ListBox name="$parentList" scrollbar="EA_ScrollBar_DefaultVerticalChain" rowdef="StockPiler3WatchRow" visiblerows="11" rowspacing="2">
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
                             <AbsPoint x="0" y="178" />

@@ -214,6 +214,13 @@ function VL.LiveTipMaybeRefresh(state, buildText, fingerprint, showFn)
     if win == nil or win == "" then
         return
     end
+    -- Engine clears the tip when mouse leaves; without this gate, TickLive re-Shows
+    -- the tip (timer/fingerprint churn) and it flickers with no hover.
+    local mouseWin = SystemData and SystemData.MouseOverWindow and SystemData.MouseOverWindow.name
+    if mouseWin ~= win then
+        VL.LiveTipClear(state)
+        return
+    end
     local fp = fingerprint()
     if fp == state._liveFp then
         return

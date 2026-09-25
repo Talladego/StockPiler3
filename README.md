@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.220** — Pad careers/races/slots on item tooltips (fixes CreateItemTooltip ipairs nil).
+**Version 0.3.229** — Watch Load/Brew chip tooltips match the button (Load vs Brew), including over-target green Craftable.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -132,6 +132,15 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.229 | Watch Load/Brew tips match chip state (Load vs Brew; green Craftable) |
+| 0.3.228 | Manual Load/Brew when Craftable green even if potion target already met |
+| 0.3.227 | Watch tab ListBox visiblerows 11 (was overflowing one row past clip) |
+| 0.3.226 | Clear stale Upgrade/SkillUp ephemeral Watch rows when no longer needed |
+| 0.3.225 | Status/tooltip climb wording without genus names |
+| 0.3.224 | Plant vs Upgrade ephemeral status no longer cross-patch via uniqueID |
+| 0.3.223 | Fix UpgradeSeed CultMaxTierBufferFull nil global; tooltip customizedIconNum pad |
+| 0.3.222 | Plant watch Need seed / Upgrade status; Upgrade Seeds arrive-climb before stock gate |
+| 0.3.221 | Combat pause label fit; Craft macro tip no unhovered flicker; Plants Stimulant Effect (not Mult) |
 | 0.3.220 | NormalizeItemDataForTooltip pads careers/races/slots/skills (CreateItemTooltip ipairs nil) |
 | 0.3.219 | Orphan Cult-max plant (no seed) does not finish Upgrade; keep climbing/refining |
 | 0.3.218 | Plant-watch Upgrade arrives when Cult-max seed buffer is full; refine same-tier plants to fill |

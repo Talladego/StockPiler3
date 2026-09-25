@@ -70,9 +70,9 @@ function StockPiler3TabWatch.PrimeRowChrome()
     if not DoesWindowExist("SP3TabWatchList") then
         return
     end
-    local numVisible = 12
+    local numVisible = 11
     if SP3TabWatchList and SP3TabWatchList.numVisibleRows then
-        numVisible = tonumber(SP3TabWatchList.numVisibleRows) or 12
+        numVisible = tonumber(SP3TabWatchList.numVisibleRows) or 11
     end
     local paintKeys = StockPiler3TabWatch._rowPaintKey
     for rowIndex = 1, numVisible do
@@ -1791,7 +1791,7 @@ local function BuildStatusTooltipRows(data)
                 if statusKey == "upgrading_seed" then
                     statusNote = data.statusText or T("plan.status.upgrading_seed")
                 else
-                    statusNote = T("plan.status.need_seeds")
+                    statusNote = data.statusText or T("plan.status.need_seeds")
                 end
             elseif statusKey == "waiting_potions" then
                 haveColor = RgbDef(COLOR_WARN)

@@ -478,6 +478,13 @@ function CraftTooltip.MaybeRefresh()
     if win == nil or win == "" then
         return
     end
+    -- Engine clears the tip when mouse leaves; without this gate, Footer Sync
+    -- TickLive re-Shows (plot timer / mode churn) and the tip flickers unhovered.
+    local mouseWin = SystemData and SystemData.MouseOverWindow and SystemData.MouseOverWindow.name
+    if mouseWin ~= win then
+        CraftTooltip.ClearLive()
+        return
+    end
     local fp = Fingerprint()
     if fp == CraftTooltip._liveFp then
         return

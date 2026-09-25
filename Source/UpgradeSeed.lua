@@ -18,6 +18,12 @@ local function CharRow(create)
     return StockPiler3.Util.CharacterRow(create == true)
 end
 
+-- Forward-declared: used by DescribePlantWatchClimb / SeedGap / TargetUpgradePlant
+-- before their definitions (Lua locals are not visible above their declaration).
+local BestOwnedReqOnLadder
+local HaveTargetRung
+local CultMaxTierBufferFull
+
 function US.IsEnabled()
     local Caps = StockPiler3.TradeSkillCaps
     if Caps and Caps.CanAutoGrow and Caps.CanAutoGrow() ~= true then
@@ -531,7 +537,7 @@ end
 --- Buffer off: at least one Cult-max seed.
 --- Rung with plant but no known seed (Cross s0) is NOT done - keep climbing via
 --- lower plantable rungs / refine until a plantable seed exists and its buffer fills.
-local function CultMaxTierBufferFull(ladder, needReq, fallbackPlantUid, fallbackSeedUid)
+CultMaxTierBufferFull = function(ladder, needReq, fallbackPlantUid, fallbackSeedUid)
     needReq = tonumber(needReq) or 0
     if needReq < 1 then
         return false
@@ -560,7 +566,7 @@ end
 --- (Fretting in bag, seedUid=0 on ladder falsely ended marshroot climb).
 --- opts.requireBufferFull: plant-watch Cult-max climb - keep going until the
 --- Cult-max seed buffer is full (not after the first Fretting plant).
-local function HaveTargetRung(ladder, needReq, plantUid, seedUid, opts)
+HaveTargetRung = function(ladder, needReq, plantUid, seedUid, opts)
     needReq = tonumber(needReq) or 0
     opts = type(opts) == "table" and opts or {}
     if opts.requireBufferFull == true then
@@ -632,7 +638,13 @@ function US.CultMaxTierBufferFull(ladder, needReq, fallbackPlantUid, fallbackSee
 end
 
 --- Plant-watch climb descriptor (stock N vs Cult-max existence).
---- pending = climb not finished; eligible = stocked or mid-climb latch.
+--- pending = climb not finished; eligible = stocked, mid-climb, or arrive needed.
+--- arriveNeeded: plant stock short and watched-tier seed/plant missing — climb to
+--- that tier must run without waiting for WatchesAllowUpgradeClimb (else L200
+--- watches with only lower seeds stall forever on "Seed buffer").
+--- Arrive completes when HaveTargetRung (any plantable watched-tier seed/plant) —
+--- not when every plot can be filled; plant watch + seed buffer take over after that.
+--- Phase B (stocked + idle gate) keeps climbing until Cult-max seed buffer is full.
 function US.DescribePlantWatchClimb(watchPlantUid)
     watchPlantUid = tonumber(watchPlantUid) or 0
     local out = {
@@ -641,6 +653,8 @@ function US.DescribePlantWatchClimb(watchPlantUid)
         target = 40,
         stocked = false,
         midClimb = false,
+        arriveNeeded = false,
+        haveLower = false,
         eligible = false,
         pending = false,
         climbNeedReq = 0,
@@ -680,6 +694,13 @@ function US.DescribePlantWatchClimb(watchPlantUid)
     local ladder = out.ladder
     local watchedReq = out.watchedReq
     local climbNeed = out.climbNeedReq
+    local haveWatched = HaveTargetRung(ladder, watchedReq, out.plantUid, out.seedUid)
+    if not out.stocked and not haveWatched then
+        out.arriveNeeded = true
+        local lowerCap = math.max(1, watchedReq - 1)
+        local lowerBest = BestOwnedReqOnLadder(ladder, lowerCap)
+        out.haveLower = lowerBest >= 1
+    end
     if not out.stocked and type(ladder) == "table" and type(ladder.rungs) == "table"
         and Inv and Inv.CountByUid
     then
@@ -712,9 +733,13 @@ function US.DescribePlantWatchClimb(watchPlantUid)
             end
         end
     end
-    out.eligible = out.stocked or out.midClimb
-    if out.eligible and climbNeed > watchedReq then
-        -- Plant-watch climb arrives when Cult-max seed buffer is full.
+    out.eligible = out.stocked or out.midClimb or out.arriveNeeded
+    if out.arriveNeeded then
+        -- Produce the watched-tier seed/plant so Grow can restock.
+        out.pending = true
+        out.climbNeedReq = watchedReq
+    elseif out.eligible and climbNeed > watchedReq then
+        -- Plant-watch Cult-max climb arrives when Cult-max seed buffer is full.
         out.pending = HaveTargetRung(ladder, climbNeed, out.plantUid, out.seedUid, {
             requireBufferFull = true,
         }) ~= true
@@ -722,6 +747,37 @@ function US.DescribePlantWatchClimb(watchPlantUid)
         -- Nowhere above watched tier on the known ladder.
         out.pending = false
     end
+    return out
+end
+
+--- Seed-gap hint for plant-watch Status (works with Upgrade Seeds off).
+--- haveTarget: watched-tier seed/plant credit exists; haveLower: genus below that tier.
+function US.DescribePlantWatchSeedGap(watchPlantUid, watchSpec)
+    watchPlantUid = tonumber(watchPlantUid) or 0
+    local out = {
+        watchPlantUid = watchPlantUid,
+        seedUid = 0,
+        plantUid = watchPlantUid,
+        needReq = 1,
+        genus = "plant",
+        haveTarget = false,
+        haveLower = false,
+        lowerReq = 0,
+        ladder = nil,
+    }
+    if watchPlantUid <= 0 then
+        return out
+    end
+    local resolved = US.ResolvePlantWatchTarget(watchPlantUid, watchSpec)
+    out.seedUid = tonumber(resolved and resolved.seedUid) or 0
+    out.plantUid = tonumber(resolved and resolved.plantUid) or watchPlantUid
+    out.needReq = tonumber(resolved and resolved.needReq) or 1
+    out.ladder = resolved and resolved.ladder
+    out.genus = tostring((out.ladder and out.ladder.genus) or "plant")
+    out.haveTarget = HaveTargetRung(out.ladder, out.needReq, out.plantUid, out.seedUid) == true
+    local lowerCap = math.max(1, out.needReq - 1)
+    out.lowerReq = BestOwnedReqOnLadder(out.ladder, lowerCap)
+    out.haveLower = out.lowerReq >= 1
     return out
 end
 
@@ -998,8 +1054,9 @@ local function CollectUpgradeTargets()
             end
         end
         if HaveTargetRung(ladder, needReq, plantUid, seedUid, {
-            -- Plant-watch: Cult-max seed buffer full. Potion demand: seed OK.
-            requireBufferFull = (opts and (tonumber(opts.watchPlantUid) or 0) > 0) == true,
+            -- Phase B Cult-max plant-watch: keep climbing until seed buffer full.
+            -- Phase A arrive / potion demand: one target seed/plant is enough.
+            requireBufferFull = opts and opts.requireBufferFull == true,
         }) then
             return
         end
@@ -1037,11 +1094,15 @@ local function CollectUpgradeTargets()
         end
     end
 
-    -- Explicit plant watches: Phase A restocks watched plant to N (Grow plant_stock).
-    -- Ephemeral Phase B: Cult-max climb only when watches-done idle gate passes.
+--- Explicit plant watches:
+    -- Phase A arrive: stock short + missing watched-tier seed → climb to watchedReq
+    -- until at least one plantable target-tier seed/plant exists (same as potion-mat
+    -- arrive). Then the plant watch owns restock / seed buffer; ephemeral clears.
+    -- Phase B Cult-max: after watches/buffer idle gate, climb until Cult-max seed
+    -- buffer is full (requireBufferFull). SkillUp is separate (fills every empty plot).
     local allowPlantClimb = US.WatchesAllowUpgradeClimb() == true
     local plantWatches = Watch.GetPlantWatches and Watch.GetPlantWatches() or {}
-    if type(plantWatches) == "table" and allowPlantClimb then
+    if type(plantWatches) == "table" then
         for plantKey, watch in pairs(plantWatches) do
             if type(watch) == "table" and watch.enabled == true
                 and (Watch.ShouldAutoGrowPlant == nil or Watch.ShouldAutoGrowPlant(plantKey) == true)
@@ -1050,12 +1111,21 @@ local function CollectUpgradeTargets()
                 watchPlantUid = tonumber(watchPlantUid) or 0
                 if watchPlantUid > 0 then
                     local d = US.DescribePlantWatchClimb(watchPlantUid)
-                    if d.eligible == true and d.pending == true then
+                    if d.arriveNeeded == true then
+                        local short = math.max(1, (tonumber(d.target) or 40) - (tonumber(d.have) or 0))
+                        Consider(d.spec, short, watchPlantUid, {
+                            needReq = d.watchedReq or d.climbNeedReq,
+                            seedUid = d.seedUid,
+                            ladder = d.ladder,
+                            watchPlantUid = watchPlantUid,
+                        })
+                    elseif allowPlantClimb and d.eligible == true and d.pending == true then
                         Consider(d.spec, 1, watchPlantUid, {
                             needReq = d.climbNeedReq,
                             seedUid = d.seedUid,
                             ladder = d.ladder,
                             watchPlantUid = watchPlantUid,
+                            requireBufferFull = true,
                         })
                     end
                 end
@@ -1705,7 +1775,7 @@ end
 
 --- Best owned seed/plant skillReq on a ladder at or below climbCap.
 --- Counts bag and in-ground seeds (plot credit) so status matches seed-buffer plant.
-local function BestOwnedReqOnLadder(ladder, climbCap)
+BestOwnedReqOnLadder = function(ladder, climbCap)
     climbCap = tonumber(climbCap) or 0
     if type(ladder) ~= "table" or type(ladder.rungs) ~= "table" or climbCap < 1 then
         return 0
@@ -1974,35 +2044,30 @@ function US.FormatClimbSlotNote(climb)
     then
         return nil
     end
-    local genus = tostring(climb.genus or "seed")
     local capShow, needReq, haveReq = ClimbCapShow(climb)
     local T = function(key, tokens)
         return StockPiler3.Util.T(key, tokens)
     end
     if why == "planting" then
         return T("watch.note.climb_planting", {
-            genus = genus,
             have = tostring(haveReq),
         })
     end
     if why == "refining" then
         return T("watch.note.climb_refining", {
-            genus = genus,
             have = tostring(haveReq),
         })
     end
     if why == "need_buy" then
-        return T("watch.note.climb_buy", { genus = genus })
+        return T("watch.note.climb_buy")
     end
     if why == "need_cult" or (needReq > 0 and capShow > 0 and capShow < needReq) then
         return T("watch.note.climb_cult", {
-            genus = genus,
             need = tostring(needReq),
             floor = tostring(capShow),
         })
     end
     return T("watch.note.climb_progress", {
-        genus = genus,
         have = tostring(haveReq),
         cap = tostring(capShow),
     })
@@ -2058,7 +2123,7 @@ function US.BuildWatchStatusRows()
         return rows
     end
     local agOn = Watch and Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() == true
-    local allow = US.WatchesAllowUpgradeClimb() == true
+    local allowIdle = US.WatchesAllowUpgradeClimb() == true
     local list = {}
     for plantKey, watch in pairs(plantWatches) do
         if type(watch) == "table" and watch.enabled == true then
@@ -2100,8 +2165,9 @@ function US.BuildWatchStatusRows()
                 if name == nil then
                     name = towstring("Upgrade " .. tostring(watchPlantUid))
                 end
-                local genus = d.ladder and d.ladder.genus or "seed"
                 local climbCap = US.ClimbCap(d.climbNeedReq)
+                -- Arrive climbs must run immediately; Cult-max climbs wait on idle gate.
+                local allow = d.arriveNeeded == true or allowIdle == true
                 local statusKey = "waiting_watches"
                 local statusText = TUpgrade("upgrade.watch.waiting_watches")
                 local statusLines = {
@@ -2129,24 +2195,22 @@ function US.BuildWatchStatusRows()
                     local haveReq = type(climb) == "table" and (tonumber(climb.haveReq) or 0) or 0
                     if why == "need_buy" then
                         statusKey = "need_buy"
-                        statusText = TUpgrade("upgrade.watch.need_buy", { genus = genus })
+                        statusText = TUpgrade("upgrade.watch.need_buy")
                     elseif why == "need_cult" then
                         statusKey = "need_cult"
                         statusText = TUpgrade("upgrade.watch.need_cult", {
-                            genus = genus,
                             need = tostring(d.climbNeedReq),
                             floor = tostring(climbCap),
                         })
                     elseif why == "refining" then
                         statusKey = "refining"
-                        statusText = TUpgrade("upgrade.watch.refining", { genus = genus })
+                        statusText = TUpgrade("upgrade.watch.refining")
                     elseif why == "planting" then
                         statusKey = "planting"
-                        statusText = TUpgrade("upgrade.watch.planting", { genus = genus })
+                        statusText = TUpgrade("upgrade.watch.planting")
                     else
                         statusKey = "upgrading_seed"
                         statusText = TUpgrade("plan.status.upgrading_seed_progress", {
-                            genus = genus,
                             have = tostring(haveReq),
                             cap = tostring(climbCap),
                         })

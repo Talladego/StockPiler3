@@ -1284,10 +1284,18 @@ local function BeginLoadJob(row, source)
         Brew._skillUpRow = nil
         SyncSessionStockFromBags(session)
         if not RowNeedsMorePotions(session) then
-            LogBrew("load abort target already met have="
-                .. tostring(session.potionHave) .. "/" .. tostring(session.potionMin))
-            ClearSession({ reason = "target-already-met" })
-            return false
+            -- Auto must not overstock once the watch target is met.
+            -- Manual Load/Brew: allow one more craft when Craftable is green (buffer-safe).
+            if source == "manual" and RowCanPrematureLoad(row) then
+                LogBrew("load allow manual over-target have="
+                    .. tostring(session.potionHave) .. "/" .. tostring(session.potionMin)
+                    .. " craftable=" .. tostring(session.craftable))
+            else
+                LogBrew("load abort target already met have="
+                    .. tostring(session.potionHave) .. "/" .. tostring(session.potionMin))
+                ClearSession({ reason = "target-already-met" })
+                return false
+            end
         end
     end
     SetSessionPhase("loading", "begin-load")

@@ -114,21 +114,71 @@ function BrewTooltip.Show(mouseoverWindow, anchor)
     )
 end
 
+--- Same green Craftable gate as Watch Load/Brew chip (manual over-target OK).
+local function RowCraftableGreen(row)
+    if type(row) ~= "table" then
+        return false
+    end
+    if row.craftableSafe == true then
+        return true
+    end
+    if row.craftableSafe == false then
+        return false
+    end
+    if (tonumber(row.craftable) or 0) <= 0 then
+        return false
+    end
+    return row.seedBufferShort ~= true
+end
+
+local function RowSessionPhase(row)
+    if type(row) ~= "table" then
+        return "idle"
+    end
+    local Brew = StockPiler3.Brew
+    local session = Brew and Brew.GetSession and Brew.GetSession()
+    if type(session) ~= "table" then
+        return "idle"
+    end
+    local phase = tostring(session.phase or "idle")
+    if phase == "idle" then
+        return "idle"
+    end
+    local rowKey = tostring(row.potionRecipeKey or row.id or row.potionKey or "")
+    local sessKey = tostring(session.potionRecipeKey or session.potionKey or session.rowId or "")
+    if rowKey ~= "" and sessKey ~= "" and rowKey == sessKey then
+        if phase == "loading" then
+            return "loading"
+        end
+        if phase == "loaded" then
+            return "brew"
+        end
+    end
+    return "idle"
+end
+
 function BrewTooltip.ShowRow(mouseoverWindow, row, anchor)
     mouseoverWindow = mouseoverWindow or (SystemData and SystemData.ActiveWindow and SystemData.ActiveWindow.name)
     if mouseoverWindow == nil or mouseoverWindow == "" then
         return
     end
     local name = (type(row) == "table" and row.name) or T("brew.potion_fallback")
-    local tip = T("brew.load_recipe", { name = name })
-    if type(row) == "table" then
-        local craftable = tonumber(row.craftable) or 0
-        local status = tostring(row.statusKey or "")
-        if craftable <= 0 then
-            tip = T("brew.nothing_craftable")
-        elseif status ~= "ready_to_craft" and status ~= "ready_to_craft_shared" then
-            tip = T("brew.not_ready")
-        end
+    local tip
+    local phase = RowSessionPhase(row)
+    if phase == "brew" then
+        tip = T("watch.tip_brew", { name = name })
+    elseif phase == "loading" then
+        tip = T("watch.tip_loading", { name = name })
+    elseif RowCraftableGreen(row) then
+        tip = T("watch.tip_load", { name = name })
+    elseif type(row) == "table" and (tonumber(row.craftable) or 0) > 0 and row.seedBufferShort == true then
+        tip = T("brew.blocked_buffer")
+    elseif type(row) == "table" and (tonumber(row.craftable) or 0) <= 0 then
+        tip = T("brew.nothing_craftable")
+    elseif type(row) == "table" and row.craftableShared == true then
+        tip = T("brew.blocked_shared")
+    else
+        tip = T("brew.not_ready")
     end
     Tooltips.CreateTextOnlyTooltip(mouseoverWindow, tip)
     Tooltips.AnchorTooltip(anchor or Tooltips.ANCHOR_WINDOW_RIGHT)

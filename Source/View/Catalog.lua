@@ -816,14 +816,16 @@ function Catalog.ListPlantEntries()
                 effectKey = RS.NormalizeEffectKeyForUi(effectKey) or effectKey
             end
         end
-        -- Non-main plants have no apo EFFECT id; show stabilizer/extender/multiplier.
+        -- Non-main plants have no apo EFFECT id; show stabilizer/extender/multiplier/stimulant.
         if (not effectKey or effectKey == "") then
             local role = tostring(spec.role or "")
             if role == "stabilizer" or role == "goldweed" then
                 effectKey = "stabilizer"
             elseif role == "extender" then
                 effectKey = "extender"
-            elseif role == "multiplier" or role == "stimulant" then
+            elseif role == "stimulant" then
+                effectKey = "stimulant"
+            elseif role == "multiplier" then
                 effectKey = "multiplier"
             end
         end

@@ -606,6 +606,14 @@ function Inv.NormalizeItemDataForTooltip(itemData)
     if type(data.enhSlot) ~= "table" then
         data.enhSlot = {}
     end
+    -- Engine: `customizedIconNum ~= 0` is true when the field is nil; then
+    -- AppearanceName gets customizedIconName (also nil) and LabelSetText errors.
+    if tonumber(data.customizedIconNum) == nil then
+        data.customizedIconNum = 0
+    end
+    if data.customizedIconName == nil then
+        data.customizedIconName = L""
+    end
     return data
 end
 
