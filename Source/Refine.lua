@@ -163,13 +163,27 @@ local function CountInGround(seedUid)
     return 0
 end
 
---- Buffer-settle refine must wait for grow/harvest: in-ground seeds are not lost yet.
+--- Buffer-settle refine: hold only when this seed is still in plots AND there is
+--- nowhere left to plant. Empty plots need seeds now; GetSeedBudget headroom
+--- already counts in-ground credit, so refine-to-fill must not wait on harvest.
+--- (0.3.187 deferred whenever ground>0, which starved empty plots until the
+--- first replant harvested — second cycle then refined and filled.)
 local function SeedBufferSettleDeferred(seedUid)
     seedUid = tonumber(seedUid) or 0
     if seedUid <= 0 then
         return true
     end
-    return CountInGround(seedUid) > 0
+    if CountInGround(seedUid) <= 0 then
+        return false
+    end
+    local Grow = StockPiler3.Grow
+    if Grow and Grow.HasEmptyPlot and Grow.HasEmptyPlot() == true then
+        return false
+    end
+    if Grow and Grow.CountEmptyPlots and (tonumber(Grow.CountEmptyPlots()) or 0) > 0 then
+        return false
+    end
+    return true
 end
 
 local function OpaqueCredit(seedUid, bag)
@@ -471,7 +485,8 @@ local function LineConvertiblePending(line)
     if IsSeedBufferOnCooldown(seedUid) then
         return false
     end
-    -- Do not treat as pending settle while this seed is still in plots.
+    -- Do not treat as pending settle while this seed is still in plots and the
+    -- garden is full (SeedBufferSettleDeferred). Empty plots still want refine.
     if SeedBufferSettleDeferred(seedUid) then
         return false
     end

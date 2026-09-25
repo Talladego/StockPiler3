@@ -2240,6 +2240,9 @@ function SM.GenusKeyFromName(name)
     if n == "" then
         return ""
     end
+    -- RoR spelling split: plant "Marsh Root" vs seed "Marshroot" must share a genus
+    -- or Fretting seeds sit on marshroot|unknown while climb uses root|* with s0.
+    n = string.gsub(n, "marsh%s+root", "marshroot")
     return string.match(n, "([^%s]+)$") or n
 end
 

@@ -179,8 +179,18 @@ local function IsPlantWatchRow(data)
     return type(data) == "table" and (data.kind == "plant" or data.isPlantWatch == true)
 end
 
+local function IsUpgradeWatchRow(data)
+    return type(data) == "table" and data.upgradeWatch == true
+end
+
 local function IsSkillUpWatchRow(data)
-    return type(data) == "table" and (data.skillUp == true or data.addonOwned == true)
+    return type(data) == "table" and data.skillUp == true
+end
+
+--- SkillUp + Upgrade Seed ephemeral rows (addon-owned, not saved watches).
+local function IsEphemeralWatchRow(data)
+    return IsSkillUpWatchRow(data) or IsUpgradeWatchRow(data)
+        or (type(data) == "table" and data.addonOwned == true)
 end
 
 local function EnsureWatchNameRarityColors(data)
@@ -503,7 +513,11 @@ end
 
 local function HasSkillUpWatchStatus()
     local SkillUp = StockPiler3.SkillUp
-    return SkillUp and SkillUp.ShouldShowWatchStatus and SkillUp.ShouldShowWatchStatus() == true
+    if SkillUp and SkillUp.ShouldShowWatchStatus and SkillUp.ShouldShowWatchStatus() == true then
+        return true
+    end
+    local US = StockPiler3.UpgradeSeed
+    return US and US.ShouldShowWatchStatus and US.ShouldShowWatchStatus() == true
 end
 
 local function BuildVisibleList(opts)
@@ -748,7 +762,7 @@ local function AdjustTarget(data, delta)
     if type(data) ~= "table" then
         return
     end
-    if IsSkillUpWatchRow(data) then
+    if IsEphemeralWatchRow(data) then
         return
     end
     if IsPlantWatchRow(data) then
@@ -790,7 +804,7 @@ local function AdjustTarget(data, delta)
 end
 
 local function AdjustPriority(data, delta)
-    if type(data) ~= "table" or IsPlantWatchRow(data) or IsSkillUpWatchRow(data) then
+    if type(data) ~= "table" or IsPlantWatchRow(data) or IsEphemeralWatchRow(data) then
         return
     end
     local potionKey = data.potionRecipeKey or data.id or data.potionKey
@@ -1018,7 +1032,7 @@ function StockPiler3TabWatch.UpdateRows()
                     LabelSetTextColor(rowName .. "Name", nameR, nameG, nameB)
                     LabelSetText(rowName .. "Status", data.statusText or L"")
                     LabelSetText(rowName .. "Stock", data.stockText or towstring(tostring(data.potionHave or 0)))
-                    if IsSkillUpWatchRow(data) or IsPlantWatchRow(data) then
+                    if IsEphemeralWatchRow(data) or IsPlantWatchRow(data) then
                         LabelSetText(rowName .. "Craftable", L"")
                     else
                         LabelSetText(rowName .. "Craftable", data.craftableText or T("ui.dash"))
@@ -1034,15 +1048,17 @@ function StockPiler3TabWatch.UpdateRows()
                             syncingUi = true
                             ButtonSetCheckButtonFlag(autoGrowWin, true)
                             local pressed = false
-                            if IsSkillUpWatchRow(data) and tostring(data.skillUpKind or "") == "cult" then
-                                -- Cult SkillUp: read-only mirror of master AutoGrow.
+                            if IsUpgradeWatchRow(data)
+                                or (IsSkillUpWatchRow(data) and tostring(data.skillUpKind or "") == "cult")
+                            then
+                                -- Cult SkillUp / Upgrade Seed: read-only mirror of master AutoGrow.
                                 pressed = canGrow and data.autoGrow == true
                                 ButtonSetPressedFlag(autoGrowWin, pressed)
                                 ButtonSetDisabledFlag(autoGrowWin, true)
                             else
                                 pressed = canGrow and data.autoGrow == true
                                 ButtonSetPressedFlag(autoGrowWin, pressed)
-                                ButtonSetDisabledFlag(autoGrowWin, (not canGrow) or IsSkillUpWatchRow(data))
+                                ButtonSetDisabledFlag(autoGrowWin, (not canGrow) or IsEphemeralWatchRow(data))
                             end
                             syncingUi = false
                         end
@@ -1052,7 +1068,7 @@ function StockPiler3TabWatch.UpdateRows()
                     local have = tonumber(data.potionHave) or 0
                     local craftable = tonumber(data.craftable) or 0
                     local stockColor = { 255, 255, 255 }
-                    if IsSkillUpWatchRow(data) then
+                    if IsEphemeralWatchRow(data) then
                         stockColor = { 255, 255, 255 }
                     elseif target > 0 then
                         if have >= target then
@@ -1064,7 +1080,7 @@ function StockPiler3TabWatch.UpdateRows()
                         end
                     end
                     LabelSetTextColor(rowName .. "Stock", stockColor[1], stockColor[2], stockColor[3])
-                    if IsSkillUpWatchRow(data) or IsPlantWatchRow(data) then
+                    if IsEphemeralWatchRow(data) or IsPlantWatchRow(data) then
                         LabelSetTextColor(rowName .. "Craftable", COLOR_GRAY[1], COLOR_GRAY[2], COLOR_GRAY[3])
                     else
                         local craftColor = COLOR_BLOCK
@@ -1352,9 +1368,8 @@ function StockPiler3TabWatch.OnToggleRowAutoGrow()
     if not data or not CanAutoGrowUi() then
         return
     end
-    if IsSkillUpWatchRow(data) then
-        -- Addon-owned SkillUp rows: Cult AutoGrow is master-linked (display-only);
-        -- Apo has no per-row AutoGrow.
+    if IsEphemeralWatchRow(data) then
+        -- Addon-owned SkillUp / Upgrade rows: AutoGrow is master-linked (display-only).
         StockPiler3TabWatch._rowPaintKey = nil
         StockPiler3TabWatch.UpdateRows()
         return
@@ -1405,7 +1420,7 @@ end
 
 function StockPiler3TabWatch.OnLoadRow()
     local data = RowDataFromActiveChild()
-    if not data or IsPlantWatchRow(data) or not StockPiler3.Brew then
+    if not data or IsPlantWatchRow(data) or IsEphemeralWatchRow(data) or not StockPiler3.Brew then
         return
     end
     if StockPiler3.Brew.OnRowCraftClick then
@@ -1418,6 +1433,9 @@ end
 
 function StockPiler3TabWatch.OnLoadRowRightClick()
     local data = RowDataFromActiveChild()
+    if not data or IsEphemeralWatchRow(data) then
+        return
+    end
     if StockPiler3.Brew and StockPiler3.Brew.OnRowCraftRightClick then
         StockPiler3.Brew.OnRowCraftRightClick(data)
     end
@@ -1727,8 +1745,8 @@ local function BuildStatusTooltipRows(data)
         end
     end
 
-    -- SkillUp rows: status message + statusLines only (no potion Stock/Target chrome).
-    if IsSkillUpWatchRow(data) then
+    -- SkillUp / Upgrade ephemeral rows: status message + statusLines only.
+    if IsEphemeralWatchRow(data) then
         if type(data.statusLines) == "table" then
             for i = 1, #data.statusLines do
                 appendMeta(data.statusLines[i])
@@ -2275,7 +2293,7 @@ function StockPiler3TabWatch.OnMouseOverIcon()
             end
         end
     end
-    local tipOpts = isPlant and { allowWithoutUse = true } or nil
+    local tipOpts = (isPlant or IsUpgradeWatchRow(data)) and { allowWithoutUse = true } or nil
     if StockPiler3.Inventory and StockPiler3.Inventory.ShowItemTooltip
         and StockPiler3.Inventory.ShowItemTooltip(itemData, SystemData.ActiveWindow.name, tipOpts)
     then
@@ -2335,6 +2353,10 @@ function StockPiler3TabWatch.OnMouseOverStock()
     if not data then
         return
     end
+    if IsUpgradeWatchRow(data) then
+        Tip(T("upgrade.watch.tip"))
+        return
+    end
     if IsSkillUpWatchRow(data) then
         Tip(T("tip.watch.skillup_metrics"))
         return
@@ -2348,6 +2370,10 @@ end
 function StockPiler3TabWatch.OnMouseOverCraftable()
     local data = RowDataFromActiveChild()
     if not data or IsPlantWatchRow(data) then
+        return
+    end
+    if IsUpgradeWatchRow(data) then
+        Tip(T("upgrade.watch.tip"))
         return
     end
     if IsSkillUpWatchRow(data) then
@@ -2368,6 +2394,10 @@ end
 
 function StockPiler3TabWatch.OnMouseOverTarget()
     local data = RowDataFromActiveChild()
+    if data and IsUpgradeWatchRow(data) then
+        Tip(T("upgrade.watch.tip"))
+        return
+    end
     if data and IsSkillUpWatchRow(data) then
         Tip(T("tip.watch.skillup_metrics"))
         return
@@ -2381,6 +2411,10 @@ end
 
 function StockPiler3TabWatch.OnMouseOverRowAutoGrow()
     local data = RowDataFromActiveChild()
+    if data and IsUpgradeWatchRow(data) then
+        Tip(T("upgrade.watch.ag_tip"))
+        return
+    end
     if data and IsSkillUpWatchRow(data) and tostring(data.skillUpKind or "") == "cult" then
         Tip(T("tip.watch.skillup_cult_autogrow"))
         return

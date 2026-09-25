@@ -1,5 +1,18 @@
 # StockPiler3 tools
 
+## deploy.ps1
+
+Copy **runtime-only** addon files from this repo into the live RoR AddOns folder:
+`StockPiler3.mod` + `Source\`. Prunes anything else under dest (`docs`, `tools`, `README`, `.git`, …).
+
+```text
+.\tools\deploy.ps1
+.\tools\deploy.ps1 -WhatIf
+.\tools\deploy.ps1 -Dest "D:\Games\Return of Reckoning\Interface\AddOns\StockPiler3"
+```
+
+Default dest: `C:\Users\talla\Games\Return of Reckoning\Interface\AddOns\StockPiler3`. Reload UI after deploy (`/reload`).
+
 ## waremu_special_mats_probe.py
 
 Paginated GraphQL probe against https://production-api.waremu.com/graphql/ for liniment / hybrid / infertile special apo materials.

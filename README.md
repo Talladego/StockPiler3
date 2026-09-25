@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.210** — AutoBuy: block rebuy while late-confirm grace is open (#9).
+**Version 0.3.220** — Pad careers/races/slots on item tooltips (fixes CreateItemTooltip ipairs nil).
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -132,6 +132,16 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.220 | NormalizeItemDataForTooltip pads careers/races/slots/skills (CreateItemTooltip ipairs nil) |
+| 0.3.219 | Orphan Cult-max plant (no seed) does not finish Upgrade; keep climbing/refining |
+| 0.3.218 | Plant-watch Upgrade arrives when Cult-max seed buffer is full; refine same-tier plants to fill |
+| 0.3.217 | Plant watch status stays Stocked/seed-buffer; upgrading text only on ephemeral Upgrade row |
+| 0.3.216 | Plant-watch climb arrives on Cult-max plant; Fretting seeds alone keep planting |
+| 0.3.215 | Marsh Root/Marshroot genus merge; climb arrives on Fretting seeds instead of replanting L1 |
+| 0.3.214 | Ephemeral Upgrade Seed Watch rows; plant Cult-max climb after watches done |
+| 0.3.213 | Seed-buffer settle: refine while empty plots remain (headroom still counts in-ground) |
+| 0.3.212 | Plant watches: fill watched stock first; then Upgrade Seed climbs genus to Cult-max |
+| 0.3.211 | Upgrade Seeds: plant watches climb to Cult-max genus rung, then restock that tier |
 | 0.3.210 | AutoBuy: hold uid through late-confirm grace; no rebuy / ClearLate stash race (#9) |
 | 0.3.209 | Drop every-load recipe-subset scrub; allowlist plant EFFECT migrate latch |
 | 0.3.208 | Plants SCrit: apo plant SPECIAL_CHANCE only; never copy cult seed Super-Crit |

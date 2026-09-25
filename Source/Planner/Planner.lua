@@ -1981,9 +1981,17 @@ local function ReconcileAutoGrowStatus(row)
         local deficit = tonumber(row.potionDeficit) or 0
         local prev = key
         if deficit <= 0 then
-            row.statusKey = "plant_stocked"
-            row.statusText = T("plan.status.plant_stocked")
-            row.statusLines = nil
+            if PlantSeedBufferShort(row.seedUid, row.plantUid, row.spec) then
+                row.statusKey = "need_seeds"
+                row.statusText = T("plan.status.need_seeds")
+                row.statusLines = {
+                    T("tip.watch.seed_buffer"),
+                }
+            else
+                row.statusKey = "plant_stocked"
+                row.statusText = T("plan.status.plant_stocked")
+                row.statusLines = nil
+            end
         elseif not armed then
             row.statusKey = "enable_autogrow"
             row.statusText = T("plan.status.enable_autogrow")
@@ -2056,8 +2064,11 @@ local function ApplySeedBufferStatus(row)
     local US = StockPiler3.UpgradeSeed
     local climb = nil
     local climbs = nil
-    if US and US.IsEnabled and US.IsEnabled() == true then
-        if row.isPlantWatch == true or row.kind == "plant" or (tonumber(row.plantUid) or 0) > 0 then
+    local isPlantWatch = row.isPlantWatch == true or row.kind == "plant"
+    if US and US.IsEnabled and US.IsEnabled() == true and not isPlantWatch then
+        -- Plant watches: stock / seed-buffer UI only. Climb status lives on
+        -- ephemeral Upgrade rows (was painting "Upgrading marshroot" on the watch).
+        if (tonumber(row.plantUid) or 0) > 0 then
             climb = US.StatusForPlant and US.StatusForPlant(row.plantUid, row.spec) or nil
         else
             -- Potion rows: only climbs for THIS watch's seeds/plants - never
@@ -3170,7 +3181,19 @@ local function ApplyPlantWatchStatus(row, potionRows)
     row.hideCraftable = true
     row.priorityTierText = L"-"
     row.plantPrioSentinel = true
+    local bufferShort = PlantSeedBufferShort(row.seedUid, row.plantUid, row.spec)
     if deficit <= 0 then
+        -- Stocked: stock UI only. Seed buffer short -> need_seeds (never climb text;
+        -- ephemeral Upgrade row owns upgrading status).
+        if bufferShort then
+            row.statusKey = "need_seeds"
+            row.statusText = T("plan.status.need_seeds")
+            row.statusLines = {
+                T("tip.watch.seed_buffer"),
+            }
+            row.seedBufferShort = true
+            return
+        end
         row.statusKey = "plant_stocked"
         row.statusText = T("plan.status.plant_stocked")
         row.statusLines = nil
@@ -3184,8 +3207,13 @@ local function ApplyPlantWatchStatus(row, potionRows)
         row.seedBufferShort = false
         return
     end
-    if PlantSeedBufferShort(row.seedUid, row.plantUid, row.spec) then
-        ApplySeedBufferStatus(row)
+    if bufferShort then
+        -- need_seeds only - ApplySeedBufferStatus must not paint upgrading on plants.
+        row.statusKey = "need_seeds"
+        row.statusText = T("plan.status.need_seeds")
+        row.statusLines = {
+            T("tip.watch.seed_buffer"),
+        }
         row.seedBufferShort = true
         return
     end
@@ -3379,6 +3407,16 @@ local function BuildWatchRows(ctx)
     for i = 1, #plantRows do
         rows[#rows + 1] = plantRows[i]
     end
+    local UpgradeSeed = StockPiler3.UpgradeSeed
+    if UpgradeSeed and UpgradeSeed.BuildWatchStatusRows then
+        local upRows = UpgradeSeed.BuildWatchStatusRows() or {}
+        for i = 1, #upRows do
+            local ur = upRows[i]
+            if type(ur) == "table" then
+                rows[#rows + 1] = ur
+            end
+        end
+    end
     local SkillUp = StockPiler3.SkillUp
     if SkillUp and SkillUp.BuildWatchStatusRows then
         local skillRows = SkillUp.BuildWatchStatusRows() or {}
@@ -3448,11 +3486,23 @@ local function RefreshSkillUpWatchRows(rows, opts)
         return false
     end
     local SkillUp = StockPiler3.SkillUp
-    if not (SkillUp and SkillUp.BuildWatchStatusRows) then
-        return false
+    local UpgradeSeed = StockPiler3.UpgradeSeed
+    local fresh = {}
+    if UpgradeSeed and UpgradeSeed.BuildWatchStatusRows then
+        local up = UpgradeSeed.BuildWatchStatusRows() or {}
+        for i = 1, #up do
+            fresh[#fresh + 1] = up[i]
+        end
     end
-    local fresh = SkillUp.BuildWatchStatusRows() or {}
-    if type(fresh) ~= "table" then
+    if SkillUp and SkillUp.BuildWatchStatusRows then
+        local sk = SkillUp.BuildWatchStatusRows() or {}
+        for i = 1, #sk do
+            fresh[#fresh + 1] = sk[i]
+        end
+    end
+    if #fresh < 1 and not (SkillUp and SkillUp.BuildWatchStatusRows)
+        and not (UpgradeSeed and UpgradeSeed.BuildWatchStatusRows)
+    then
         return false
     end
     local byKey = {}
@@ -3468,7 +3518,9 @@ local function RefreshSkillUpWatchRows(rows, opts)
     local dirty = false
     for i = 1, #rows do
         local row = rows[i]
-        if type(row) == "table" and (row.skillUp == true or row.addonOwned == true) then
+        if type(row) == "table" and (row.skillUp == true or row.addonOwned == true
+            or row.upgradeWatch == true)
+        then
             local k = tostring(row.potionKey or row.id or "")
             local sr = byKey[k]
             if type(sr) == "table" then

@@ -508,6 +508,19 @@ function Inv.NormalizeItemDataForTooltip(itemData)
     if type(data.craftingBonus) ~= "table" then
         data.craftingBonus = {}
     end
+    -- SetReqsWithLookup ipairses these; thin DB/learned shells often omit them.
+    if type(data.careers) ~= "table" then
+        data.careers = {}
+    end
+    if type(data.races) ~= "table" then
+        data.races = {}
+    end
+    if type(data.slots) ~= "table" then
+        data.slots = {}
+    end
+    if type(data.skills) ~= "table" then
+        data.skills = {}
+    end
     if data.broken == nil then
         data.broken = false
     end

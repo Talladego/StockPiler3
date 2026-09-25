@@ -163,17 +163,28 @@ local function AllEnabledPlantWatchesStocked()
         return true
     end
     local Inv = StockPiler3.Inventory
+    local Catalog = StockPiler3.Catalog
+    local US = StockPiler3.UpgradeSeed
     for plantKey, watch in pairs(plantWatches) do
         if type(watch) == "table" and watch.enabled == true then
-            local target = tonumber(watch.targetStock) or 40
             local plantUid = Watch.ParsePlantKey and Watch.ParsePlantKey(plantKey) or 0
             plantUid = tonumber(plantUid) or 0
-            local have = 0
-            if plantUid > 0 and Inv and Inv.CountByUid then
-                have = tonumber(Inv.CountByUid(plantUid)) or 0
-            end
-            if have < target then
-                return false
+            -- Ephemeral Upgrade Seed climb owns this watch: treat as stocked for idle gate.
+            if plantUid > 0 and US and US.IsPlantWatchOwnedByUpgrade
+                and US.IsPlantWatchOwnedByUpgrade(plantUid) == true
+            then
+                -- ok
+            else
+                local target = tonumber(watch.targetStock) or 40
+                local have = 0
+                if plantUid > 0 and Catalog and Catalog.PlantHave then
+                    have = tonumber(Catalog.PlantHave(plantUid)) or 0
+                elseif plantUid > 0 and Inv and Inv.CountByUid then
+                    have = tonumber(Inv.CountByUid(plantUid)) or 0
+                end
+                if have < target then
+                    return false
+                end
             end
         end
     end
@@ -395,6 +406,12 @@ end
 
 --- Soft gate: stocked+buffer, or all short watches blocked with seed buffer OK.
 function SkillUp.WatchesAllowIdleSkillUp()
+    local US = StockPiler3.UpgradeSeed
+    if US and US.IsActivelyClimbingPlantWatches
+        and US.IsActivelyClimbingPlantWatches() == true
+    then
+        return false
+    end
     if SkillUp.WatchesDone() == true then
         return true
     end

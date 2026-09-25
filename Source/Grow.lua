@@ -704,8 +704,8 @@ local function PickPlantStockCandidate(SM)
                         spec = MS.FromUid(plantUid)
                     end
                     if type(spec) == "table" and SM.IsGrowableSpec and SM.IsGrowableSpec(spec) == true then
-                        -- Upgrade Seed owns short watches until the target tier exists;
-                        -- plant_stock must not burn lower-rung seeds past the buffer.
+                        -- Upgrade Seed owns the genus only after watched stock is met
+                        -- (Phase B); plant_stock must not burn seeds mid-climb.
                         local US = StockPiler3.UpgradeSeed
                         local climb = US and US.IsEnabled and US.IsEnabled() == true
                             and US.StatusForPlant and US.StatusForPlant(plantUid, spec) or nil
