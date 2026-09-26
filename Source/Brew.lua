@@ -2157,6 +2157,14 @@ function Brew.RegisterEventHandlers()
                 Brew._readyNotifyKeys = nil
                 Brew._brewReadyLatched = false
                 Brew.InvalidateCanBrewCache()
+                -- Scenario/zone load leaves apo board invalid; a stuck loaded session
+                -- also holds Watch UI in mid-brew catchup (SkillUp rows never rebind).
+                local session = GetSession()
+                local phase = type(session) == "table" and tostring(session.phase or "idle") or "idle"
+                if phase == "loading" or phase == "loaded" then
+                    ClearSession({ reason = "loading-end" })
+                    ForceBrewUiRefresh()
+                end
             end)
         end
         if E.INVENTORY_SNAPSHOT then

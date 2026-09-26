@@ -235,7 +235,19 @@ function Ui.FlushWatchUiIfDirty()
     local Orch = StockPiler3.Orchestrator
     local brewSessionActive = Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true
     -- Mid-brew: hold full RefreshWatch; chrome via ForceBrewUiRefresh; ~1s Stock/Status catch-up.
+    -- Still rebind listData when planGen moves — otherwise a stuck brew session (e.g. scenario
+    -- load) leaves an empty ListBox while PlanSnapshot already has SkillUp rows again.
     if brewSessionActive then
+        local planGen = CurrentPlanGen()
+        local planChanged = planGen ~= (tonumber(Ui._watchUiLastPlanGen) or 0)
+        if planChanged then
+            Ui._watchUiLastPlanGen = planGen
+            if StockPiler3TabWatch and StockPiler3TabWatch.Refresh then
+                StockPiler3TabWatch.Refresh({ forcePlan = false })
+            end
+            -- Keep dirty so a full flush runs when the session ends.
+            return
+        end
         local brewKey = BrewChromeKey()
         local brewChanged = brewKey ~= tostring(Ui._watchUiLastBrewKey or "")
         local now = 0
@@ -257,6 +269,15 @@ function Ui.FlushWatchUiIfDirty()
         end
         Ui._watchUiBrewCatchupAt = now
         local listData = StockPiler3TabWatch and StockPiler3TabWatch.listData
+        local snap = StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Get
+            and StockPiler3.PlanSnapshot.Get()
+        local planRows = type(snap) == "table" and snap.rows or nil
+        if type(planRows) == "table" and planRows ~= listData then
+            if StockPiler3TabWatch and StockPiler3TabWatch.Refresh then
+                StockPiler3TabWatch.Refresh({ forcePlan = false })
+            end
+            return
+        end
         if type(listData) == "table"
             and #listData > 0
             and StockPiler3.Planner

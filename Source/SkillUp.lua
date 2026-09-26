@@ -114,14 +114,23 @@ function SkillUp.IsApoVisible()
 end
 
 --- CharRow toggle only (ignores skill blips). Used to keep Watch rows mounted.
+--- Latch last known so a nil CharacterRow mid-load cannot hide SkillUp rows.
 function SkillUp.IsCultToggleOn()
     local row = CharRow(false)
-    return type(row) == "table" and row.skillUpCultEnabled == true
+    if type(row) == "table" then
+        SkillUp._latchedCultToggle = row.skillUpCultEnabled == true
+        return SkillUp._latchedCultToggle == true
+    end
+    return SkillUp._latchedCultToggle == true
 end
 
 function SkillUp.IsApoToggleOn()
     local row = CharRow(false)
-    return type(row) == "table" and row.skillUpApoEnabled == true
+    if type(row) == "table" then
+        SkillUp._latchedApoToggle = row.skillUpApoEnabled == true
+        return SkillUp._latchedApoToggle == true
+    end
+    return SkillUp._latchedApoToggle == true
 end
 
 function SkillUp.IsCultEnabled()
@@ -144,6 +153,7 @@ function SkillUp.SetCultEnabled(enabled)
         return false
     end
     row.skillUpCultEnabled = enabled == true
+    SkillUp._latchedCultToggle = enabled == true
     local Watch = StockPiler3.Watch
     if Watch and Watch.BumpGen then
         Watch.BumpGen()
@@ -157,6 +167,7 @@ function SkillUp.SetApoEnabled(enabled)
         return false
     end
     row.skillUpApoEnabled = enabled == true
+    SkillUp._latchedApoToggle = enabled == true
     local Watch = StockPiler3.Watch
     if Watch and Watch.BumpGen then
         Watch.BumpGen()
