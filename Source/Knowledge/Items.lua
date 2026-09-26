@@ -187,13 +187,35 @@ local function CraftingFamilyFrom(itemOrRow)
     return tonumber(bonuses[5]) or 0
 end
 
---- True when an item belongs in Account.items (Cult / Apo knowledge only).
-function Items.IsPersistWorthy(itemData, kindHint)
-    kindHint = tostring(kindHint or "")
-    -- Intentional learn paths.
-    if kindHint == "plant" or kindHint == "additive" or kindHint == "potion" then
-        return true
+local function ItemTypePotion()
+    if GameData and GameData.ItemTypes and GameData.ItemTypes.POTION then
+        return GameData.ItemTypes.POTION
     end
+    return 31
+end
+
+local function ItemTypeCrafting()
+    if GameData and GameData.ItemTypes and GameData.ItemTypes.CRAFTING then
+        return GameData.ItemTypes.CRAFTING
+    end
+    return 34
+end
+
+--- Resolve engine item type from live bag data or a learned row.
+function Items.ResolveItemType(itemData)
+    if type(itemData) ~= "table" then
+        return 0
+    end
+    return tonumber(itemData.type) or tonumber(itemData.itemType) or 0
+end
+
+--- Account.items allowlist: only POTION (31) and CRAFTING (34).
+function Items.IsAllowedItemType(itemType)
+    itemType = tonumber(itemType) or 0
+    return itemType == ItemTypePotion() or itemType == ItemTypeCrafting()
+end
+
+local function IsCraftKnowledgeWorthy(itemData)
     if type(itemData) ~= "table" then
         return false
     end
@@ -213,7 +235,6 @@ function Items.IsPersistWorthy(itemData, kindHint)
     end
     local bonuses = BonusesFromCrafting(itemData)
     if type(itemData.bonuses) == "table" and next(bonuses) == nil then
-        -- Learned row already flattened.
         for ref, val in pairs(itemData.bonuses) do
             local nref = tonumber(ref) or 0
             if nref > 0 then
@@ -225,23 +246,45 @@ function Items.IsPersistWorthy(itemData, kindHint)
         return true
     end
     local slot = tonumber(bonuses[8]) or tonumber(itemData.slotType) or 0
-    -- Apo crafting slot types (container/main/stab/ext/mult/stim).
+    -- Apo crafting slot types (container/main/stab/ext/mult/stim); CRAFTING only (caller gated type).
     if slot == 1 or slot == 2 or slot == 3 or slot == 4 or slot == 5 or slot == 6 then
-        local itemType = tonumber(itemData.itemType) or tonumber(itemData.type) or 0
-        -- 31 potion, 34 crafting resource - never armor/heraldry/mounts.
-        if itemType == 31 or itemType == 34 or itemType == 0 then
-            if next(bonuses) ~= nil or itemData.isRefinable == true then
-                return true
-            end
+        if next(bonuses) ~= nil or itemData.isRefinable == true then
+            return true
         end
     end
     if itemData.isRefinable == true and (cult ~= 0 or ts == apo or ts == cultSkill) then
         return true
     end
-    local kind = tostring(itemData.kind or kindHint or "")
-    if kind == "potion" then
-        local itemType = tonumber(itemData.itemType) or 0
-        return itemType == 31 or itemType == 0
+    return false
+end
+
+--- True when an item belongs in Account.items.
+--- Hard gate: known itemType must be POTION or CRAFTING. Roles within CRAFTING
+--- (seed/plant/additive/container/mat) use kind / cultivationType / slot.
+function Items.IsPersistWorthy(itemData, kindHint)
+    kindHint = tostring(kindHint or "")
+    if type(itemData) ~= "table" then
+        return false
+    end
+    local itemType = Items.ResolveItemType(itemData)
+    if itemType > 0 and Items.IsAllowedItemType(itemType) ~= true then
+        return false
+    end
+    if itemType == ItemTypePotion() then
+        return true
+    end
+    if itemType == ItemTypeCrafting() then
+        if kindHint == "plant" or kindHint == "additive" then
+            return true
+        end
+        return IsCraftKnowledgeWorthy(itemData)
+    end
+    -- Missing / NONE: intentional learn stubs before bag enrich, or cult-typed rows.
+    if kindHint == "plant" or kindHint == "additive" or kindHint == "potion" then
+        return true
+    end
+    if (tonumber(itemData.cultivationType) or 0) ~= 0 then
+        return true
     end
     return false
 end
@@ -344,8 +387,21 @@ function Items.StoreItem(itemData, kindHint)
             ME.MarkForceNotRefinable(uid, reason)
         end
     end
-    if itemData.type ~= nil or itemData.itemType ~= nil then
-        row.itemType = tonumber(itemData.type) or tonumber(itemData.itemType) or 0
+    local resolvedType = Items.ResolveItemType(itemData)
+    if resolvedType <= 0 then
+        resolvedType = tonumber(row.itemType) or 0
+    end
+    if resolvedType <= 0 then
+        local hint = tostring(kindHint or row.kind or "")
+        if hint == "potion" then
+            resolvedType = ItemTypePotion()
+        elseif hint == "plant" or hint == "additive" or hint == "vendor"
+            or hint == "mat" or (tonumber(itemData.cultivationType) or tonumber(row.cultivationType) or 0) ~= 0 then
+            resolvedType = ItemTypeCrafting()
+        end
+    end
+    if resolvedType > 0 then
+        row.itemType = resolvedType
     end
     if kindHint then
         row.kind = kindHint
@@ -418,7 +474,7 @@ function Items.StampPlantEffectFromSeed(plantUid, effectId, plantSample, _seedUi
         if effectId <= 0 then
             return false
         end
-        row = { uniqueID = plantUid, kind = "plant", incomplete = true }
+        row = { uniqueID = plantUid, kind = "plant", incomplete = true, itemType = ItemTypeCrafting() }
         store[key] = row
     end
     local changed = false
