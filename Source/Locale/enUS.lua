@@ -455,6 +455,7 @@ StockPiler3.Locale.Packs[LANG] = {
     ["skillup.apo.stall.no_vendor_container"] = L"<icon02486> Skill up Apo stalled - no matching vial at vendor.",
     ["skillup.watch.cult_tip"] = L"Addon-controlled Cultivating Skill up (not a saved watch).",
     ["skillup.watch.cult_ag_tip"] = L"Uses master AutoGrow to plant and refine. Per-row toggle is display-only.",
+    ["skillup.watch.skill_blip"] = L"Waiting for trade skills…",
     ["skillup.watch.apo_tip"] = L"Addon-controlled Apothecary Skill up (not a saved watch).",
     ["skillup.watch.apo_brew_tip"] = L"Does not use AutoGrow. Use Brew when ready (or the Brew macro).",
     ["skillup.watch.cult_tier_line"] = L"Planting tier: {tier}",

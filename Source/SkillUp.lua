@@ -113,20 +113,29 @@ function SkillUp.IsApoVisible()
     return apo > 0 and apo < (SkillUp.APO_MAX or 200)
 end
 
+--- CharRow toggle only (ignores skill blips). Used to keep Watch rows mounted.
+function SkillUp.IsCultToggleOn()
+    local row = CharRow(false)
+    return type(row) == "table" and row.skillUpCultEnabled == true
+end
+
+function SkillUp.IsApoToggleOn()
+    local row = CharRow(false)
+    return type(row) == "table" and row.skillUpApoEnabled == true
+end
+
 function SkillUp.IsCultEnabled()
     if not SkillUp.IsCultVisible() then
         return false
     end
-    local row = CharRow(false)
-    return type(row) == "table" and row.skillUpCultEnabled == true
+    return SkillUp.IsCultToggleOn() == true
 end
 
 function SkillUp.IsApoEnabled()
     if not SkillUp.IsApoVisible() then
         return false
     end
-    local row = CharRow(false)
-    return type(row) == "table" and row.skillUpApoEnabled == true
+    return SkillUp.IsApoToggleOn() == true
 end
 
 function SkillUp.SetCultEnabled(enabled)
@@ -3760,21 +3769,57 @@ local function TradeSkillIcon(kind)
 end
 
 local function BuildCultWatchStatusRow()
+    -- Mount from CharRow toggles so combat/scenario skill blips cannot hide the row.
+    if SkillUp.IsCultToggleOn() ~= true and SkillUp.IsApoToggleOn() ~= true then
+        return nil
+    end
     local cult = SkillUp.GetCultSkill()
-    if cult <= 0 then
-        return nil
-    end
     local Caps = StockPiler3.TradeSkillCaps
-    if Caps and Caps.CanAutoGrow and Caps.CanAutoGrow() ~= true then
-        return nil
-    end
-    -- Show while Cult SkillUp is on, or while Apo SkillUp needs Cult assist.
-    if SkillUp.IsCultEnabled() ~= true and SkillUp.IsApoEnabled() ~= true then
-        return nil
-    end
-
     local Watch = StockPiler3.Watch
     local agOn = Watch and Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() == true
+    -- Transient empty tradeSkills: keep a stub row while toggles stay on.
+    if cult <= 0 or (Caps and Caps.CanAutoGrow and Caps.CanAutoGrow() ~= true) then
+        local dash = TOr("ui.dash", L"-")
+        return {
+            id = "skill_up_cult",
+            potionKey = "skill_up_cult",
+            potionRecipeKey = "skill_up_cult",
+            kind = "skillup",
+            skillUp = true,
+            addonOwned = true,
+            skillUpKind = "cult",
+            isPlantWatch = true,
+            name = TOr("watch.skillup_cult", L"Cultivating"),
+            iconNum = TradeSkillIcon("cult"),
+            uniqueID = 0,
+            seedUid = 0,
+            plantUid = 0,
+            potionHave = 0,
+            stockText = dash,
+            target = 0,
+            potionMin = 0,
+            potionDeficit = 0,
+            targetText = dash,
+            priorityTier = 0,
+            priorityTierText = L"-",
+            plantPrioSentinel = true,
+            autoGrow = agOn == true,
+            hideAutoGrow = false,
+            hideBrew = true,
+            hideCraftable = true,
+            craftable = 0,
+            craftableText = L"",
+            statusKey = "skill_blip",
+            statusText = TOr("skillup.watch.skill_blip", L"Waiting for trade skills…"),
+            statusLines = {
+                TOr("skillup.watch.cult_tip", L"Addon-controlled Cultivating Skill up (not a saved watch)."),
+            },
+            skillReq = 0,
+            nameR = 255,
+            nameG = 255,
+            nameB = 255,
+        }
+    end
 
     -- Internals still track the active seed line (highest in plots, else bag pick).
     local growing = HighestInGroundSkillUpSeed()
@@ -3898,8 +3943,50 @@ local function ApoStatusFromWhy(why)
 end
 
 local function BuildApoWatchStatusRow()
-    if SkillUp.IsApoEnabled() ~= true then
+    -- Mount from CharRow toggle so combat/scenario skill blips cannot hide the row.
+    if SkillUp.IsApoToggleOn() ~= true then
         return nil
+    end
+    local apo = SkillUp.GetApoSkill()
+    if apo <= 0 then
+        local dash = TOr("ui.dash", L"-")
+        return {
+            id = "skill_up_apo",
+            potionKey = "skill_up_apo",
+            potionRecipeKey = "skill_up_apo",
+            kind = "skillup",
+            skillUp = true,
+            addonOwned = true,
+            skillUpKind = "apo",
+            name = TOr("watch.skillup_apo", L"Apothecary"),
+            iconNum = TradeSkillIcon("apo"),
+            uniqueID = 0,
+            potionHave = 0,
+            stockText = dash,
+            target = 0,
+            potionMin = 0,
+            potionDeficit = 0,
+            targetText = dash,
+            priorityTier = 0,
+            priorityTierText = L"-",
+            autoGrow = false,
+            hideAutoGrow = true,
+            hideBrew = true,
+            craftable = 0,
+            craftableText = L"",
+            craftableSafe = false,
+            statusKey = "skill_blip",
+            statusText = TOr("skillup.watch.skill_blip", L"Waiting for trade skills…"),
+            statusLines = {
+                TOr("skillup.watch.apo_tip", L"Addon-controlled Apothecary Skill up (not a saved watch)."),
+            },
+            skillReq = 0,
+            recipe = nil,
+            recipeYield = 5,
+            nameR = 255,
+            nameG = 255,
+            nameB = 255,
+        }
     end
     local tier = SkillUp.ApoTargetTier()
     local waitingKey, waitingText, waitingLines = WaitingWatchesStatus("apo")
@@ -4004,22 +4091,12 @@ local function BuildApoWatchStatusRow()
 end
 
 --- True when ephemeral SkillUp rows should appear on the Watch tab.
---- Visibility follows Cult/Apo toggles; action uses WatchesAllowIdleSkillUp().
+--- Follows CharRow toggles (not live skill blips) so rows stay mounted in combat.
 function SkillUp.ShouldShowWatchStatus()
-    local Caps = StockPiler3.TradeSkillCaps
-    if SkillUp.IsCultEnabled() == true
-        and Caps and Caps.CanAutoGrow and Caps.CanAutoGrow() == true
-    then
+    if SkillUp.IsCultToggleOn() == true then
         return true
     end
-    -- Apo-only: Cult assist row still useful when Apo is on and Cult can grow.
-    if SkillUp.IsApoEnabled() == true
-        and Caps and Caps.CanAutoGrow and Caps.CanAutoGrow() == true
-        and SkillUp.GetCultSkill() > 0
-    then
-        return true
-    end
-    if SkillUp.IsApoEnabled() == true then
+    if SkillUp.IsApoToggleOn() == true then
         return true
     end
     return false

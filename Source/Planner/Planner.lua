@@ -185,10 +185,12 @@ local function SettingsHash()
     end
     local SkillUp = StockPiler3.SkillUp
     if SkillUp then
-        if SkillUp.IsCultEnabled and SkillUp.IsCultEnabled() == true then
+        -- CharRow toggles (not IsCultEnabled): skill blips must not change the
+        -- cache key in a way that rebuilds without SkillUp rows.
+        if SkillUp.IsCultToggleOn and SkillUp.IsCultToggleOn() == true then
             hash = hash + 17
         end
-        if SkillUp.IsApoEnabled and SkillUp.IsApoEnabled() == true then
+        if SkillUp.IsApoToggleOn and SkillUp.IsApoToggleOn() == true then
             hash = hash + 19
         end
     end
@@ -3465,6 +3467,46 @@ local function BuildWatchRows(ctx)
                 rows[#rows + 1] = sr
             end
         end
+        -- Full rebuild can miss SkillUp while tradeSkills briefly read 0. Carry
+        -- prior ephemeral rows when CharRow toggles are still on.
+        local needCult = SkillUp.IsCultToggleOn and SkillUp.IsCultToggleOn() == true
+        local needApo = SkillUp.IsApoToggleOn and SkillUp.IsApoToggleOn() == true
+        if needCult or needApo then
+            local haveCult, haveApo = false, false
+            for i = 1, #rows do
+                local r = rows[i]
+                if type(r) == "table" and r.skillUp == true then
+                    if tostring(r.skillUpKind or "") == "cult" then
+                        haveCult = true
+                    elseif tostring(r.skillUpKind or "") == "apo" then
+                        haveApo = true
+                    end
+                end
+            end
+            if (needCult and not haveCult) or (needApo and not haveApo) then
+                local prev = StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Get
+                    and StockPiler3.PlanSnapshot.Get()
+                local prevRows = type(prev) == "table" and prev.rows or nil
+                if type(prevRows) == "table" then
+                    for i = 1, #prevRows do
+                        local pr = prevRows[i]
+                        if type(pr) == "table" and pr.skillUp == true then
+                            local kind = tostring(pr.skillUpKind or "")
+                            if (kind == "cult" and needCult and not haveCult)
+                                or (kind == "apo" and needApo and not haveApo)
+                            then
+                                rows[#rows + 1] = pr
+                                if kind == "cult" then
+                                    haveCult = true
+                                else
+                                    haveApo = true
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
     end
     PerfEnd("Build.Status")
     PerfBegin("Build.Tips")
@@ -3665,15 +3707,11 @@ local function RefreshSkillUpWatchRows(rows, opts)
                 local keepSkillUp = false
                 if row.skillUp == true and SkillUp then
                     local kind = tostring(row.skillUpKind or "")
-                    local crow = StockPiler3.Util and StockPiler3.Util.CharacterRow
-                        and StockPiler3.Util.CharacterRow(false)
-                    if type(crow) == "table" then
-                        if kind == "apo" then
-                            keepSkillUp = crow.skillUpApoEnabled == true
-                        elseif kind == "cult" then
-                            keepSkillUp = crow.skillUpCultEnabled == true
-                                or crow.skillUpApoEnabled == true
-                        end
+                    if kind == "apo" then
+                        keepSkillUp = SkillUp.IsApoToggleOn and SkillUp.IsApoToggleOn() == true
+                    elseif kind == "cult" then
+                        keepSkillUp = (SkillUp.IsCultToggleOn and SkillUp.IsCultToggleOn() == true)
+                            or (SkillUp.IsApoToggleOn and SkillUp.IsApoToggleOn() == true)
                     end
                 end
                 if keepSkillUp then

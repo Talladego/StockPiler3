@@ -14,6 +14,7 @@ Caps._lastCult = tonumber(Caps._lastCult) or 0
 Caps._lastApo = tonumber(Caps._lastApo) or 0
 -- After LOADING_END, next TRADE_SKILL_UPDATED may legitimately report 0 (new char).
 Caps._pendingLoadRefresh = Caps._pendingLoadRefresh == true
+Caps._persistedHydrated = Caps._persistedHydrated == true
 
 local function SkillId(name, fallback)
     if GameData and GameData.TradeSkills and GameData.TradeSkills[name] then
@@ -49,6 +50,52 @@ local function ReadLevel(skillId)
         end
     end
     return 0
+end
+
+local function CharBucket(create)
+    if StockPiler3.Util and StockPiler3.Util.CharacterRow then
+        return StockPiler3.Util.CharacterRow(create == true)
+    end
+    return nil
+end
+
+--- Once per session: seed sticky from last known character skills (survives /reload
+--- before the first non-empty TRADE_SKILL_UPDATED).
+local function HydrateStickyFromPersist()
+    if Caps._persistedHydrated == true then
+        return
+    end
+    Caps._persistedHydrated = true
+    local row = CharBucket(false)
+    if type(row) ~= "table" then
+        return
+    end
+    local pc = tonumber(row.lastCultSkill) or 0
+    local pa = tonumber(row.lastApoSkill) or 0
+    if (tonumber(Caps._lastCult) or 0) <= 0 and pc > 0 then
+        Caps._lastCult = pc
+    end
+    if (tonumber(Caps._lastApo) or 0) <= 0 and pa > 0 then
+        Caps._lastApo = pa
+    end
+end
+
+local function PersistSticky()
+    local cult = tonumber(Caps._lastCult) or 0
+    local apo = tonumber(Caps._lastApo) or 0
+    if cult <= 0 and apo <= 0 then
+        return
+    end
+    local row = CharBucket(true)
+    if type(row) ~= "table" then
+        return
+    end
+    if cult > 0 then
+        row.lastCultSkill = cult
+    end
+    if apo > 0 then
+        row.lastApoSkill = apo
+    end
 end
 
 local function StickLevel(live, last)
@@ -115,6 +162,7 @@ function Caps.ReadApoSkillLive()
 end
 
 function Caps.GetCultSkill()
+    HydrateStickyFromPersist()
     local live = ReadLevel(Caps.CultivationId())
     local out
     out, Caps._lastCult = StickLevel(live, Caps._lastCult)
@@ -122,6 +170,7 @@ function Caps.GetCultSkill()
 end
 
 function Caps.GetApoSkill()
+    HydrateStickyFromPersist()
     local live = ReadLevel(Caps.ApothecaryId())
     local out
     out, Caps._lastApo = StickLevel(live, Caps._lastApo)
@@ -135,10 +184,12 @@ function Caps.BeginLoadSkillRefresh()
 end
 
 --- Apply a TRADE_SKILL_UPDATED pulse.
---- Never replace sticky levels with a lone empty post-load blip (combat/scenario).
---- Commit zeros only after several consecutive empty pulses (untrained char), or
---- when any skill reads > 0 (authoritative post-load snapshot).
+--- Never replace sticky levels with empty post-load blips (combat/scenario).
+--- Authoritative update only when any skill reads > 0. Empty pulses never wipe
+--- a known sticky level (char-switch zeros wait for a real non-empty snapshot,
+--- or player logout clears session state).
 function Caps.OnTradeSkillPulse()
+    HydrateStickyFromPersist()
     local liveCult = ReadLevel(Caps.CultivationId())
     local liveApo = ReadLevel(Caps.ApothecaryId())
     if Caps._pendingLoadRefresh == true then
@@ -147,30 +198,50 @@ function Caps.OnTradeSkillPulse()
             Caps._lastApo = liveApo
             Caps._pendingLoadRefresh = false
             Caps._loadEmptyPulses = 0
+            PersistSticky()
         else
             Caps._loadEmptyPulses = (tonumber(Caps._loadEmptyPulses) or 0) + 1
-            -- Keep prior sticky through empty scenario/combat blips.
+            -- Never clear sticky on empties: scenario/combat fires many empty
+            -- TRADE_SKILL_UPDATED with no follow-up until the next skill-up.
+            -- Untrained chars keep sticky 0; char switch gets a non-empty pulse.
             if Caps._loadEmptyPulses >= 5
                 and (tonumber(Caps._lastCult) or 0) <= 0
                 and (tonumber(Caps._lastApo) or 0) <= 0
             then
                 Caps._pendingLoadRefresh = false
                 Caps._loadEmptyPulses = 0
-            elseif Caps._loadEmptyPulses >= 8 then
-                -- Repeated empties after load with sticky still set: likely char
-                -- switch to untrained - clear so we do not keep the old character.
-                Caps._lastCult = 0
-                Caps._lastApo = 0
+            elseif Caps._loadEmptyPulses >= 12 then
+                -- Enough empties: stop waiting; keep sticky as-is.
                 Caps._pendingLoadRefresh = false
                 Caps._loadEmptyPulses = 0
+                if StockPiler3.Debug and StockPiler3.Debug.LogOp then
+                    StockPiler3.Debug.LogOp("caps", string.format(
+                        "load-empty-keep sticky cult=%d apo=%d",
+                        tonumber(Caps._lastCult) or 0,
+                        tonumber(Caps._lastApo) or 0
+                    ))
+                end
             end
         end
     else
-        if liveCult > 0 then
+        local changed = false
+        if liveCult > 0 and liveCult ~= (tonumber(Caps._lastCult) or 0) then
+            Caps._lastCult = liveCult
+            changed = true
+        elseif liveCult > 0 then
             Caps._lastCult = liveCult
         end
-        if liveApo > 0 then
+        if liveApo > 0 and liveApo ~= (tonumber(Caps._lastApo) or 0) then
             Caps._lastApo = liveApo
+            changed = true
+        elseif liveApo > 0 then
+            Caps._lastApo = liveApo
+        end
+        if liveCult > 0 or liveApo > 0 then
+            PersistSticky()
+        end
+        if changed and StockPiler3.Debug and StockPiler3.Debug.LogOp then
+            -- quiet; Bridge logs hash changes
         end
     end
     if Caps._lastCult > 0 or Caps._lastApo > 0 then
@@ -199,8 +270,8 @@ end
 
 function Caps.ResetTradeSkillsReady()
     Caps._skillsReady = false
-    -- Keep _lastCult/_lastApo across combat/zone unless BeginLoadSkillRefresh
-    -- + OnTradeSkillPulse replaces them. Avoids SkillUp rows vanishing when the
+    -- Keep _lastCult/_lastApo across combat/zone unless a non-empty
+    -- OnTradeSkillPulse replaces them. Avoids SkillUp rows vanishing when the
     -- engine briefly reports tradeSkills empty.
 end
 

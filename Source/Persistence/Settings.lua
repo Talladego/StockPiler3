@@ -103,6 +103,8 @@ StockPiler3.DefaultCharacterSettings = {
     brewPreferNonGrowableFirst = true,
     skillUpCultEnabled = false,
     skillUpApoEnabled = false,
+    lastCultSkill = 0,
+    lastApoSkill = 0,
     upgradeSeedsEnabled = false,
 }
 
@@ -255,6 +257,8 @@ function P.EnsureCharacterBucketShape(char)
     char.autoGrowPauseCombat = char.autoGrowPauseCombat ~= false
     char.skillUpCultEnabled = char.skillUpCultEnabled == true
     char.skillUpApoEnabled = char.skillUpApoEnabled == true
+    char.lastCultSkill = math.max(0, math.floor(tonumber(char.lastCultSkill) or 0))
+    char.lastApoSkill = math.max(0, math.floor(tonumber(char.lastApoSkill) or 0))
     char.upgradeSeedsEnabled = char.upgradeSeedsEnabled == true
     char.autoBuyReserveGold = ClampInt(char.autoBuyReserveGold, 1, 99, 10)
     char.autoBuyBudgetGold = ClampInt(char.autoBuyBudgetGold, 1, 999, 50)
