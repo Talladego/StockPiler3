@@ -279,42 +279,6 @@ local function EnsureRefineEntry(plantUid, persist)
     return entry
 end
 
---- Drop refine rows with no proven seed convert.
-function SM.ScrubDeadRefineEntries()
-    local refines = RefinesTable()
-    if type(refines) ~= "table" then
-        return 0
-    end
-    local n = 0
-    local remove = {}
-    for key, entry in pairs(refines) do
-        local dead = true
-        if type(entry) == "table" then
-            if (tonumber(entry.seedUid) or 0) > 0 then
-                dead = false
-            elseif type(entry.seedOut) == "table" then
-                for _, row in pairs(entry.seedOut) do
-                    if type(row) == "table" and (tonumber(row.samples) or 0) > 0 then
-                        dead = false
-                        break
-                    end
-                end
-            end
-        end
-        if dead then
-            remove[#remove + 1] = key
-        end
-    end
-    for i = 1, #remove do
-        refines[remove[i]] = nil
-        n = n + 1
-    end
-    if n > 0 and StockPiler3.Debug and StockPiler3.Debug.LogOp then
-        StockPiler3.Debug.LogOp("seedmap", "scrub-dead-refines n=" .. tostring(n))
-    end
-    return n
-end
-
 local function HasProvenSeedConvert(plantUid)
     plantUid = tonumber(plantUid) or 0
     if plantUid <= 0 then

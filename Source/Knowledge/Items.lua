@@ -263,54 +263,6 @@ function Items.RemoveByUid(uid)
     return true
 end
 
---- Drop junk / orphan potion stubs / non-craft rows from Account.items.
-function Items.ScrubNonCraftKnowledge()
-    local store = ItemsTable()
-    if type(store) ~= "table" then
-        return 0
-    end
-    local potions = StockPiler3.Account and StockPiler3.Account.potions
-    local keptPotionUids = {}
-    if type(potions) == "table" then
-        for _, pot in pairs(potions) do
-            if type(pot) == "table" then
-                local uid = tonumber(pot.outputUid) or 0
-                if uid <= 0 then
-                    local pk = tostring(pot.potionKey or "")
-                    uid = tonumber(string.match(pk, "^uid:(%d+)$")) or 0
-                end
-                if uid > 0 then
-                    keptPotionUids[uid] = true
-                end
-            end
-        end
-    end
-    local n = 0
-    local remove = {}
-    for key, row in pairs(store) do
-        if type(row) ~= "table" then
-            remove[#remove + 1] = key
-        else
-            local uid = tonumber(row.uniqueID) or tonumber(key) or 0
-            local kind = tostring(row.kind or "")
-            if kind == "potion" and uid > 0 and keptPotionUids[uid] ~= true then
-                -- Forgotten / SkillUp leftover potion stub.
-                remove[#remove + 1] = key
-            elseif Items.IsPersistWorthy(row, row.kind) ~= true then
-                remove[#remove + 1] = key
-            end
-        end
-    end
-    for i = 1, #remove do
-        store[remove[i]] = nil
-        n = n + 1
-    end
-    if n > 0 and StockPiler3.Debug and StockPiler3.Debug.LogOp then
-        StockPiler3.Debug.LogOp("items", "scrub-non-craft n=" .. tostring(n))
-    end
-    return n
-end
-
 function Items.StoreItem(itemData, kindHint)
     if type(itemData) ~= "table" then
         return nil, false
