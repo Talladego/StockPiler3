@@ -257,7 +257,7 @@ local function EnsureGrowBucket(seedUid)
     return bucket
 end
 
-local function EnsureRefineEntry(plantUid)
+local function EnsureRefineEntry(plantUid, persist)
     local refines = RefinesTable()
     if type(refines) ~= "table" then
         return nil
@@ -271,9 +271,48 @@ local function EnsureRefineEntry(plantUid)
             seedUid = 0,
             seedOut = {},
         }
-        refines[key] = entry
+        -- Only persist when a seed convert is proven (avoid dead seedUid=0 rows).
+        if persist == true then
+            refines[key] = entry
+        end
     end
     return entry
+end
+
+--- Drop refine rows with no proven seed convert.
+function SM.ScrubDeadRefineEntries()
+    local refines = RefinesTable()
+    if type(refines) ~= "table" then
+        return 0
+    end
+    local n = 0
+    local remove = {}
+    for key, entry in pairs(refines) do
+        local dead = true
+        if type(entry) == "table" then
+            if (tonumber(entry.seedUid) or 0) > 0 then
+                dead = false
+            elseif type(entry.seedOut) == "table" then
+                for _, row in pairs(entry.seedOut) do
+                    if type(row) == "table" and (tonumber(row.samples) or 0) > 0 then
+                        dead = false
+                        break
+                    end
+                end
+            end
+        end
+        if dead then
+            remove[#remove + 1] = key
+        end
+    end
+    for i = 1, #remove do
+        refines[remove[i]] = nil
+        n = n + 1
+    end
+    if n > 0 and StockPiler3.Debug and StockPiler3.Debug.LogOp then
+        StockPiler3.Debug.LogOp("seedmap", "scrub-dead-refines n=" .. tostring(n))
+    end
+    return n
 end
 
 local function HasProvenSeedConvert(plantUid)
@@ -1906,33 +1945,35 @@ function SM.ObserveRefineComplete(plantUid, seedUid, seedDelta)
     if plantUid <= 0 then
         return false
     end
-    local entry = EnsureRefineEntry(plantUid)
+    -- No SV row until a seed convert is observed (failed/unknown refines stay ephemeral).
+    if seedUid <= 0 or seedDelta <= 0 then
+        return false
+    end
+    local entry = EnsureRefineEntry(plantUid, true)
     if type(entry) ~= "table" then
         return false
     end
     entry.refineAttempts = (tonumber(entry.refineAttempts) or 0) + 1
     local structural = false
-    if seedUid > 0 and seedDelta > 0 then
-        if (tonumber(entry.seedUid) or 0) ~= seedUid then
-            entry.seedUid = seedUid
-            structural = true
-        end
-        local so = entry.seedOut
-        if type(so) ~= "table" then
-            so = {}
-            entry.seedOut = so
-        end
-        local row = so[tostring(seedUid)]
-        if type(row) ~= "table" then
-            row = { samples = 0, qtySum = 0 }
-            so[tostring(seedUid)] = row
-            structural = true
-        end
-        row.samples = (tonumber(row.samples) or 0) + 1
-        row.qtySum = (tonumber(row.qtySum) or 0) + seedDelta
-        -- Link grow products via cultivation path (not butcher ProductMatches).
-        RecordHarvestProduct(seedUid, plantUid, 1)
+    if (tonumber(entry.seedUid) or 0) ~= seedUid then
+        entry.seedUid = seedUid
+        structural = true
     end
+    local so = entry.seedOut
+    if type(so) ~= "table" then
+        so = {}
+        entry.seedOut = so
+    end
+    local row = so[tostring(seedUid)]
+    if type(row) ~= "table" then
+        row = { samples = 0, qtySum = 0 }
+        so[tostring(seedUid)] = row
+        structural = true
+    end
+    row.samples = (tonumber(row.samples) or 0) + 1
+    row.qtySum = (tonumber(row.qtySum) or 0) + seedDelta
+    -- Link grow products via cultivation path (not butcher ProductMatches).
+    RecordHarvestProduct(seedUid, plantUid, 1)
     if structural then
         TouchIfStructural("refine")
     end
@@ -1960,10 +2001,7 @@ function SM.TryCompletePendingRefine()
     -- Fast-fail ~1.5s with no convert.
     if elapsed >= (tonumber(SM.REFINE_FAST_FAIL_SEC) or 1.5) then
         SM.MarkRefineConvertFailed(plantUid, "fast-fail")
-        local entry = EnsureRefineEntry(plantUid)
-        if type(entry) == "table" then
-            entry.refineAttempts = (tonumber(entry.refineAttempts) or 0) + 1
-        end
+        -- Do not EnsureRefineEntry here - that created dead seedUid=0 SV rows.
         SM._pendingRefine = nil
         return false
     end

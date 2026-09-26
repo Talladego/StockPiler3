@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.232** — SkillUp Apo uses the same seed-buffer headroom reserve as normal potion watches.
+**Version 0.3.233** — Forget clears potion item stubs; refine/items SV gated to proven Cult/Apo knowledge.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -132,6 +132,7 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.233 | Forget removes potion Items stub; no dead refine SV; StoreItem craft-only + scrub |
 | 0.3.232 | SkillUp Apo plant reserve = watch seed-buffer headroom only (no standing plant cushion) |
 | 0.3.231 | SkillUp brew learn: sticky skillUpOrigin + arm on AA.Perform (no Known potions race) |
 | 0.3.230 | Soft prio (no PlanRebuild); Potions toggle one rebuild; recipe learn nudge coalesce |

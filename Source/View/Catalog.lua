@@ -164,14 +164,31 @@ end
 --- Unlink one potion fingerprint from its learned recipe. Shared recipes stay if other potions remain.
 function Catalog.ForgetPotionRecipeLink(outputUid, recipeSpecKey)
     local RS = StockPiler3.RecipeSpec
+    local removed = false
     if RS and RS.ForgetPotionRecipeLink then
-        local removed = RS.ForgetPotionRecipeLink(outputUid, recipeSpecKey) == true
+        removed = RS.ForgetPotionRecipeLink(outputUid, recipeSpecKey) == true
         if removed and StockPiler3.Knowledge and StockPiler3.Knowledge.Touch then
             StockPiler3.Knowledge.Touch()
         end
-        return removed
+    else
+        removed = Catalog._ForgetPotionRecipeLinkLocal(outputUid, recipeSpecKey) == true
     end
+    if removed == true then
+        outputUid = tonumber(outputUid) or 0
+        local potionKey = RS and RS.PotionKeyFromUid and RS.PotionKeyFromUid(outputUid)
+            or ("uid:" .. tostring(outputUid))
+        local potions = StockPiler3.Knowledge and StockPiler3.Knowledge.Potions and StockPiler3.Knowledge.Potions()
+        if outputUid > 0 and (type(potions) ~= "table" or potions[potionKey] == nil) then
+            if StockPiler3.Items and StockPiler3.Items.RemoveByUid then
+                StockPiler3.Items.RemoveByUid(outputUid)
+            end
+        end
+    end
+    return removed
+end
 
+function Catalog._ForgetPotionRecipeLinkLocal(outputUid, recipeSpecKey)
+    local RS = StockPiler3.RecipeSpec
     outputUid = tonumber(outputUid) or 0
     recipeSpecKey = tostring(recipeSpecKey or "")
     if outputUid <= 0 or recipeSpecKey == "" then
@@ -184,7 +201,8 @@ function Catalog.ForgetPotionRecipeLink(outputUid, recipeSpecKey)
         return false
     end
 
-    local potionKey = RS and RS.PotionKeyFromUid and RS.PotionKeyFromUid(outputUid) or ("uid:" .. tostring(outputUid))
+    local potionKey = RS and RS.PotionKeyFromUid and RS.PotionKeyFromUid(outputUid)
+        or ("uid:" .. tostring(outputUid))
     local potion = potions[potionKey]
     local recipe = recipes[recipeSpecKey]
     local hadLink = false

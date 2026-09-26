@@ -3,7 +3,7 @@
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
-StockPiler3.Version = L"0.3.232"
+StockPiler3.Version = L"0.3.233"
 
 local function T(key, tokens)
     return StockPiler3.Util.T(key, tokens)
@@ -443,6 +443,13 @@ function StockPiler3.Initialize()
     end
     if StockPiler3.Watch and StockPiler3.Watch.MigratePriorityTiersIfNeeded then
         StockPiler3.Watch.MigratePriorityTiersIfNeeded()
+    end
+    -- Drop junk Account.items and dead refine stubs (seedUid=0 / empty seedOut).
+    if StockPiler3.Items and StockPiler3.Items.ScrubNonCraftKnowledge then
+        StockPiler3.Items.ScrubNonCraftKnowledge()
+    end
+    if StockPiler3.SeedMap and StockPiler3.SeedMap.ScrubDeadRefineEntries then
+        StockPiler3.SeedMap.ScrubDeadRefineEntries()
     end
     local s = StockPiler3.Settings
     if type(s) == "table" and StockPiler3Window then

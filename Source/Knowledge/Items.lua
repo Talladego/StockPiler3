@@ -152,12 +152,174 @@ function Items.GetByUid(uid)
 end
 
 --- Persist / merge a learned item row. Returns row, structuralNew.
+local function ApothecarySkillId()
+    local Caps = StockPiler3.TradeSkillCaps
+    if Caps and Caps.ApothecaryId then
+        return Caps.ApothecaryId()
+    end
+    return 4
+end
+
+local function CultivationSkillId()
+    local Caps = StockPiler3.TradeSkillCaps
+    if Caps and Caps.CultivationId then
+        return Caps.CultivationId()
+    end
+    return 3
+end
+
+local function CraftingFamilyFrom(itemOrRow)
+    if type(itemOrRow) ~= "table" then
+        return 0
+    end
+    local bonuses = itemOrRow.craftingBonus or itemOrRow.bonuses
+    if type(bonuses) ~= "table" then
+        return 0
+    end
+    for _, b in pairs(bonuses) do
+        if type(b) == "table" then
+            local ref = tonumber(b.bonusReference) or tonumber(b.reference) or 0
+            if ref == 5 then
+                return tonumber(b.bonusValue) or tonumber(b.value) or 0
+            end
+        end
+    end
+    return tonumber(bonuses[5]) or 0
+end
+
+--- True when an item belongs in Account.items (Cult / Apo knowledge only).
+function Items.IsPersistWorthy(itemData, kindHint)
+    kindHint = tostring(kindHint or "")
+    -- Intentional learn paths.
+    if kindHint == "plant" or kindHint == "additive" or kindHint == "potion" then
+        return true
+    end
+    if type(itemData) ~= "table" then
+        return false
+    end
+    local cult = tonumber(itemData.cultivationType) or 0
+    if cult ~= 0 then
+        return true
+    end
+    local apo = ApothecarySkillId()
+    local cultSkill = CultivationSkillId()
+    local ts = tonumber(itemData.tradeSkill) or 0
+    if ts == apo or ts == cultSkill then
+        return true
+    end
+    local family = CraftingFamilyFrom(itemData)
+    if family == apo or family == cultSkill then
+        return true
+    end
+    local bonuses = BonusesFromCrafting(itemData)
+    if type(itemData.bonuses) == "table" and next(bonuses) == nil then
+        -- Learned row already flattened.
+        for ref, val in pairs(itemData.bonuses) do
+            local nref = tonumber(ref) or 0
+            if nref > 0 then
+                bonuses[nref] = tonumber(val) or 0
+            end
+        end
+    end
+    if tonumber(bonuses[5]) == apo or tonumber(bonuses[5]) == cultSkill then
+        return true
+    end
+    local slot = tonumber(bonuses[8]) or tonumber(itemData.slotType) or 0
+    -- Apo crafting slot types (container/main/stab/ext/mult/stim).
+    if slot == 1 or slot == 2 or slot == 3 or slot == 4 or slot == 5 or slot == 6 then
+        local itemType = tonumber(itemData.itemType) or tonumber(itemData.type) or 0
+        -- 31 potion, 34 crafting resource - never armor/heraldry/mounts.
+        if itemType == 31 or itemType == 34 or itemType == 0 then
+            if next(bonuses) ~= nil or itemData.isRefinable == true then
+                return true
+            end
+        end
+    end
+    if itemData.isRefinable == true and (cult ~= 0 or ts == apo or ts == cultSkill) then
+        return true
+    end
+    local kind = tostring(itemData.kind or kindHint or "")
+    if kind == "potion" then
+        local itemType = tonumber(itemData.itemType) or 0
+        return itemType == 31 or itemType == 0
+    end
+    return false
+end
+
+function Items.RemoveByUid(uid)
+    uid = tonumber(uid) or 0
+    if uid <= 0 then
+        return false
+    end
+    local store = ItemsTable()
+    if type(store) ~= "table" then
+        return false
+    end
+    local key = tostring(uid)
+    if store[key] == nil then
+        return false
+    end
+    store[key] = nil
+    return true
+end
+
+--- Drop junk / orphan potion stubs / non-craft rows from Account.items.
+function Items.ScrubNonCraftKnowledge()
+    local store = ItemsTable()
+    if type(store) ~= "table" then
+        return 0
+    end
+    local potions = StockPiler3.Account and StockPiler3.Account.potions
+    local keptPotionUids = {}
+    if type(potions) == "table" then
+        for _, pot in pairs(potions) do
+            if type(pot) == "table" then
+                local uid = tonumber(pot.outputUid) or 0
+                if uid <= 0 then
+                    local pk = tostring(pot.potionKey or "")
+                    uid = tonumber(string.match(pk, "^uid:(%d+)$")) or 0
+                end
+                if uid > 0 then
+                    keptPotionUids[uid] = true
+                end
+            end
+        end
+    end
+    local n = 0
+    local remove = {}
+    for key, row in pairs(store) do
+        if type(row) ~= "table" then
+            remove[#remove + 1] = key
+        else
+            local uid = tonumber(row.uniqueID) or tonumber(key) or 0
+            local kind = tostring(row.kind or "")
+            if kind == "potion" and uid > 0 and keptPotionUids[uid] ~= true then
+                -- Forgotten / SkillUp leftover potion stub.
+                remove[#remove + 1] = key
+            elseif Items.IsPersistWorthy(row, row.kind) ~= true then
+                remove[#remove + 1] = key
+            end
+        end
+    end
+    for i = 1, #remove do
+        store[remove[i]] = nil
+        n = n + 1
+    end
+    if n > 0 and StockPiler3.Debug and StockPiler3.Debug.LogOp then
+        StockPiler3.Debug.LogOp("items", "scrub-non-craft n=" .. tostring(n))
+    end
+    return n
+end
+
 function Items.StoreItem(itemData, kindHint)
     if type(itemData) ~= "table" then
         return nil, false
     end
     local uid = tonumber(itemData.uniqueID) or tonumber(itemData.uniqueId) or tonumber(itemData.id) or 0
     if uid <= 0 then
+        return nil, false
+    end
+    if Items.IsPersistWorthy(itemData, kindHint) ~= true then
         return nil, false
     end
     local store = ItemsTable()
