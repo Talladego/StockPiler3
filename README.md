@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.236** — Tighten items persist: potions only via potion learn; no plant kind downgrade.
+**Version 0.3.237** — SkillUp stats: count every brew/plant attempt; dump Apo rates by tier delta.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -132,6 +132,7 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.237 | SkillUp rates: each brew/plant counts as attempt; /sp3 stats dumps Apo delta curve + flask/tier |
 | 0.3.236 | Potion items only via potion learn; sticky plant/additive/potion kind; harvest StoreItem as plant |
 | 0.3.235 | Account.items hard-gate itemType POTION/CRAFTING; always persist itemType |
 | 0.3.234 | Remove load-time items/refine scrub; persist gates remain SoT |

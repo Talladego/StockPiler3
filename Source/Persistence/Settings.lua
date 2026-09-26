@@ -115,7 +115,7 @@ StockPiler3.DefaultAccount = {
     potions = {},
     additives = {},
     vendorItems = {},
-    skillUpRates = { v = 2, cult = {}, apo = {} },
+    skillUpRates = { v = 3, cult = {}, apo = {} },
 }
 
 function P.ToNarrow(value)

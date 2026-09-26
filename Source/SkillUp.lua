@@ -1442,7 +1442,8 @@ end
 SkillUp.SKILL_RATE_MIN_ATTEMPTS = 5
 SkillUp.SKILL_PENDING_TTL_SEC = 90
 SkillUp.SKILL_RATE_NEARBY_SPAN = 3
-SkillUp.SKILL_RATES_SCHEMA = 2
+-- v3: each SkillUp brew/plant counts as an attempt (v2 under-counted while pending).
+SkillUp.SKILL_RATES_SCHEMA = 3
 SkillUp.APO_VIAL_BUY_CAP = 300
 
 local function NowSec()
@@ -1493,9 +1494,8 @@ local function LevelBucket(kind, level, create)
     return row
 end
 
---- Record one Cult attempt at the current skill level.
---- Re-arming while pending only extends the window (no double attempt count).
---- opts.extendOnly: harvest path - extend live pending only; never start a new attempt.
+--- Record one Cult attempt at the current skill level (each plant counts).
+--- opts.extendOnly: harvest path - extend live pending only; never count an attempt.
 function SkillUp.NoteCultAttempt(opts)
     opts = type(opts) == "table" and opts or {}
     local cult = SkillUp.GetCultSkill()
@@ -1505,31 +1505,45 @@ function SkillUp.NoteCultAttempt(opts)
     local level = math.floor(cult)
     local ttl = SkillUp.SKILL_PENDING_TTL_SEC or 90
     local seedUid = tonumber(opts.seedUid) or 0
+    local now = NowSec()
     local pending = SkillUp._pendingCult
-    if type(pending) == "table" and (tonumber(pending.untilTime) or 0) > NowSec() then
-        pending.untilTime = NowSec() + ttl
+    local pendingLive = type(pending) == "table" and (tonumber(pending.untilTime) or 0) > now
+
+    if opts.extendOnly == true then
+        if pendingLive then
+            pending.untilTime = now + ttl
+            if seedUid > 0 then
+                pending.seedUid = seedUid
+            end
+            return true
+        end
+        return false
+    end
+
+    -- Each plant is an attempt. Credit the level the pending window was armed at.
+    local rowLevel = level
+    if pendingLive then
+        rowLevel = tonumber(pending.level) or level
+        pending.untilTime = now + ttl
         if seedUid > 0 then
             pending.seedUid = seedUid
         end
-        return true
+    else
+        SkillUp._pendingCult = {
+            level = level,
+            seedUid = seedUid,
+            untilTime = now + ttl,
+        }
     end
-    if opts.extendOnly == true then
-        return false
-    end
-    local row = LevelBucket("cult", level, true)
+    local row = LevelBucket("cult", rowLevel, true)
     if type(row) ~= "table" then
         return false
     end
     row.attempts = (tonumber(row.attempts) or 0) + 1
-    SkillUp._pendingCult = {
-        level = level,
-        seedUid = seedUid,
-        untilTime = NowSec() + ttl,
-    }
     return true
 end
 
---- Record one Apo SkillUp attempt at the current skill level (SkillUp sessions only).
+--- Record one Apo SkillUp brew attempt (each Perform counts while SkillUp session).
 function SkillUp.NoteApoAttempt(opts)
     opts = type(opts) == "table" and opts or {}
     if opts.skillUp ~= true then
@@ -1541,20 +1555,35 @@ function SkillUp.NoteApoAttempt(opts)
     end
     local level = math.floor(apo)
     local ttl = SkillUp.SKILL_PENDING_TTL_SEC or 90
+    local now = NowSec()
     local pending = SkillUp._pendingApo
-    if type(pending) == "table" and (tonumber(pending.untilTime) or 0) > NowSec() then
-        pending.untilTime = NowSec() + ttl
-        return true
+    local pendingLive = type(pending) == "table" and (tonumber(pending.untilTime) or 0) > now
+
+    -- Each brew is an attempt. Credit the level the pending window was armed at
+    -- so multi-brew streaks before a skill tick are not collapsed to 1/1 = 100%.
+    local rowLevel = level
+    if pendingLive then
+        rowLevel = tonumber(pending.level) or level
+        pending.untilTime = now + ttl
+    else
+        SkillUp._pendingApo = {
+            level = level,
+            untilTime = now + ttl,
+        }
     end
-    local row = LevelBucket("apo", level, true)
+    local row = LevelBucket("apo", rowLevel, true)
     if type(row) ~= "table" then
         return false
     end
     row.attempts = (tonumber(row.attempts) or 0) + 1
-    SkillUp._pendingApo = {
-        level = level,
-        untilTime = NowSec() + ttl,
-    }
+    if StockPiler3.Debug and StockPiler3.Debug.LogOp then
+        StockPiler3.Debug.LogOp("skillup", string.format(
+            "apo-attempt level=%d attempts=%d pending=%s",
+            rowLevel,
+            tonumber(row.attempts) or 0,
+            pendingLive and "extend" or "arm"
+        ))
+    end
     return true
 end
 
@@ -1829,15 +1858,168 @@ function SkillUp.DumpRates(emit)
             local hits = tonumber(row and row.hits) or 0
             if att > 0 or hits > 0 then
                 local pct = att > 0 and (hits / att * 100) or 0
-                emit(string.format(
-                    "  %s level=%s hits=%d attempts=%d rate=%.0f%%",
-                    label, tostring(keys[i]), hits, att, pct
-                ))
+                if kind == "apo" then
+                    local lvl = tonumber(keys[i]) or 0
+                    local floorTier = SkillUp.FloorApoTier(lvl)
+                    local d = lvl - floorTier
+                    emit(string.format(
+                        "  %s level=%s d=%d hits=%d attempts=%d rate=%.0f%%",
+                        label, tostring(keys[i]), d, hits, att, pct
+                    ))
+                else
+                    emit(string.format(
+                        "  %s level=%s hits=%d attempts=%d rate=%.0f%%",
+                        label, tostring(keys[i]), hits, att, pct
+                    ))
+                end
             end
         end
     end
     dumpKind("cult", "Cult")
     dumpKind("apo", "Apo")
+
+    -- Pool Apo by delta = skill - FloorApoTier (repeatable across tiers).
+    emit("--- apo skill-up by tier delta (skill - floor) ---")
+    local apoRoot = rates.apo
+    local byDelta = {}
+    if type(apoRoot) == "table" then
+        for k, row in pairs(apoRoot) do
+            local lvl = tonumber(k) or 0
+            if lvl > 0 and type(row) == "table" then
+                local att = tonumber(row.attempts) or 0
+                local hits = tonumber(row.hits) or 0
+                if att > 0 or hits > 0 then
+                    local d = lvl - SkillUp.FloorApoTier(lvl)
+                    local bucket = byDelta[d]
+                    if type(bucket) ~= "table" then
+                        bucket = { attempts = 0, hits = 0, levels = 0 }
+                        byDelta[d] = bucket
+                    end
+                    bucket.attempts = bucket.attempts + att
+                    bucket.hits = bucket.hits + hits
+                    bucket.levels = bucket.levels + 1
+                end
+            end
+        end
+    end
+    local dKeys = {}
+    for d in pairs(byDelta) do
+        dKeys[#dKeys + 1] = d
+    end
+    table.sort(dKeys, function(a, b)
+        return (tonumber(a) or 0) < (tonumber(b) or 0)
+    end)
+    if #dKeys == 0 then
+        emit("  (none)")
+    else
+        for i = 1, #dKeys do
+            local d = dKeys[i]
+            local b = byDelta[d]
+            local att = tonumber(b.attempts) or 0
+            local hits = tonumber(b.hits) or 0
+            local pct = att > 0 and (hits / att * 100) or 0
+            local eCrafts = (hits > 0 and att > 0) and (att / hits) or 0
+            emit(string.format(
+                "  d=%d levels=%d hits=%d attempts=%d rate=%.0f%% E[crafts/lvl]=%.2f",
+                d, tonumber(b.levels) or 0, hits, att, pct, eCrafts
+            ))
+        end
+    end
+
+    -- Expected flasks for one full tier band using pooled f(d).
+    local function rateAtDelta(d)
+        local b = byDelta[d]
+        if type(b) ~= "table" then
+            return nil
+        end
+        local att = tonumber(b.attempts) or 0
+        local hits = tonumber(b.hits) or 0
+        if att <= 0 or hits <= 0 then
+            return nil
+        end
+        return hits / att, att, hits
+    end
+    local function expectedCraftsAtDelta(d)
+        local p = rateAtDelta(d)
+        if p and p > 0 then
+            return 1 / p, "obs"
+        end
+        -- Interpolate / carry across observed deltas.
+        local below, above = nil, nil
+        for i = 1, #dKeys do
+            local od = dKeys[i]
+            if od < d then
+                below = od
+            elseif od > d and above == nil then
+                above = od
+            end
+        end
+        if below and above then
+            local pb = rateAtDelta(below)
+            local pa = rateAtDelta(above)
+            if pb and pa and pb > 0 and pa > 0 then
+                local t = (d - below) / math.max(1, above - below)
+                local p = pb + t * (pa - pb)
+                if p > 0 then
+                    return 1 / p, "interp"
+                end
+            end
+        end
+        if below then
+            local pb = rateAtDelta(below)
+            if pb and pb > 0 then
+                return 1 / pb, "carry"
+            end
+        end
+        if above then
+            local pa = rateAtDelta(above)
+            if pa and pa > 0 then
+                return 1 / pa, "carry"
+            end
+        end
+        return SkillUp.DefaultCraftsPerLevel("apo", SkillUp.FloorApoTier(SkillUp.GetApoSkill()) + d), "default"
+    end
+    local function flasksForBand(floorTier, nextTier)
+        local total = 0
+        for s = floorTier, nextTier - 1 do
+            local d = s - floorTier
+            local e = expectedCraftsAtDelta(d)
+            total = total + e
+        end
+        return total
+    end
+    emit("--- apo flask estimate (delta model, 1 flask/craft) ---")
+    if #dKeys == 0 then
+        emit("  (no apo samples yet)")
+    else
+        local bands = {
+            { 1, 25 }, { 25, 50 }, { 50, 75 }, { 75, 100 },
+            { 100, 125 }, { 125, 150 }, { 150, 175 }, { 175, 200 },
+        }
+        local full = 0
+        for i = 1, #bands do
+            local f, n = bands[i][1], bands[i][2]
+            local need = flasksForBand(f, n)
+            full = full + need
+            emit(string.format("  tier %d->%d E[flasks]=%.0f", f, n, need))
+        end
+        emit(string.format("  full 1->200 E[flasks]=%.0f", full))
+        local apo = SkillUp.GetApoSkill()
+        local floorTier = SkillUp.FloorApoTier(apo)
+        local nextTier = SkillUp.NextApoTier(apo)
+        local rem = 0
+        for s = math.floor(apo), nextTier - 1 do
+            rem = rem + expectedCraftsAtDelta(s - floorTier)
+        end
+        emit(string.format(
+            "  remaining this tier apo=%d->%d E[flasks]=%.0f (have=%d)",
+            apo,
+            nextTier,
+            rem,
+            SkillUp.CountApoContainers and SkillUp.CountApoContainers() or 0
+        ))
+    end
+
     local apo = SkillUp.GetApoSkill()
     local rate, hits, att, srcLevel, how = SkillUp.ResolveLevelRate("apo", apo, { noNearby = true })
     local want = SkillUp.ApoContainerBuyTarget()
@@ -1845,7 +2027,7 @@ function SkillUp.DumpRates(emit)
     local defCrafts = SkillUp.DefaultCraftsPerLevel("apo", apo)
     local tierNeed = ExpectedCraftsForRange("apo", apo, nextTier)
     emit(string.format(
-        "  vial estimate (one tier): apo=%d->%d E[crafts]=%.0f rate@%s=%.0f%% (%s n=%d) default@lvl=%.1f want=%d",
+        "  vial buy target (ResolveLevelRate): apo=%d->%d E[crafts]=%.0f rate@%s=%.0f%% (%s n=%d) default@lvl=%.1f want=%d",
         apo,
         nextTier,
         tierNeed,
