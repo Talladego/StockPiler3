@@ -6,10 +6,12 @@ StockPiler3 = StockPiler3 or {}
 StockPiler3.Knowledge = StockPiler3.Knowledge or {}
 local Know = StockPiler3.Knowledge
 
-local ACCOUNT_TABLES = { "items", "grows", "refines", "recipes", "potions", "additives", "vendorItems" }
+local ACCOUNT_TABLES = { "items", "grows", "refines", "recipes", "potions", "additives" }
 
 Know._gen = 0
 Know._ensuring = false
+-- Seen craft-relevant vendor uids this session only (not SavedVariables).
+Know._sessionVendorItems = Know._sessionVendorItems or {}
 
 local function IsAllowedTable(name)
     for i = 1, #ACCOUNT_TABLES do
@@ -126,8 +128,13 @@ function Know.Additives()
     return Know.GetTable("additives")
 end
 
+--- Session-only vendor sightings. Persisting served no purpose: AutoBuy matches
+--- the open store; Items.StoreItem already seeds Account.items for fingerprints.
 function Know.VendorItems()
-    return Know.GetTable("vendorItems")
+    if type(Know._sessionVendorItems) ~= "table" then
+        Know._sessionVendorItems = {}
+    end
+    return Know._sessionVendorItems
 end
 
 function Know.Touch(reason)

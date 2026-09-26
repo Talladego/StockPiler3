@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.240** — SkillUp Watch rows stay mounted across scenario/combat tradeSkill blips (toggle-driven + sticky persist).
+**Version 0.3.241** — vendorItems is session-only (stop persisting unused vendor catalog).
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -132,6 +132,7 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.241 | Account.vendorItems session-only; strip legacy SV blob on load |
 | 0.3.240 | SkillUp rows mount from CharRow toggles; never wipe sticky on empty pulses; persist last cult/apo |
 | 0.3.239 | Ignore empty TRADE_SKILL after LOADING_END; do not drop SkillUp watch rows while toggles on |
 | 0.3.238 | Sticky trade-skill levels across combat/scenario empty blips (SkillUp rows + AutoGrow stay up) |

@@ -3,7 +3,7 @@
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
-StockPiler3.Version = L"0.3.240"
+StockPiler3.Version = L"0.3.241"
 
 local function T(key, tokens)
     return StockPiler3.Util.T(key, tokens)
@@ -75,9 +75,14 @@ local function DumpMem(emit)
     emit("mem| StockPiler3 top keys=" .. tostring(count(StockPiler3)))
     if type(StockPiler3.Account) == "table" then
         emit("mem| Account keys=" .. tostring(count(StockPiler3.Account)))
-        for _, name in ipairs({ "items", "grows", "refines", "recipes", "potions", "additives", "vendorItems" }) do
+        for _, name in ipairs({ "items", "grows", "refines", "recipes", "potions", "additives" }) do
             emit("mem| Account." .. name .. "=" .. tostring(count(StockPiler3.Account[name])))
         end
+    end
+    do
+        local vi = StockPiler3.Knowledge and StockPiler3.Knowledge.VendorItems
+            and StockPiler3.Knowledge.VendorItems()
+        emit("mem| session.vendorItems=" .. tostring(count(vi)))
     end
     if type(StockPiler3.Settings) == "table" then
         emit("mem| Settings keys=" .. tostring(count(StockPiler3.Settings)))

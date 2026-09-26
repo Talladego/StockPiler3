@@ -6,7 +6,8 @@ StockPiler3 = StockPiler3 or {}
 StockPiler3.Persistence = StockPiler3.Persistence or {}
 local P = StockPiler3.Persistence
 
-local ACCOUNT_TABLES = { "items", "grows", "refines", "recipes", "potions", "additives", "vendorItems", "skillUpRates" }
+-- vendorItems is session-only (see Knowledge.VendorItems); do not persist.
+local ACCOUNT_TABLES = { "items", "grows", "refines", "recipes", "potions", "additives", "skillUpRates" }
 
 -- Historical leak keys (settings flags written onto Account). Strip on load.
 local ACCOUNT_LEAKED_SETTINGS_KEYS = {
@@ -116,7 +117,6 @@ StockPiler3.DefaultAccount = {
     recipes = {},
     potions = {},
     additives = {},
-    vendorItems = {},
     skillUpRates = { v = 3, cult = {}, apo = {} },
 }
 
@@ -309,6 +309,10 @@ function P.EnsureAccount()
         if a[k] ~= nil then
             a[k] = nil
         end
+    end
+    -- Drop legacy persisted vendor catalog (session-only now; AutoBuy uses live store).
+    if a.vendorItems ~= nil then
+        a.vendorItems = nil
     end
     -- Only shape knowledge tables here - never migrate (would recurse via
     -- Recipes->GetAccount->EnsureAccount). Bootstrap calls MigrateFingerprints after.
