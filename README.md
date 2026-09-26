@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.238** — Sticky cult/apo skill cache so combat/scenario empty reads do not hide SkillUp or idle AutoGrow.
+**Version 0.3.239** — Do not wipe sticky cult/apo on empty post-load tradeSkill pulses; keep SkillUp rows while toggles stay on.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -132,6 +132,7 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.239 | Ignore empty TRADE_SKILL after LOADING_END; do not drop SkillUp watch rows while toggles on |
 | 0.3.238 | Sticky trade-skill levels across combat/scenario empty blips (SkillUp rows + AutoGrow stay up) |
 | 0.3.237 | SkillUp rates: each brew/plant counts as attempt; /sp3 stats dumps Apo delta curve + flask/tier |
 | 0.3.236 | Potion items only via potion learn; sticky plant/additive/potion kind; harvest StoreItem as plant |

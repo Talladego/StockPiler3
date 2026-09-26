@@ -3660,11 +3660,31 @@ local function RefreshSkillUpWatchRows(rows, opts)
             else
                 -- Ephemeral no longer emitted (arrive done / Cult-max buffer full /
                 -- SkillUp off or at cap): drop the row instead of leaving a zombie.
-                table.remove(rows, i)
-                dirty = true
-                removed = true
-                if opts.syncSnapshot ~= false then
-                    RemovePlanSnapshotRowByKey(k)
+                -- Do not drop SkillUp rows on a transient empty Build (combat/scenario
+                -- tradeSkill blip) while the matching toggle is still on.
+                local keepSkillUp = false
+                if row.skillUp == true and SkillUp then
+                    local kind = tostring(row.skillUpKind or "")
+                    local crow = StockPiler3.Util and StockPiler3.Util.CharacterRow
+                        and StockPiler3.Util.CharacterRow(false)
+                    if type(crow) == "table" then
+                        if kind == "apo" then
+                            keepSkillUp = crow.skillUpApoEnabled == true
+                        elseif kind == "cult" then
+                            keepSkillUp = crow.skillUpCultEnabled == true
+                                or crow.skillUpApoEnabled == true
+                        end
+                    end
+                end
+                if keepSkillUp then
+                    -- leave row in place
+                else
+                    table.remove(rows, i)
+                    dirty = true
+                    removed = true
+                    if opts.syncSnapshot ~= false then
+                        RemovePlanSnapshotRowByKey(k)
+                    end
                 end
             end
         end

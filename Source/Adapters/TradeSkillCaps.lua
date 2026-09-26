@@ -128,20 +128,43 @@ function Caps.GetApoSkill()
     return out
 end
 
---- Call from LOADING_END so the next TRADE_SKILL_UPDATED can accept real zeros.
+--- Call from LOADING_END so a later non-empty TRADE_SKILL_UPDATED can refresh.
 function Caps.BeginLoadSkillRefresh()
     Caps._pendingLoadRefresh = true
+    Caps._loadEmptyPulses = 0
 end
 
---- Apply a TRADE_SKILL_UPDATED pulse. When pending load refresh, trust live zeros
---- (character switch / first populate). Otherwise ignore transient zeros.
+--- Apply a TRADE_SKILL_UPDATED pulse.
+--- Never replace sticky levels with a lone empty post-load blip (combat/scenario).
+--- Commit zeros only after several consecutive empty pulses (untrained char), or
+--- when any skill reads > 0 (authoritative post-load snapshot).
 function Caps.OnTradeSkillPulse()
     local liveCult = ReadLevel(Caps.CultivationId())
     local liveApo = ReadLevel(Caps.ApothecaryId())
     if Caps._pendingLoadRefresh == true then
-        Caps._lastCult = liveCult
-        Caps._lastApo = liveApo
-        Caps._pendingLoadRefresh = false
+        if liveCult > 0 or liveApo > 0 then
+            Caps._lastCult = liveCult
+            Caps._lastApo = liveApo
+            Caps._pendingLoadRefresh = false
+            Caps._loadEmptyPulses = 0
+        else
+            Caps._loadEmptyPulses = (tonumber(Caps._loadEmptyPulses) or 0) + 1
+            -- Keep prior sticky through empty scenario/combat blips.
+            if Caps._loadEmptyPulses >= 5
+                and (tonumber(Caps._lastCult) or 0) <= 0
+                and (tonumber(Caps._lastApo) or 0) <= 0
+            then
+                Caps._pendingLoadRefresh = false
+                Caps._loadEmptyPulses = 0
+            elseif Caps._loadEmptyPulses >= 8 then
+                -- Repeated empties after load with sticky still set: likely char
+                -- switch to untrained - clear so we do not keep the old character.
+                Caps._lastCult = 0
+                Caps._lastApo = 0
+                Caps._pendingLoadRefresh = false
+                Caps._loadEmptyPulses = 0
+            end
+        end
     else
         if liveCult > 0 then
             Caps._lastCult = liveCult
