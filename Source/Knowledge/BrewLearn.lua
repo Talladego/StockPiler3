@@ -283,7 +283,18 @@ end
 local function LatchSkillUpOrigin()
     local Brew = StockPiler3.Brew
     local session = Brew and Brew.GetSession and Brew.GetSession() or nil
-    return type(session) == "table" and session.skillUp == true
+    if type(session) == "table" and session.skillUp == true then
+        return true
+    end
+    if type(session) == "table"
+        and type(session.recipe) == "table"
+        and session.recipe.skillUpOrigin == true
+    then
+        return true
+    end
+    -- Sticky: session may already be cleared (after-brew-skillup-done) before
+    -- inventory learn completes; keep the last SkillUp arm until CompletePending.
+    return BL._lastBoardSkillUpOrigin == true
 end
 
 --- Prefer the loaded brew-session recipe over a thin board snapshot.
@@ -342,13 +353,16 @@ function BL.RefreshBoardSnapshot()
     if recipeKey == "" and StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.RecipeSpecKey then
         recipeKey = tostring(StockPiler3.RecipeSpec.RecipeSpecKey(materials) or "")
     end
+    -- Sticky SkillUp: never downgrade true -> false on a post-clear board refresh.
     local skillUpOrigin = sessionSkillUp == true or LatchSkillUpOrigin()
     BL._lastBoardMaterials = materials
     BL._lastBoardRecipeKey = recipeKey
     BL._lastBoardPotionCounts = SnapshotPotionCounts()
     BL._lastBoardSuccessChance = LatchSuccessChance()
     BL._lastBoardAt = NowSec()
-    BL._lastBoardSkillUpOrigin = skillUpOrigin
+    if skillUpOrigin then
+        BL._lastBoardSkillUpOrigin = true
+    end
     BL._lastBoardFromSession = sessionMats ~= nil
     return true
 end
@@ -370,12 +384,13 @@ function BL.ArmPendingFromLastBoard()
     if recipeKey == "" and StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.RecipeSpecKey then
         recipeKey = StockPiler3.RecipeSpec.RecipeSpecKey(materials) or ""
     end
+    local skillUpOrigin = BL._lastBoardSkillUpOrigin == true or LatchSkillUpOrigin()
     BL._pendingCraft = {
         materials = materials,
         recipeKey = recipeKey,
         potionCountsBefore = BL._lastBoardPotionCounts or {},
         successChance = tonumber(BL._lastBoardSuccessChance) or LatchSuccessChance(),
-        skillUpOrigin = BL._lastBoardSkillUpOrigin == true or LatchSkillUpOrigin(),
+        skillUpOrigin = skillUpOrigin,
         fromSessionRecipe = BL._lastBoardFromSession == true,
     }
     return true
@@ -411,13 +426,18 @@ function BL.BeginPendingCraft()
     end
     local potionCounts = SnapshotPotionCounts()
     local successChance = LatchSuccessChance()
-    local skillUpOrigin = sessionSkillUp == true or LatchSkillUpOrigin()
+    -- Sticky: keep SkillUp arm across session clear / board refresh races.
+    local skillUpOrigin = sessionSkillUp == true
+        or LatchSkillUpOrigin()
+        or BL._lastBoardSkillUpOrigin == true
     BL._lastBoardMaterials = materials
     BL._lastBoardRecipeKey = recipeKey
     BL._lastBoardPotionCounts = potionCounts
     BL._lastBoardSuccessChance = successChance
     BL._lastBoardAt = NowSec()
-    BL._lastBoardSkillUpOrigin = skillUpOrigin
+    if skillUpOrigin then
+        BL._lastBoardSkillUpOrigin = true
+    end
     BL._lastBoardFromSession = fromSession
     BL._pendingCraft = {
         materials = materials,
@@ -472,6 +492,11 @@ function BL.CompletePendingCraftLearn(opts)
     -- Advance baseline so ArmPendingFromLastBoard cannot re-diff the same bag gain.
     BL._lastBoardPotionCounts = after
     BL._lastBoardAt = NowSec()
+    -- Consume sticky SkillUp arm for this brew cycle (skip or store).
+    local pendingSkillUp = pending.skillUpOrigin == true
+    if pendingSkillUp then
+        BL._lastBoardSkillUpOrigin = true
+    end
 
     local function NotifyBrewOutcome(msg)
         if StockPiler3.Debug and StockPiler3.Debug.Notify then
@@ -532,9 +557,23 @@ function BL.CompletePendingCraftLearn(opts)
             pending.recipeKey = intendedKey
             if session.skillUp == true or session.recipe.skillUpOrigin == true then
                 pending.skillUpOrigin = true
+                pendingSkillUp = true
             end
         end
     end
+    local skillUpOrigin = pendingSkillUp == true
+        or pending.skillUpOrigin == true
+        or LatchSkillUpOrigin()
+    -- SkillUp Apo invents throwaway boards - never stamp them into known potions.
+    -- Check before fingerprint/stab rejects so a cleared session cannot race-learn.
+    if skillUpOrigin == true then
+        BL._lastBoardSkillUpOrigin = nil
+        if StockPiler3.Debug and StockPiler3.Debug.LogOp then
+            StockPiler3.Debug.LogOp("brewlearn", "skip skillUpOrigin learn")
+        end
+        return true
+    end
+    BL._lastBoardSkillUpOrigin = nil
     if intendedKey ~= ""
         and tostring(pending.recipeKey or "") ~= ""
         and tostring(pending.recipeKey) ~= intendedKey
@@ -584,15 +623,6 @@ function BL.CompletePendingCraftLearn(opts)
                 .. " outputs=" .. tostring(#outputs)
                 .. " stab=" .. tostring(stab)
         )
-    end
-    local skillUpOrigin = pending.skillUpOrigin == true or LatchSkillUpOrigin()
-    -- SkillUp Apo invents throwaway boards - never stamp them into known potions.
-    -- Manual / watch brews do not latch session.skillUp, so they still learn.
-    if skillUpOrigin == true then
-        if StockPiler3.Debug and StockPiler3.Debug.LogOp then
-            StockPiler3.Debug.LogOp("brewlearn", "skip skillUpOrigin learn")
-        end
-        return true
     end
     if RS and RS.StoreLearnedRecipeSpec then
         ok = RS.StoreLearnedRecipeSpec(materials, outputs, {

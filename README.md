@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.230** — Soft priority / coalesced watch-toggle / recipe-learn PlanRebuild (cut Status.Craftable spikes).
+**Version 0.3.231** — SkillUp Apo crafts no longer race into Known potions after session clear.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -132,6 +132,7 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.231 | SkillUp brew learn: sticky skillUpOrigin + arm on AA.Perform (no Known potions race) |
 | 0.3.230 | Soft prio (no PlanRebuild); Potions toggle one rebuild; recipe learn nudge coalesce |
 | 0.3.229 | Watch Load/Brew tips match chip state (Load vs Brew; green Craftable) |
 | 0.3.228 | Manual Load/Brew when Craftable green even if potion target already met |

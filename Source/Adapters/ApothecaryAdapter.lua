@@ -381,6 +381,11 @@ function AA.PerformCrafting()
     if type(PerformCrafting) ~= "function" then
         return false
     end
+    -- Arm learn before the engine craft: SkillUp / macros call AA.Perform, not
+    -- ApothecaryWindow.Perform (that hook never runs on this path).
+    if StockPiler3.BrewLearn and StockPiler3.BrewLearn.BeginPendingCraft then
+        pcall(StockPiler3.BrewLearn.BeginPendingCraft)
+    end
     local ok = TryCall("PerformCrafting", PerformCrafting, AA.TradeSkill(), 1)
     if ok and type(ApothecaryWindow) == "table" then
         ApothecaryWindow.PerformingLock = true
