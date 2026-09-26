@@ -21,9 +21,8 @@
 --   Never consume plants/seeds still claimed by short watches
 --   (WatchDemandReserve / PlantBrewSurplus for brew; PlantRefineSurplus
 --   for SkillUp refine - buffer headroom is a refine target, not a hold).
---   Apo brew always keeps bufferMin plants as Cult feedstock (not merely
---   headroom) so a full seed buffer can be planted without Apo draining the
---   harvest and forcing lower-tier Cult seeds.
+--   Apo brew uses the same seed-buffer headroom reserve as normal potion
+--   watches (no extra standing plant cushion when the seed buffer is full).
 --   Stabilizer: Arboreal Resin byproduct only. Compose main + container
 --   (+0/+1/+2) + lowest-skillReq resins that still reach engine HIGH (sum > 0).
 --   Prefer burning lower-tier resin over fewer units of Hale/Resilient when both
@@ -2327,29 +2326,18 @@ function SkillUp.WatchDemandReserve(specOrUid)
     return need
 end
 
---- Plants to hold as Cult feedstock before Apo SkillUp may brew.
---- Seed-buffer headroom alone is not enough: when the buffer is full of seeds
---- (headroom=0), SkillUp still plants those seeds into empty plots - without a
---- standing plant reserve Apo drains the harvest and Cult falls back to lower
---- tiers. Always keep bufferMin plants (and SeedDeficit when higher).
+--- Plants to hold before Apo SkillUp may brew - same rule as watch GrowReserve:
+--- seed-buffer headroom only (plus short-watch demand). When the seed buffer is
+--- full (headroom=0), plants are brewable surplus.
 function SkillUp.PlantFeedstockReserve(seedUid, plantUid)
     seedUid = tonumber(seedUid) or 0
     plantUid = tonumber(plantUid) or 0
-    local bufferMin = 0
-    local headroom = 0
+    local reserve = 0
     if seedUid > 0 then
         local budget = SeedBudget(seedUid)
-        bufferMin = tonumber(budget.bufferMin) or 0
-        headroom = tonumber(budget.headroom) or 0
-    end
-    local reserve = headroom
-    if bufferMin > 0 then
-        if bufferMin > reserve then
-            reserve = bufferMin
-        end
-        local deficit = tonumber(SkillUp.SeedDeficit(seedUid)) or 0
-        if deficit > reserve then
-            reserve = deficit
+        reserve = tonumber(budget.headroom) or 0
+        if reserve < 0 then
+            reserve = 0
         end
     end
     local watchNeed = 0

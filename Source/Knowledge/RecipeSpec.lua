@@ -638,9 +638,8 @@ local function CountItemsMatchingSpec(spec)
 end
 
 --- Plants/seeds still needed for AutoGrow seed-buffer (0 when buffer is satisfied).
---- Watch brew: reserve headroom only (seeds already at buffer => plants brewable).
---- SkillUp active: also keep bufferMin standing plant feedstock - SkillUp plants
---- the seed buffer into plots, so headroom-only let Apo drain harvests.
+--- Watch brew and SkillUp Apo: reserve headroom only (seeds already at buffer =>
+--- plants brewable). skillUpActive only keeps reserve armed when AutoGrow is off.
 local function GrowReserveForSpec(spec)
     local Caps = StockPiler3.TradeSkillCaps
     -- Apo/Butcher-only: no Cultivation -> never reserve plants for grow/refine.
@@ -723,22 +722,6 @@ local function GrowReserveForSpec(spec)
     end
     if headroom <= 0 then
         headroom = 0
-    end
-    -- Cult SkillUp / Apo-assist: hold a standing bufferMin plant feedstock so
-    -- Apo cannot drain harvests when the seed buffer is already full (headroom=0).
-    -- Also cover SeedDeficit (plots + buffer top-up) when higher.
-    if skillUpActive then
-        if minBuf > headroom then
-            headroom = minBuf
-        end
-        if SkillUpMod and SkillUpMod.ShouldCultGrowForSkillUp
-            and SkillUpMod.ShouldCultGrowForSkillUp() == true and SkillUpMod.SeedDeficit
-        then
-            local deficit = tonumber(SkillUpMod.SeedDeficit(seedUid)) or 0
-            if deficit > headroom then
-                headroom = deficit
-            end
-        end
     end
     if headroom <= 0 then
         return 0
