@@ -207,7 +207,9 @@ end
 
 function Bridge.OnTradeSkillUpdated()
     local Caps = StockPiler3.TradeSkillCaps
-    if Caps and Caps.MarkTradeSkillsReady then
+    if Caps and Caps.OnTradeSkillPulse then
+        Caps.OnTradeSkillPulse()
+    elseif Caps and Caps.MarkTradeSkillsReady then
         Caps.MarkTradeSkillsReady()
     end
     local cult = Caps and Caps.GetCultSkill and Caps.GetCultSkill() or 0
@@ -241,8 +243,13 @@ function Bridge.OnTradeSkillUpdated()
         prev.cult = cult
         prev.apo = apo
         -- Logout / char switch: ignore large negative jumps.
-        if dCult <= -5 or dApo <= -5 then
-            if Caps and Caps.ResetTradeSkillsReady then
+        -- Use live reads so sticky cache cannot hide a real char swap.
+        local liveCult = Caps and Caps.ReadCultSkillLive and Caps.ReadCultSkillLive() or cult
+        local liveApo = Caps and Caps.ReadApoSkillLive and Caps.ReadApoSkillLive() or apo
+        local liveDrop = (liveCult <= 0 and (tonumber(prev.cult) or 0) >= 5)
+            or (liveApo <= 0 and (tonumber(prev.apo) or 0) >= 5)
+        if (dCult <= -5 or dApo <= -5) and liveDrop and Caps and Caps._pendingLoadRefresh == true then
+            if Caps.ResetTradeSkillsReady then
                 Caps.ResetTradeSkillsReady()
             end
             Bridge._skillsWereReady = false
@@ -291,9 +298,11 @@ function Bridge.OnTradeSkillUpdated()
             StockPiler3.Scheduler.WakeAutoGrow()
         end
         if StockPiler3.Debug and StockPiler3.Debug.LogOp then
+            local liveCult = Caps and Caps.ReadCultSkillLive and Caps.ReadCultSkillLive() or cult
+            local liveApo = Caps and Caps.ReadApoSkillLive and Caps.ReadApoSkillLive() or apo
             StockPiler3.Debug.LogOp("caps", string.format(
-                "trade-skill-updated cult=%d apo=%d first=%s",
-                cult, apo, tostring(firstSkillsReady)
+                "trade-skill-updated cult=%d apo=%d live=%d/%d first=%s",
+                cult, apo, liveCult, liveApo, tostring(firstSkillsReady)
             ))
         end
     end
@@ -322,8 +331,12 @@ function Bridge.OnStoreShow()
 end
 
 function Bridge.OnLoadingEnd()
-    if StockPiler3.TradeSkillCaps and StockPiler3.TradeSkillCaps.ResetTradeSkillsReady then
-        StockPiler3.TradeSkillCaps.ResetTradeSkillsReady()
+    local Caps = StockPiler3.TradeSkillCaps
+    if Caps and Caps.BeginLoadSkillRefresh then
+        Caps.BeginLoadSkillRefresh()
+    end
+    if Caps and Caps.ResetTradeSkillsReady then
+        Caps.ResetTradeSkillsReady()
     end
     Bridge._skillLevelsHash = nil
     Bridge._skillPrev = nil
