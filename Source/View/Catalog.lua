@@ -577,7 +577,12 @@ function Catalog.ListPlantEntries()
             local ok, db = pcall(GetDatabaseItemData, plantUid)
             if ok and type(db) == "table" then
                 if Items and Items.StoreItem then
-                    Items.StoreItem(db, "plant")
+                    local dbType = Items.ResolveItemType and Items.ResolveItemType(db) or 0
+                    local typeOk = dbType == 0
+                        or (Items.IsAllowedItemType and Items.IsAllowedItemType(dbType) == true)
+                    if typeOk then
+                        Items.StoreItem(db, "plant")
+                    end
                     item = Items.GetByUid and Items.GetByUid(plantUid) or item
                     if Items.AsItemData then
                         itemData = Items.AsItemData(plantUid) or itemData
@@ -964,7 +969,11 @@ function Catalog.ForgetPlant(plantUid)
         removed = true
     end
     if type(items) == "table" and items[tostring(plantUid)] ~= nil then
-        items[tostring(plantUid)] = nil
+        if StockPiler3.Items and StockPiler3.Items.RemoveByUid then
+            StockPiler3.Items.RemoveByUid(plantUid)
+        else
+            items[tostring(plantUid)] = nil
+        end
         removed = true
     end
     local plantKey = StockPiler3.Watch and StockPiler3.Watch.PlantKeyFromUid

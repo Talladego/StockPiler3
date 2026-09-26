@@ -270,8 +270,13 @@ function Items.IsPersistWorthy(itemData, kindHint)
     if itemType > 0 and Items.IsAllowedItemType(itemType) ~= true then
         return false
     end
+    -- Potion learn: only POTION type (or untyped stub); never CRAFTING mislabeled as potion.
+    if kindHint == "potion" then
+        return itemType == 0 or itemType == ItemTypePotion()
+    end
+    -- Typed potions only enter via kindHint potion (above).
     if itemType == ItemTypePotion() then
-        return true
+        return false
     end
     if itemType == ItemTypeCrafting() then
         if kindHint == "plant" or kindHint == "additive" then
@@ -279,8 +284,8 @@ function Items.IsPersistWorthy(itemData, kindHint)
         end
         return IsCraftKnowledgeWorthy(itemData)
     end
-    -- Missing / NONE: intentional learn stubs before bag enrich, or cult-typed rows.
-    if kindHint == "plant" or kindHint == "additive" or kindHint == "potion" then
+    -- Missing / NONE: intentional plant/additive stubs, or cult-typed rows.
+    if kindHint == "plant" or kindHint == "additive" then
         return true
     end
     if (tonumber(itemData.cultivationType) or 0) ~= 0 then
@@ -403,8 +408,17 @@ function Items.StoreItem(itemData, kindHint)
     if resolvedType > 0 then
         row.itemType = resolvedType
     end
+    -- Do not downgrade plant/additive/potion kind via mat/vendor re-store.
     if kindHint then
-        row.kind = kindHint
+        local prev = tostring(row.kind or "")
+        local hint = tostring(kindHint)
+        local sticky = prev == "plant" or prev == "additive" or prev == "potion"
+        local weakHint = hint == "mat" or hint == "vendor"
+        if sticky and weakHint then
+            -- keep prev
+        else
+            row.kind = hint
+        end
     elseif not row.kind then
         row.kind = "mat"
     end

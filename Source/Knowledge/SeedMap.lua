@@ -477,7 +477,7 @@ local function RecordHarvestProduct(seedUid, plantUid, qty)
     end
     if markSpecial and StockPiler3.Items and StockPiler3.Items.StoreItem and type(plantData) == "table" then
         plantData.isRefinable = false
-        StockPiler3.Items.StoreItem(plantData, "mat")
+        StockPiler3.Items.StoreItem(plantData, "plant")
     end
     return isNew
 end
