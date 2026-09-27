@@ -649,6 +649,9 @@ function SM.PrimaryPlantForSeed(seedUid)
         return 0
     end
     local seedData = BagSample(seedUid)
+    if type(seedData) ~= "table" and StockPiler3.Items and StockPiler3.Items.GetByUid then
+        seedData = StockPiler3.Items.GetByUid(seedUid)
+    end
     local function dataSkillReq(data)
         if type(data) ~= "table" then
             return 0
@@ -659,28 +662,47 @@ function SM.PrimaryPlantForSeed(seedUid)
         end
         return req
     end
+    local function dataName(data, uid)
+        if type(data) == "table" and data.name then
+            return data.name
+        end
+        if uid and uid > 0 and StockPiler3.Items and StockPiler3.Items.GetByUid then
+            local row = StockPiler3.Items.GetByUid(uid)
+            return row and row.name
+        end
+        return nil
+    end
     local seedReq = dataSkillReq(seedData)
+    local seedName = dataName(seedData, seedUid)
     local bestUid, bestScore = 0, -1
     for i = 1, #products do
         local plantUid = tonumber(products[i].uid) or 0
         if plantUid > 0 then
             local plantData = BagSample(plantUid)
-            local related = false
-            if type(seedData) == "table" and type(plantData) == "table" then
-                related = GrowNamesRelated(plantData.name, seedData.name)
+            if type(plantData) ~= "table" and StockPiler3.Items and StockPiler3.Items.GetByUid then
+                plantData = StockPiler3.Items.GetByUid(plantUid)
             end
-            -- Never mark cult mains not-growable solely because butcher filled ProductKey -
-            -- skip butcher-looking unrelated products here.
-            if related and not (LooksButcher(ToNarrow(plantData and plantData.name))
-                and not GrowNamesRelated(plantData.name, seedData.name))
+            local plantName = dataName(plantData, plantUid)
+            local plantReq = dataSkillReq(plantData)
+            local related = false
+            if seedName and plantName then
+                related = GrowNamesRelated(plantName, seedName)
+            elseif seedReq > 0 and plantReq == seedReq then
+                -- Names unavailable but skill matches harvest product - accept.
+                related = true
+            elseif #products == 1 then
+                -- Sole harvest product for this seed.
+                related = true
+            end
+            if related and not (type(plantData) == "table"
+                and LooksButcher(ToNarrow(plantData.name))
+                and not (seedName and GrowNamesRelated(plantData.name, seedName)))
             then
                 local samples = tonumber(products[i].samples) or 0
-                local plantReq = dataSkillReq(plantData)
                 local score = samples
                 if seedReq > 0 and plantReq == seedReq then
                     score = score + 100000
                 elseif seedReq > 0 and plantReq > seedReq then
-                    -- Crit tier-up plant: keep as fallback only.
                     score = score - 1000
                 end
                 if score > bestScore then
@@ -935,7 +957,10 @@ function SM.ResolveSeedUidForPlant(plantUid, plantSpec)
             score = score + 10000
         elseif plantReq > 0 and sReq > 0 and sReq < plantReq then
             -- Lower seed that crit into this plant (refine often returns it).
-            score = score - 5000
+            -- Must lose to same-skillReq even when both share an exact grow name
+            -- (seen: L175 plant resolved to L150 seed → Apo brew reserve=0 while
+            -- the true L175 seed buffer was still short).
+            score = score - 150000
         end
         if isRefinePrimary then
             score = score + 10
@@ -966,7 +991,11 @@ function SM.ResolveSeedUidForPlant(plantUid, plantSpec)
     -- Bag / account same-genus seed at plant skill (covers missing grow link).
     -- Also scan when plantReq is unknown but plantName is known (exact name match),
     -- otherwise Wolfpaw Fusk plant with no bag sample never finds Wolfpaw Fusk Spore.
-    if bestScore < 100000 and (plantReq > 0 or (plantName and plantName ~= "")) then
+    -- Exact-name *lower*-tier seeds used to score 100000+ and skip this scan, so a
+    -- crit-tier plant kept resolving to the planted L150 seed while the true
+    -- same-skillReq seed sat buffer-short (or only in grows/account).
+    local bestMatchesSkill = plantReq > 0 and bestUid > 0 and seedSkillReq(bestUid) == plantReq
+    if (not bestMatchesSkill) and (plantReq > 0 or (plantName and plantName ~= "" and bestScore < 100000)) then
         local plantGenus = SM.GenusKeyFromName(plantName)
         local function considerItem(item)
             if type(item) ~= "table" then
@@ -986,6 +1015,9 @@ function SM.ResolveSeedUidForPlant(plantUid, plantSpec)
                 or tonumber(item.skillLevel) or 0
             if req <= 0 and type(item.bonuses) == "table" then
                 req = tonumber(item.bonuses[9]) or 0
+            end
+            if req <= 0 then
+                req = ItemSkillReq(item)
             end
             local exact = plantName and item.name
                 and NormalizeGrowName(ToNarrow(plantName)) == NormalizeGrowName(ToNarrow(item.name))
@@ -1019,19 +1051,77 @@ function SM.ResolveSeedUidForPlant(plantUid, plantSpec)
 
     if bestUid > 0 and bestScore >= 10000 then
         -- Exact name (100000+) or same skillReq (10000+). Reject genus-only guesses.
-        return bestUid
+        -- Still reject known lower-tier seeds when plant skill is higher.
+        if plantReq > 0 then
+            local bReq = seedSkillReq(bestUid)
+            if bReq > 0 and bReq < plantReq then
+                bestUid = 0
+                bestScore = -1
+            else
+                return bestUid
+            end
+        else
+            return bestUid
+        end
+    end
+    -- Prefer any grow/refine-linked seed at the plant's skillReq before falling
+    -- back to a lower planted seed (crit refine often returns L150 for an L175 plant).
+    -- Grow-linked seeds with unknown skillReq still count (84043 may lack Items
+    -- sample after the last seed was planted) — never pick known-lower seeds.
+    if plantReq > 0 then
+        local bestSame, bestSameScore = 0, -1
+        local bestUnknown = 0
+        local function considerSame(uid)
+            uid = tonumber(uid) or 0
+            if uid <= 0 or SM.IsSeedPacketUid(uid) then
+                return
+            end
+            local sReq = seedSkillReq(uid)
+            if sReq == plantReq then
+                local sc = scoreSeed(uid, false)
+                if sc > bestSameScore then
+                    bestSameScore = sc
+                    bestSame = uid
+                elseif sc < 0 and bestSame <= 0 then
+                    bestSame = uid
+                    bestSameScore = 0
+                end
+            elseif sReq <= 0 and bestUnknown <= 0 then
+                bestUnknown = uid
+            end
+        end
+        for i = 1, #linked do
+            considerSame(linked[i])
+        end
+        considerSame(refineSeed)
+        if bestSame > 0 then
+            return bestSame
+        end
+        if bestUnknown > 0 then
+            return bestUnknown
+        end
     end
     -- Explicit refine/grow link wins when the seed is not in bags (score cannot
     -- verify name/skill). Without this, GrowReserve still falls back to
     -- GetSeedUidsForPlant[1] while CollectAutoGrowSeedLines leaves seedUid=0 —
     -- brew craftable=0 with no seed-buffer plant job (Rejuvenating/Fusk stall).
+    -- Never return a known lower-tier seed for a higher plant (buffer math would
+    -- use the met lower buffer and brew away scarce same-tier feedstock).
     if refineSeed > 0 then
-        return refineSeed
+        local rReq = seedSkillReq(refineSeed)
+        if plantReq <= 0 or rReq <= 0 or rReq >= plantReq then
+            return refineSeed
+        end
     end
     if type(linked) == "table" then
-        local first = tonumber(linked[1]) or 0
-        if first > 0 then
-            return first
+        for i = 1, #linked do
+            local cand = tonumber(linked[i]) or 0
+            if cand > 0 then
+                local cReq = seedSkillReq(cand)
+                if plantReq <= 0 or cReq <= 0 or cReq >= plantReq then
+                    return cand
+                end
+            end
         end
     end
     -- Do not fall back to PickBestSeedUid (prefers Eternal/L1 in bags).
@@ -2381,20 +2471,12 @@ local function NoteSeedPlant(families, seedUid, plantUid, skillReq, name, role, 
             return req
         end
         local newReq = uidReq(seedUid)
-        -- Never pin a known lower-tier seed onto a higher plant rung
-        -- (Dusty L1 spore must not own Wolfpaw/Shaded rungs).
+        -- Never pin a known lower-tier seed onto a higher plant rung.
+        -- Exact grow-name match used to allow this (Beardweed L150 seed on the
+        -- L175 plant rung) so Apo brew reserved against the met L150 buffer and
+        -- burned the only L175 plant. Crit plants share names with lower seeds.
         if newReq > 0 and newReq < skillReq then
-            local seedSample = BagSample(seedUid)
-            local plantSample = plantUid > 0 and BagSample(plantUid) or nil
-            local exact = false
-            if type(seedSample) == "table" and type(plantSample) == "table" then
-                local a = NormalizeGrowName(ToNarrow(plantSample.name))
-                local b = NormalizeGrowName(ToNarrow(seedSample.name))
-                exact = a ~= "" and a == b
-            end
-            if not exact then
-                seedUid = 0
-            end
+            seedUid = 0
         end
     end
     if seedUid > 0 then
@@ -2738,29 +2820,72 @@ function SM.GetGenusLadder(genus)
         return nil
     end
     SortRungs(merged.rungs)
-    -- Final heal: invent missing seeds from grows/refines via ResolveSeedUidForPlant.
+    -- Final heal: invent missing seeds, and replace wrong lower-tier seeds on
+    -- higher plant rungs (exact-name crit links used to pin L150 onto L175).
     for i = 1, #merged.rungs do
         local rung = merged.rungs[i]
         local plantUid = tonumber(rung.plantUid) or 0
         local seedUid = tonumber(rung.seedUid) or 0
         local wantReq = tonumber(rung.skillReq) or 0
-        if plantUid > 0 and seedUid <= 0 and SM.ResolveSeedUidForPlant then
-            seedUid = tonumber(SM.ResolveSeedUidForPlant(plantUid, nil)) or 0
-            if seedUid > 0 then
-                local sample = BagSample(seedUid)
-                local sReq = ItemSkillReq(sample or {})
-                -- Reject lower-tier guesses on higher rungs (same rule as NoteSeedPlant).
-                if sReq > 0 and sReq < wantReq then
-                    local plantSample = BagSample(plantUid)
-                    local a = NormalizeGrowName(ToNarrow(plantSample and plantSample.name))
-                    local b = NormalizeGrowName(ToNarrow(sample and sample.name))
-                    if a == "" or a ~= b then
-                        seedUid = 0
-                    end
+        local function seedReqOf(uid)
+            uid = tonumber(uid) or 0
+            if uid <= 0 then
+                return 0
+            end
+            local sample = BagSample(uid)
+            return ItemSkillReq(sample or {})
+        end
+        local curReq = seedReqOf(seedUid)
+        local needResolve = plantUid > 0 and (
+            seedUid <= 0
+            or (wantReq > 0 and curReq > 0 and curReq < wantReq)
+        )
+        if needResolve and SM.ResolveSeedUidForPlant then
+            if wantReq > 0 and curReq > 0 and curReq < wantReq then
+                seedUid = 0
+                rung.seedUid = 0
+            end
+            local resolved = tonumber(SM.ResolveSeedUidForPlant(plantUid, nil)) or 0
+            if resolved > 0 then
+                local sReq = seedReqOf(resolved)
+                -- Reject lower-tier guesses on higher rungs (no exact-name exception).
+                if sReq > 0 and wantReq > 0 and sReq < wantReq then
+                    resolved = 0
                 end
             end
-            if seedUid > 0 then
-                rung.seedUid = seedUid
+            if resolved > 0 then
+                rung.seedUid = resolved
+                seedUid = resolved
+            end
+        end
+        -- Bag seed at this genus + skillReq (covers Resolve miss when grow link
+        -- never recorded the same-tier seed as a product of this plant).
+        seedUid = tonumber(rung.seedUid) or 0
+        if seedUid <= 0 and wantReq > 0 and merged.genus and merged.genus ~= "" then
+            local Inv = StockPiler3.Inventory
+            if Inv and Inv.ForEachItem then
+                local found = 0
+                Inv.ForEachItem(function(item)
+                    if found > 0 or type(item) ~= "table" then
+                        return
+                    end
+                    if not IsBagSeedOrSporeItem(item) then
+                        return
+                    end
+                    local uid = tonumber(item.uniqueID) or 0
+                    if uid <= 0 or SM.IsSeedPacketUid(uid) then
+                        return
+                    end
+                    if SM.GenusKeyFromName(item.name) ~= merged.genus then
+                        return
+                    end
+                    if ItemSkillReq(item) == wantReq then
+                        found = uid
+                    end
+                end)
+                if found > 0 then
+                    rung.seedUid = found
+                end
             end
         end
     end

@@ -11,14 +11,13 @@ Refine.MAX_OUTSTANDING_PER_SEED = 6
 Refine.MAX_PENDING_PER_PLANT = 6
 Refine.SEED_BUFFER_FAIL_COOLDOWN_SEC = 45
 Refine.OUTSTANDING_TTL_SEC = 30
-Refine.EMPTY_INTENT_RETRY_SEC = 5
 
 Refine._refineDirty = false
 Refine._refineDirtyReason = nil
 Refine._refineWaitTicks = 0
 Refine._intentCacheKey = nil
 Refine._intentCache = nil
-Refine._emptyIntentBustAt = 0
+Refine._emptyIntentSnapGen = nil
 Refine._bufferFlags = nil
 Refine._bufferFlagsKey = nil
 Refine._bufferFlagsStructKey = nil
@@ -500,17 +499,51 @@ local function LineConvertiblePending(line)
 end
 
 local function EnsureBufferFlagsCached()
-    local RP = StockPiler3.RefinePipeline
-    local hasOut = RP and RP.HasOutstanding and RP.HasOutstanding() == true
-    local fullGarden = not (StockPiler3.Grow and StockPiler3.Grow.HasEmptyPlot and StockPiler3.Grow.HasEmptyPlot())
-    if hasOut and fullGarden and type(Refine._bufferFlags) == "table" then
+    local Watch = StockPiler3.Watch
+    if not (Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true) then
+        Refine._bufferFlags = { pending = false, short = false }
+        Refine._bufferFlagsKey = nil
+        Refine._bufferFlagsStructKey = nil
+        return Refine._bufferFlags
+    end
+    local key = BufferFlagsCacheKey()
+    local frame = tonumber(StockPiler3.FrameCounter) or 0
+    -- Same-frame: after one rebuild, ignore snapGen-only misses (CollectIntents /
+    -- IssueOne then ApplySlots used to pay BufferFlags x2 on one orch tick).
+    if frame > 0 and Refine._bufferFlagsFrame == frame and type(Refine._bufferFlags) == "table" then
+        if Refine._bufferFlagsKey == key then
+            return Refine._bufferFlags
+        end
         local structKey = BufferFlagsStructuralKey()
         if Refine._bufferFlagsStructKey == structKey then
             return Refine._bufferFlags
         end
     end
-    local key = BufferFlagsCacheKey()
+    -- Mid-brew: AutoGrow is paused; ignore snapGen-only misses and keep struct-matched
+    -- cache so SkillUp status / ApplySlots catch-up does not rebuild BufferFlags.
+    local Orch = StockPiler3.Orchestrator
+    local Brew = StockPiler3.Brew
+    local brewHold = (Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true)
+        or (Brew and Brew.IsBusy and Brew.IsBusy() == true)
+    if brewHold and type(Refine._bufferFlags) == "table" then
+        local structKey = BufferFlagsStructuralKey()
+        if Refine._bufferFlagsStructKey == structKey then
+            Refine._bufferFlagsFrame = frame
+            return Refine._bufferFlags
+        end
+    end
+    local RP = StockPiler3.RefinePipeline
+    local hasOut = RP and RP.HasOutstanding and RP.HasOutstanding() == true
+    local fullGarden = not (StockPiler3.Grow and StockPiler3.Grow.HasEmptyPlot and StockPiler3.Grow.HasEmptyPlot())
+    if hasOut and fullGarden and type(Refine._bufferFlags) == "table" then
+        -- Include snapGen so bag changes cannot keep stale pending/short.
+        if Refine._bufferFlagsKey == key then
+            Refine._bufferFlagsFrame = frame
+            return Refine._bufferFlags
+        end
+    end
     if Refine._bufferFlagsKey == key and type(Refine._bufferFlags) == "table" then
+        Refine._bufferFlagsFrame = frame
         return Refine._bufferFlags
     end
     local Perf = StockPiler3.Perf
@@ -534,6 +567,7 @@ local function EnsureBufferFlagsCached()
     Refine._bufferFlags = { pending = pending, short = short }
     Refine._bufferFlagsKey = key
     Refine._bufferFlagsStructKey = BufferFlagsStructuralKey()
+    Refine._bufferFlagsFrame = frame
     if Perf and Perf.End then
         Perf.End("Refine.BufferFlags")
     end
@@ -607,19 +641,37 @@ end
 function Refine.InvalidateIntentCache()
     Refine._intentCacheKey = nil
     Refine._intentCache = nil
+    Refine._emptyIntentSnapGen = nil
 end
 
 function Refine.InvalidateBufferFlags()
     Refine._bufferFlagsKey = nil
     Refine._bufferFlags = nil
     Refine._bufferFlagsStructKey = nil
+    Refine._bufferFlagsFrame = nil
 end
 
 --- Last cached pending flag without rebuilding (snap wake path).
+--- Returns false when cache is missing (wake must not suppress work via true-only checks).
 function Refine.PeekCachedBufferPending()
     local flags = Refine._bufferFlags
     if type(flags) ~= "table" then
         return false
+    end
+    return flags.pending == true
+end
+
+--- Freshness-aware peek for orch work gates.
+--- Returns true/false on a cache hit whose key still matches; nil when missing or stale
+--- so callers fall through to HasPendingBufferRefine().
+function Refine.PeekFreshBufferPending()
+    local flags = Refine._bufferFlags
+    if type(flags) ~= "table" then
+        return nil
+    end
+    local key = BufferFlagsCacheKey()
+    if Refine._bufferFlagsKey ~= key then
+        return nil
     end
     return flags.pending == true
 end
@@ -957,27 +1009,18 @@ function Refine.CollectIntents()
     end
     local cacheKey = IntentCacheKey()
     if Refine._intentCacheKey == cacheKey and type(Refine._intentCache) == "table" then
-        -- Empty-cache bust when buffer/SkillUp may have gained plants since last miss.
-        -- Rate-limit: unbounded rebuilds here caused ~300-450ms spikes every AutoGrow
-        -- tick while plots grew with a short seed buffer + leftover refinable plants.
+        -- Empty-cache bust only when bags moved (snapGen) or harvest dirty.
+        -- A 5s timer used to rebuild CollectIntents every idle orch tick while
+        -- HasPendingBufferRefine stayed true with no new plants (libperf noise).
         if #Refine._intentCache == 0 then
-            local SkillUp = StockPiler3.SkillUp
-            local skillUpPending = SkillUp and SkillUp.ShouldCultPlant
-                and SkillUp.ShouldCultPlant() == true
-                and SkillUp.HasRefinablePlants and SkillUp.HasRefinablePlants() == true
-            local wantBust = Refine.HasPendingBufferRefine() == true
-                or skillUpPending == true
-                or Refine._refineDirtyReason == "harvest"
-            if wantBust == true then
-                local now = NowSec()
-                local last = tonumber(Refine._emptyIntentBustAt) or 0
-                local gap = tonumber(Refine.EMPTY_INTENT_RETRY_SEC) or 5
-                if (now - last) >= gap then
-                    Refine._emptyIntentBustAt = now
-                    Refine.InvalidateIntentCache()
-                else
-                    return Refine._intentCache
-                end
+            local snapGen = 0
+            if StockPiler3.Inventory and StockPiler3.Inventory.GetSnapGen then
+                snapGen = tonumber(StockPiler3.Inventory.GetSnapGen()) or 0
+            end
+            local snapMoved = tonumber(Refine._emptyIntentSnapGen) ~= snapGen
+            local harvestDirty = Refine._refineDirtyReason == "harvest"
+            if snapMoved or harvestDirty then
+                Refine.InvalidateIntentCache()
             else
                 return Refine._intentCache
             end
@@ -1054,47 +1097,50 @@ function Refine.CollectIntents()
         end)
     end
 
-    -- 2) Plant-need
+    -- 2) Plant-need / 3) Resin-need share one demand snapshot (warm-cache hit is free).
+    local demand = nil
     if RS and RS.BuildBalancedSpecDemand then
-        local demand = RS.BuildBalancedSpecDemand()
-        if type(demand) == "table" then
-            for _, row in pairs(demand) do
-                if type(row) == "table" and type(row.spec) == "table"
-                    and not (SM and SM.IsHarvestByproduct and SM.IsHarvestByproduct(row.spec))
-                    and row.isByproduct ~= true
-                    -- Containers / vendor mats never plant-need refine (vials were matching via uid).
-                    and (not SM.IsGrowableSpec or SM.IsGrowableSpec(row.spec) == true)
-                then
-                    local seedUid = tonumber(row.seedUid) or 0
-                    if seedUid <= 0 and SM and SM.ResolveSeedForSpec then
-                        local seed = SM.ResolveSeedForSpec(row.spec)
-                        seedUid = type(seed) == "table" and (tonumber(seed.uniqueID) or 0) or 0
-                    end
-                    local plantUid = tonumber(row.plantUid) or 0
-                    if plantUid <= 0 and SM and SM.FindPlantUidForSpec then
-                        plantUid = tonumber(SM.FindPlantUidForSpec(row.spec)) or 0
-                    end
-                    if plantUid > 0 then
-                        local key = tostring(row.specKey or seedUid)
-                        if seenBuffer[key] ~= true then
-                            local budget = Refine.GetSeedBudget(seedUid)
-                            local refinable = CountRefinableForSpec(plantUid, row.spec)
-                            local liveOk = (tonumber(budget.live) or 0) <= 0
-                                and (tonumber(budget.outstanding) or 0) <= 0
-                            local deficitOk = (tonumber(row.deficit) or 0) > 0 and refinable > 0
-                            if liveOk and deficitOk then
-                                -- Unknown seedUid: still refine plants (learn seed on convert).
-                                local allow = seedUid <= 0
-                                    or not bufferOn
-                                    or (tonumber(budget.headroom) or 0) > 0
-                                if allow then
-                                    AppendIntent(intents, {
-                                        spec = row.spec,
-                                        specKey = row.specKey,
-                                        seedUid = seedUid,
-                                        plantUid = plantUid,
-                                    }, "plant-need", 1, budget)
-                                end
+        demand = RS.BuildBalancedSpecDemand()
+    end
+
+    -- 2) Plant-need
+    if type(demand) == "table" then
+        for _, row in pairs(demand) do
+            if type(row) == "table" and type(row.spec) == "table"
+                and not (SM and SM.IsHarvestByproduct and SM.IsHarvestByproduct(row.spec))
+                and row.isByproduct ~= true
+                -- Containers / vendor mats never plant-need refine (vials were matching via uid).
+                and (not SM.IsGrowableSpec or SM.IsGrowableSpec(row.spec) == true)
+            then
+                local seedUid = tonumber(row.seedUid) or 0
+                if seedUid <= 0 and SM and SM.ResolveSeedForSpec then
+                    local seed = SM.ResolveSeedForSpec(row.spec)
+                    seedUid = type(seed) == "table" and (tonumber(seed.uniqueID) or 0) or 0
+                end
+                local plantUid = tonumber(row.plantUid) or 0
+                if plantUid <= 0 and SM and SM.FindPlantUidForSpec then
+                    plantUid = tonumber(SM.FindPlantUidForSpec(row.spec)) or 0
+                end
+                if plantUid > 0 then
+                    local key = tostring(row.specKey or seedUid)
+                    if seenBuffer[key] ~= true then
+                        local budget = Refine.GetSeedBudget(seedUid)
+                        local refinable = CountRefinableForSpec(plantUid, row.spec)
+                        local liveOk = (tonumber(budget.live) or 0) <= 0
+                            and (tonumber(budget.outstanding) or 0) <= 0
+                        local deficitOk = (tonumber(row.deficit) or 0) > 0 and refinable > 0
+                        if liveOk and deficitOk then
+                            -- Unknown seedUid: still refine plants (learn seed on convert).
+                            local allow = seedUid <= 0
+                                or not bufferOn
+                                or (tonumber(budget.headroom) or 0) > 0
+                            if allow then
+                                AppendIntent(intents, {
+                                    spec = row.spec,
+                                    specKey = row.specKey,
+                                    seedUid = seedUid,
+                                    plantUid = plantUid,
+                                }, "plant-need", 1, budget)
                             end
                         end
                     end
@@ -1104,40 +1150,37 @@ function Refine.CollectIntents()
     end
 
     -- 3) Resin-need: convert same-tier surplus plants (never plant-need the resin uid).
-    if SM and SM.IsHarvestByproduct and RS and RS.BuildBalancedSpecDemand then
-        local demand = RS.BuildBalancedSpecDemand()
-        if type(demand) == "table" then
-            local seen = {}
-            for _, row in pairs(demand) do
-                if type(row) == "table" and type(row.spec) == "table"
-                    and (row.isByproduct == true or SM.IsHarvestByproduct(row.spec) == true)
-                then
-                    local deficit = tonumber(row.deficit) or 0
-                    local resinKey = tostring(row.specKey or "")
-                    if deficit > 0 and resinKey ~= "" and seen[resinKey] ~= true then
-                        seen[resinKey] = true
-                        local pick = Refine.PickPlantForResinConvert(row.spec, deficit)
-                        if type(pick) == "table" and (tonumber(pick.slot) or 0) > 0 then
-                            local uses = math.min(
-                                deficit,
-                                tonumber(pick.surplus) or 0,
-                                tonumber(pick.refinable) or 0,
-                                5
-                            )
-                            if uses > 0 then
-                                intents[#intents + 1] = {
-                                    reason = "resin-need",
-                                    spec = pick.spec or row.spec,
-                                    seedUid = tonumber(pick.seedUid) or 0,
-                                    plantUid = tonumber(pick.plantUid) or 0,
-                                    uses = uses,
-                                    headroom = 0,
-                                    slot = pick.slot,
-                                    item = pick.item,
-                                    bagType = pick.bagType or CraftingBackpackType(),
-                                    emergencyPlant = false,
-                                }
-                            end
+    if SM and SM.IsHarvestByproduct and type(demand) == "table" then
+        local seen = {}
+        for _, row in pairs(demand) do
+            if type(row) == "table" and type(row.spec) == "table"
+                and (row.isByproduct == true or SM.IsHarvestByproduct(row.spec) == true)
+            then
+                local deficit = tonumber(row.deficit) or 0
+                local resinKey = tostring(row.specKey or "")
+                if deficit > 0 and resinKey ~= "" and seen[resinKey] ~= true then
+                    seen[resinKey] = true
+                    local pick = Refine.PickPlantForResinConvert(row.spec, deficit)
+                    if type(pick) == "table" and (tonumber(pick.slot) or 0) > 0 then
+                        local uses = math.min(
+                            deficit,
+                            tonumber(pick.surplus) or 0,
+                            tonumber(pick.refinable) or 0,
+                            5
+                        )
+                        if uses > 0 then
+                            intents[#intents + 1] = {
+                                reason = "resin-need",
+                                spec = pick.spec or row.spec,
+                                seedUid = tonumber(pick.seedUid) or 0,
+                                plantUid = tonumber(pick.plantUid) or 0,
+                                uses = uses,
+                                headroom = 0,
+                                slot = pick.slot,
+                                item = pick.item,
+                                bagType = pick.bagType or CraftingBackpackType(),
+                                emergencyPlant = false,
+                            }
                         end
                     end
                 end
@@ -1156,7 +1199,13 @@ function Refine.CollectIntents()
     Refine._intentCacheKey = cacheKey
     Refine._intentCache = intents
     if #intents == 0 then
-        Refine._emptyIntentBustAt = NowSec()
+        local snapGen = 0
+        if StockPiler3.Inventory and StockPiler3.Inventory.GetSnapGen then
+            snapGen = tonumber(StockPiler3.Inventory.GetSnapGen()) or 0
+        end
+        Refine._emptyIntentSnapGen = snapGen
+    else
+        Refine._emptyIntentSnapGen = nil
     end
     if Perf and Perf.End then
         Perf.End("CollectIntents")

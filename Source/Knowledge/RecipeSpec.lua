@@ -706,22 +706,75 @@ local function GrowReserveForSpec(spec)
     end
 
     -- Prefer Refine budget (live + ground + outstanding); else live seed count.
-    local headroom = nil
-    local Refine = StockPiler3.Refine
-    if Refine and Refine.GetSeedBudget then
-        local budget = Refine.GetSeedBudget(seedUid)
-        headroom = tonumber(budget and budget.headroom)
-    end
-    if headroom == nil then
+    local function headroomOf(uid)
+        uid = tonumber(uid) or 0
+        if uid <= 0 then
+            return 0
+        end
+        local Refine = StockPiler3.Refine
+        if Refine and Refine.GetSeedBudget then
+            local budget = Refine.GetSeedBudget(uid)
+            local h = tonumber(budget and budget.headroom)
+            if h ~= nil then
+                return math.max(0, h)
+            end
+        end
         local live = 0
         local Inv = StockPiler3.Inventory
         if Inv and Inv.CountByUid then
-            live = tonumber(Inv.CountByUid(seedUid)) or 0
+            live = tonumber(Inv.CountByUid(uid)) or 0
         end
-        headroom = math.max(0, minBuf - live)
+        return math.max(0, minBuf - live)
     end
-    if headroom <= 0 then
-        headroom = 0
+    local headroom = headroomOf(seedUid)
+    -- Crit-tier plants often resolve to the lower planted seed (buffer already
+    -- met). Also hold feedstock for every grow/refine-linked seed and the
+    -- genus-ladder seed at this plant's skillReq.
+    local plantReq = 0
+    if not isSeed and plantOrSeedUid > 0 then
+        if type(spec) == "table" then
+            plantReq = tonumber(spec.skillLevel) or tonumber(spec.craftingSkillRequirement) or 0
+        end
+        if plantReq <= 0 then
+            local Inv = StockPiler3.Inventory
+            local sample = Inv and Inv.GetSample and Inv.GetSample(plantOrSeedUid)
+            if type(sample) ~= "table" and StockPiler3.Items and StockPiler3.Items.GetByUid then
+                sample = StockPiler3.Items.GetByUid(plantOrSeedUid)
+            end
+            if type(sample) == "table" then
+                plantReq = tonumber(sample.craftingSkillRequirement) or tonumber(sample.skillReq) or 0
+                if plantReq <= 0 and type(sample.bonuses) == "table" then
+                    plantReq = tonumber(sample.bonuses[9]) or 0
+                end
+            end
+        end
+        if SM and SM.GetSeedUidsForPlant then
+            local linked = SM.GetSeedUidsForPlant(plantOrSeedUid) or {}
+            for i = 1, #linked do
+                local h = headroomOf(linked[i])
+                if h > headroom then
+                    headroom = h
+                end
+            end
+        end
+        if plantReq > 0 and SM and SM.GetGenusLadderForSpec then
+            local ladder = SM.GetGenusLadderForSpec(spec or {
+                uid = plantOrSeedUid,
+                skillLevel = plantReq,
+            })
+            if type(ladder) == "table" and type(ladder.rungs) == "table" then
+                for i = 1, #ladder.rungs do
+                    local rung = ladder.rungs[i]
+                    if (tonumber(rung.skillReq) or 0) == plantReq then
+                        local h = headroomOf(rung.seedUid)
+                        if h > headroom then
+                            headroom = h
+                        end
+                        break
+                    end
+                end
+            end
+        end
     end
     if headroom <= 0 then
         return 0

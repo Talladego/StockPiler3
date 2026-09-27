@@ -11,6 +11,7 @@
 --   Prefer exact Apo floor so Cult feeds Apo instead of racing ahead.
 --   Fill every unlocked plot (1 / 50 / 100 / 150 -> 1-4 plots).
 --   Prefer a bag seed line already at buffer (or plant-refinable to it);
+--   fill every empty plot (planting preserves seed-buffer credit via ground).
 --   AutoBuy tops up SeedDeficit (plots + buffer) even when bags hold some seeds.
 --
 -- Apo (when Skill up Apo is on and watches allow idle SkillUp):
@@ -613,6 +614,180 @@ local function CanUseCraftingSample(sample)
     return true
 end
 
+--- In-bag refinable plant for a SkillUp seed line (PrimaryPlant / harvest / name+skill).
+--- Needed when grow products never linked the same-tier seed (crit plant sits on
+--- ladder with s0) so PrimaryPlantForSeed returns 0 while the plant is in bags.
+--- Cached per inventory snapGen — must not full-scan bags inside PickBestBagSeed
+--- (seen: Orchestrator.Tick + PickPlantCandidate ~1s every 5s).
+local _findBagPlantCache = {}
+local _findBagPlantCacheGen = nil
+
+local function FindBagPlantForSeed(seedUid, seedItem)
+    seedUid = tonumber(seedUid) or 0
+    if seedUid <= 0 then
+        return 0
+    end
+    local Inv = StockPiler3.Inventory
+    local snapGen = Inv and Inv.GetSnapGen and Inv.GetSnapGen() or nil
+    if snapGen == nil then
+        snapGen = StockPiler3.Knowledge and StockPiler3.Knowledge.GetGen
+            and StockPiler3.Knowledge.GetGen() or 0
+    end
+    if _findBagPlantCacheGen ~= snapGen then
+        _findBagPlantCache = {}
+        _findBagPlantCacheGen = snapGen
+    end
+    local cached = _findBagPlantCache[seedUid]
+    if cached ~= nil then
+        return cached
+    end
+    local SM = StockPiler3.SeedMap
+    local Refine = StockPiler3.Refine
+    local Items = StockPiler3.Items
+    local function refinableCount(pUid)
+        pUid = tonumber(pUid) or 0
+        if pUid <= 0 or not (Refine and Refine.CountRefinablePlants) then
+            return 0
+        end
+        local spec = Items and Items.ToSpec and Items.ToSpec(pUid) or nil
+        return tonumber(Refine.CountRefinablePlants(pUid, spec)) or 0
+    end
+    local function finish(pUid)
+        pUid = tonumber(pUid) or 0
+        _findBagPlantCache[seedUid] = pUid
+        return pUid
+    end
+    if SM and SM.PrimaryPlantForSeed then
+        local pUid = tonumber(SM.PrimaryPlantForSeed(seedUid)) or 0
+        if pUid > 0 and refinableCount(pUid) > 0 then
+            return finish(pUid)
+        end
+    end
+    if SM and SM.HarvestProducts then
+        local products = SM.HarvestProducts(seedUid) or {}
+        for i = 1, #products do
+            local pUid = tonumber(products[i] and products[i].uid) or 0
+            if pUid > 0 and refinableCount(pUid) > 0 then
+                return finish(pUid)
+            end
+        end
+    end
+    local seedReq = 0
+    local seedName = nil
+    if type(seedItem) == "table" then
+        seedReq = SeedSkillReq(seedItem)
+        seedName = seedItem.name
+    end
+    if seedReq < 1 and Items and Items.GetByUid then
+        local row = Items.GetByUid(seedUid)
+        if type(row) == "table" then
+            seedReq = SeedSkillReq(row)
+            if seedName == nil then
+                seedName = row.name
+            end
+        end
+    end
+    -- Cheap ladder plantUid (no bag walk). GetGenusLadder is Knowledge-gen cached.
+    if SM and SM.GetGenusLadder and seedReq >= 1 and seedName then
+        local genus = SM.GenusKeyFromName and SM.GenusKeyFromName(seedName) or ""
+        if genus ~= "" then
+            local ladder = SM.GetGenusLadder(genus)
+            if type(ladder) == "table" and type(ladder.rungs) == "table" then
+                for i = 1, #ladder.rungs do
+                    local rung = ladder.rungs[i]
+                    if (tonumber(rung.skillReq) or 0) == seedReq then
+                        local pUid = tonumber(rung.plantUid) or 0
+                        if pUid > 0 and refinableCount(pUid) > 0 then
+                            return finish(pUid)
+                        end
+                        break
+                    end
+                end
+            end
+        end
+    end
+    if not (Inv and Inv.ForEachItem) then
+        return finish(0)
+    end
+    local best = 0
+    Inv.ForEachItem(function(item)
+        if best > 0 or type(item) ~= "table" then
+            return
+        end
+        if SM and SM.IsBagSeedOrSpore and SM.IsBagSeedOrSpore(item) then
+            return
+        end
+        local pUid = tonumber(item.uniqueID) or 0
+        if pUid <= 0 or refinableCount(pUid) < 1 then
+            return
+        end
+        local matched = false
+        if SM and SM.GetSeedUidsForPlant then
+            local seeds = SM.GetSeedUidsForPlant(pUid) or {}
+            for i = 1, #seeds do
+                if (tonumber(seeds[i]) or 0) == seedUid then
+                    matched = true
+                    break
+                end
+            end
+        end
+        if not matched and seedReq >= 1 then
+            local pReq = SeedSkillReq(item)
+            if pReq < 1 and Items and Items.ToSpec then
+                local spec = Items.ToSpec(pUid)
+                pReq = tonumber(spec and spec.skillLevel) or 0
+            end
+            if pReq == seedReq and seedName and item.name and SM and SM.GenusKeyFromName then
+                local g = SM.GenusKeyFromName(seedName)
+                matched = g ~= "" and g == SM.GenusKeyFromName(item.name)
+            end
+        end
+        if matched then
+            best = pUid
+        end
+    end)
+    return finish(best)
+end
+
+--- Cheap plantUid for seed scoring (no inventory walk).
+local function LadderPlantUidForSeed(seedUid, seedItem, seedReq)
+    seedUid = tonumber(seedUid) or 0
+    seedReq = tonumber(seedReq) or 0
+    local SM = StockPiler3.SeedMap
+    if SM and SM.PrimaryPlantForSeed then
+        local pUid = tonumber(SM.PrimaryPlantForSeed(seedUid)) or 0
+        if pUid > 0 then
+            return pUid
+        end
+    end
+    if not (SM and SM.GetGenusLadder) or seedReq < 1 then
+        return 0
+    end
+    local seedName = type(seedItem) == "table" and seedItem.name or nil
+    if not seedName and StockPiler3.Items and StockPiler3.Items.GetByUid then
+        local row = StockPiler3.Items.GetByUid(seedUid)
+        seedName = row and row.name
+    end
+    if not seedName or not SM.GenusKeyFromName then
+        return 0
+    end
+    local genus = SM.GenusKeyFromName(seedName)
+    if genus == "" then
+        return 0
+    end
+    local ladder = SM.GetGenusLadder(genus)
+    if type(ladder) ~= "table" or type(ladder.rungs) ~= "table" then
+        return 0
+    end
+    for i = 1, #ladder.rungs do
+        local rung = ladder.rungs[i]
+        if (tonumber(rung.skillReq) or 0) == seedReq then
+            return tonumber(rung.plantUid) or 0
+        end
+    end
+    return 0
+end
+
 --- Best plantable main seed for Cult SkillUp (nil if none in bags).
 --- Prefers highest skillReq <= TargetMaxSkill; else next-best lower tier.
 --- Cult 200 + Apo SkillUp: still plant Apo-tier seeds (assist).
@@ -665,25 +840,24 @@ function SkillUp.PickBestBagSeed()
         if count <= 0 then
             return
         end
-        local plantUid = 0
-        if SM.PrimaryPlantForSeed then
-            plantUid = tonumber(SM.PrimaryPlantForSeed(uid)) or 0
-        end
+        local plantUid = LadderPlantUidForSeed(uid, item, req)
         local refinable = 0
         if plantUid > 0 and Refine and Refine.CountRefinablePlants then
             local spec = Items and Items.ToSpec and Items.ToSpec(plantUid) or nil
             refinable = tonumber(Refine.CountRefinablePlants(plantUid, spec)) or 0
         end
-        -- Prefer lines already at buffer (or plant-refinable to it) so cold-start
-        -- settles without thrashing between competing L1 mains.
+        -- Same-skillReq tie-break only (must stay < 1_000_000 so a higher rung
+        -- in bags always wins, even when buffer-short / no refinable plants).
+        -- Settled lower rungs used to score +50M and beat exact-tier after Apo
+        -- brewed away refinable plants while Milksap seeds remained in bags.
         local deficit = SkillUp.SeedDeficit and tonumber(SkillUp.SeedDeficit(uid)) or 0
         local settleBonus = 0
         if deficit <= 0 then
-            settleBonus = 50000000
+            settleBonus = 500000
         elseif refinable >= deficit then
-            settleBonus = 30000000
+            settleBonus = 300000
         elseif refinable > 0 then
-            settleBonus = 10000000 + math.min(refinable, 99) * 1000
+            settleBonus = 100000 + math.min(refinable, 99) * 100
         else
             settleBonus = math.max(0, 5000 - deficit * 10)
         end
@@ -691,10 +865,8 @@ function SkillUp.PickBestBagSeed()
         if SM.SeedReplantTier then
             tier = tonumber(SM.SeedReplantTier(uid)) or 1
         end
-        -- Prefer exact TargetMaxSkill (Apo floor when assisting) over lower rungs.
-        local exactBonus = (req == targetMax) and 100000000 or 0
-        -- Maximize skillReq under targetMax; then settle-ready; Eternal; count.
-        local score = exactBonus + (req * 1000000) + settleBonus + (tier * 10000) + count
+        -- Highest skillReq <= targetMax first; settle / Eternal / count tie-break.
+        local score = (req * 1000000) + settleBonus + (tier * 10000) + count
         if score > bestScore then
             bestScore = score
             best = {
@@ -812,11 +984,7 @@ function SkillUp.PickPlantJob()
     if US and US.PlantableSurplus then
         plantable = tonumber(US.PlantableSurplus(seedUid, bagSeeds, empty, { mode = "skillup" })) or 0
     elseif empty > 0 and bagSeeds > 0 then
-        if buffer > 0 and headroom > 0 then
-            plantable = math.min(bagSeeds, empty, headroom)
-        else
-            plantable = math.min(bagSeeds, empty)
-        end
+        plantable = math.min(bagSeeds, empty)
     end
     -- Never plant seeds still claimed by short enabled watches.
     local watchSeedNeed = SkillUp.WatchDemandReserve(seedUid)
@@ -987,8 +1155,8 @@ function SkillUp.PickRefineTarget()
     local pick = SkillUp.PickBestBagSeed()
     if type(pick) == "table" and (tonumber(pick.seedUid) or 0) > 0 then
         local plantUid = tonumber(pick.plantUid) or 0
-        if plantUid <= 0 and SM and SM.PrimaryPlantForSeed then
-            plantUid = tonumber(SM.PrimaryPlantForSeed(pick.seedUid)) or 0
+        if plantUid <= 0 then
+            plantUid = FindBagPlantForSeed(pick.seedUid, pick.item)
         end
         -- Prefer an in-bag harvest product for this seed when available.
         if SM and SM.HarvestProducts and (tonumber(pick.seedUid) or 0) > 0 then
@@ -1003,6 +1171,9 @@ function SkillUp.PickRefineTarget()
                     break
                 end
             end
+        end
+        if plantUid <= 0 then
+            plantUid = FindBagPlantForSeed(pick.seedUid, pick.item)
         end
         return {
             seedUid = tonumber(pick.seedUid) or 0,
@@ -1063,7 +1234,31 @@ function SkillUp.RefineUsesForTarget(target)
     if SM and SM.ResolveSeedUidForPlant then
         local resolved = tonumber(SM.ResolveSeedUidForPlant(plantUid, nil)) or 0
         if resolved > 0 then
-            seedUid = resolved
+            -- Never downgrade an explicit same/higher-tier target seed to a lower
+            -- crit-refine seed (83542 used to resolve to 84042 and waste L175 plants).
+            local function skillOf(uid)
+                uid = tonumber(uid) or 0
+                if uid <= 0 then
+                    return 0
+                end
+                local Items = StockPiler3.Items
+                if Items and Items.GetByUid then
+                    local row = Items.GetByUid(uid)
+                    if type(row) == "table" then
+                        return SeedSkillReq(row)
+                    end
+                end
+                return 0
+            end
+            local rReq = skillOf(resolved)
+            local tReq = skillOf(seedUid)
+            if seedUid <= 0 then
+                seedUid = resolved
+            elseif rReq > 0 and tReq > 0 and rReq < tReq then
+                -- keep target seedUid
+            else
+                seedUid = resolved
+            end
         end
     end
     local budget = SeedBudget(seedUid)
@@ -2531,15 +2726,67 @@ end
 --- Plants to hold before Apo SkillUp may brew - same rule as watch GrowReserve:
 --- seed-buffer headroom only (plus short-watch demand). When the seed buffer is
 --- full (headroom=0), plants are brewable surplus.
+--- Max headroom across: resolved seed, every grow/refine-linked seed for this
+--- plant, and the genus-ladder seed at the plant's skillReq. Crit plants often
+--- resolve to the lower planted seed (buffer met) while the true same-tier seed
+--- is still short — holding only the resolved seed let Apo brew the only plant.
 function SkillUp.PlantFeedstockReserve(seedUid, plantUid)
     seedUid = tonumber(seedUid) or 0
     plantUid = tonumber(plantUid) or 0
     local reserve = 0
-    if seedUid > 0 then
-        local budget = SeedBudget(seedUid)
-        reserve = tonumber(budget.headroom) or 0
-        if reserve < 0 then
-            reserve = 0
+    local function bumpFromSeed(uid)
+        uid = tonumber(uid) or 0
+        if uid <= 0 then
+            return
+        end
+        local budget = SeedBudget(uid)
+        local headroom = tonumber(budget.headroom) or 0
+        if headroom > reserve then
+            reserve = headroom
+        end
+    end
+    bumpFromSeed(seedUid)
+    if plantUid > 0 then
+        local SM = StockPiler3.SeedMap
+        local plantReq = 0
+        if StockPiler3.Items and StockPiler3.Items.ToSpec then
+            local spec = StockPiler3.Items.ToSpec(plantUid)
+            plantReq = tonumber(spec and spec.skillLevel) or 0
+        end
+        if plantReq <= 0 then
+            local Inv = StockPiler3.Inventory
+            local sample = Inv and Inv.GetSample and Inv.GetSample(plantUid)
+            if type(sample) ~= "table" and Inv and Inv.GetByUid then
+                sample = Inv.GetByUid(plantUid)
+            end
+            if type(sample) == "table" then
+                plantReq = tonumber(sample.craftingSkillRequirement) or tonumber(sample.skillReq) or 0
+                if plantReq <= 0 and type(sample.bonuses) == "table" then
+                    plantReq = tonumber(sample.bonuses[9]) or 0
+                end
+            end
+        end
+        local linked = SM and SM.GetSeedUidsForPlant and SM.GetSeedUidsForPlant(plantUid) or {}
+        if type(linked) == "table" then
+            for i = 1, #linked do
+                bumpFromSeed(linked[i])
+            end
+        end
+        if plantReq > 0 and SM and SM.GetGenusLadderForSpec then
+            local ladder = SM.GetGenusLadderForSpec({
+                uid = plantUid,
+                uniqueID = plantUid,
+                skillLevel = plantReq,
+            })
+            if type(ladder) == "table" and type(ladder.rungs) == "table" then
+                for i = 1, #ladder.rungs do
+                    local rung = ladder.rungs[i]
+                    if (tonumber(rung.skillReq) or 0) == plantReq then
+                        bumpFromSeed(rung.seedUid)
+                        break
+                    end
+                end
+            end
         end
     end
     local watchNeed = 0
@@ -3779,9 +4026,38 @@ local function TradeSkillIcon(kind)
     return Caps and Caps.GetCultivationIcon and tonumber(Caps.GetCultivationIcon()) or 0
 end
 
+--- True when the Cult SkillUp watch row should mount.
+--- Active while Cult or Apo SkillUp is enabled; or Cult/Apo skill blips to 0
+--- with CharRow toggle still on. Hidden at Cult/Apo 200 (toggles may linger).
+function SkillUp.WantCultWatchRow()
+    if SkillUp.IsCultEnabled() == true or SkillUp.IsApoEnabled() == true then
+        return true
+    end
+    local cult = SkillUp.GetCultSkill()
+    local apo = SkillUp.GetApoSkill()
+    if cult <= 0 and SkillUp.IsCultToggleOn() == true then
+        return true
+    end
+    if apo <= 0 and SkillUp.IsApoToggleOn() == true then
+        return true
+    end
+    return false
+end
+
+--- True when the Apo SkillUp watch row should mount.
+function SkillUp.WantApoWatchRow()
+    if SkillUp.IsApoEnabled() == true then
+        return true
+    end
+    local apo = SkillUp.GetApoSkill()
+    if apo <= 0 and SkillUp.IsApoToggleOn() == true then
+        return true
+    end
+    return false
+end
+
 local function BuildCultWatchStatusRow()
-    -- Mount from CharRow toggles so combat/scenario skill blips cannot hide the row.
-    if SkillUp.IsCultToggleOn() ~= true and SkillUp.IsApoToggleOn() ~= true then
+    if SkillUp.WantCultWatchRow() ~= true then
         return nil
     end
     local cult = SkillUp.GetCultSkill()
@@ -3954,8 +4230,7 @@ local function ApoStatusFromWhy(why)
 end
 
 local function BuildApoWatchStatusRow()
-    -- Mount from CharRow toggle so combat/scenario skill blips cannot hide the row.
-    if SkillUp.IsApoToggleOn() ~= true then
+    if SkillUp.WantApoWatchRow() ~= true then
         return nil
     end
     local apo = SkillUp.GetApoSkill()
@@ -4102,19 +4377,13 @@ local function BuildApoWatchStatusRow()
 end
 
 --- True when ephemeral SkillUp rows should appear on the Watch tab.
---- Follows CharRow toggles (not live skill blips) so rows stay mounted in combat.
+--- Enabled SkillUp (under cap) or transient skill blip; not at Cult/Apo 200.
 function SkillUp.ShouldShowWatchStatus()
-    if SkillUp.IsCultToggleOn() == true then
-        return true
-    end
-    if SkillUp.IsApoToggleOn() == true then
-        return true
-    end
-    return false
+    return SkillUp.WantCultWatchRow() == true or SkillUp.WantApoWatchRow() == true
 end
 
 --- 0-2 ephemeral Watch-tab rows (Cult / Apo). Never written to WatchStore.
---- Always built when the matching toggle is on; Status shows waiting vs active.
+--- Built while SkillUp is active (or skill blip); Status shows waiting vs active.
 function SkillUp.BuildWatchStatusRows()
     local rows = {}
     local cult = BuildCultWatchStatusRow()

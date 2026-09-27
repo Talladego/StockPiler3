@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.242** — Clear stuck brew on zone load; rebind Watch list mid-brew so SkillUp rows return.
+**Version 0.3.256** — Hide SkillUp watch rows at Cult/Apo 200; stop mid-brew Watch list rebinds that flickered rows.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -132,6 +132,20 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.256 | SkillUp watch rows hide at 200; mid-brew Watch Refresh only if list empty (no flicker) |
+| 0.3.255 | SkillUp PickBestBagSeed: skillReq primary; settle bonus <1M (no L150 over L175 in bags) |
+| 0.3.254 | Brew ForceBrewUiRefresh: skip WatchRows mid-load/perform; settle hold returns without paint |
+| 0.3.253 | SkillUp fill all empty plots from bag (no keep-1); buffer guarded by PreferRefine + Apo reserve |
+| 0.3.252 | SkillUp: keep>=1 seed while buffer-short; FindBagPlant cached + not in PickBestBagSeed loop |
+| 0.3.251 | SkillUp FindBagPlantForSeed; ladder bag-seed heal; refine never downgrades target seed tier |
+| 0.3.250 | SkillUp PlantableSurplus: fill empties when buffer met; hold only while headroom>0 |
+| 0.3.249 | Ladder/Resolve: never pin lower seed on higher plant rung; Apo/GrowReserve max linked+ladder headroom |
+| 0.3.248 | SkillUp: no plant into seed-buffer cushion; ResolveSeed same-skillReq; Apo reserve max linked same-tier headroom |
+| 0.3.247 | Empty intent cache busts on snapGen/harvest only (no 5s CollectIntents poll) |
+| 0.3.246 | Skip idle Orch.Tick (no Perf); BufferFlags struct-hold same frame; plan warm-hold retry before cold WarmHave |
+| 0.3.245 | Brew-session BufferFlags snapGen hold; skip SkillUp refresh mid-brew; one PickPlantCandidate/frame |
+| 0.3.244 | Defer BagFlush while Brew._job; UpdateRows once/frame in ForceBrew; skip Orch during load |
+| 0.3.243 | Footer/Macro one-paint-per-frame; BufferFlags snapGen-safe + no snap invalidate; orch PeekFreshBufferPending |
 | 0.3.242 | Abort stuck brew on LOADING_END; mid-brew Watch rebinds when planGen moves (SkillUp rows) |
 | 0.3.241 | Account.vendorItems session-only; strip legacy SV blob on load |
 | 0.3.240 | SkillUp rows mount from CharRow toggles; never wipe sticky on empty pulses; persist last cult/apo |

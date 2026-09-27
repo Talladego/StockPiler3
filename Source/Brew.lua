@@ -830,8 +830,14 @@ local function RequestFooterRefresh()
 end
 
 --- Force footer + macro tint even when CanBrewNow is unchanged (mid-craft greying).
-local function ForceBrewUiRefresh()
+--- opts.rows == false: Footer/Macro only (no Watch list paint). Mid-load and
+--- CraftingUpdated storms used to ForceBrew → WatchRows every tick (~250-340ms
+--- per SkillUp brew with Footer x3 + WatchRows x2-3).
+local function ForceBrewUiRefresh(opts)
+    opts = type(opts) == "table" and opts or {}
     Brew.InvalidateCanBrewCache()
+    local frame = tonumber(StockPiler3.FrameCounter) or 0
+    Brew._brewUiForcedFrame = frame
     RequestFooterRefresh()
     -- Row Load/Brew chrome must flip as soon as session phase changes.
     if StockPiler3TabWatch and StockPiler3TabWatch.InvalidateBrewChrome then
@@ -840,15 +846,35 @@ local function ForceBrewUiRefresh()
     if StockPiler3.Ui and StockPiler3.Ui.MarkWatchUiDirty then
         StockPiler3.Ui.MarkWatchUiDirty()
     end
-    if DoesWindowExist("StockPiler3Window")
+    local wantRows = opts.rows ~= false
+    -- Load-job slot ticks: Footer/Macro only. Paint rows when _job clears (loaded).
+    if wantRows and type(Brew._job) == "table" then
+        wantRows = false
+    end
+    -- Greying after Perform: Footer/Macro only; full rows after brew completes.
+    if wantRows and Brew._awaitingBrewComplete == true and opts.rows ~= true then
+        wantRows = false
+    end
+    -- At most one UpdateRows per FrameCounter. Later same-frame ForceBrew calls
+    -- only invalidate/dirty; a pending flag lets the first paint wait until we
+    -- actually run rows once (invalidate-before-paint on that call).
+    if wantRows
+        and DoesWindowExist("StockPiler3Window")
         and WindowGetShowing("StockPiler3Window") == true
         and StockPiler3TabWatch
         and StockPiler3TabWatch.UpdateRows
     then
-        StockPiler3TabWatch.UpdateRows()
+        if Brew._brewRowsPaintFrame ~= frame then
+            Brew._brewRowsPaintFrame = frame
+            StockPiler3TabWatch.UpdateRows()
+        end
     end
     if StockPiler3Window and StockPiler3Window.SyncActionReadiness then
         StockPiler3Window.SyncActionReadiness({ immediate = true })
+        -- Immediate sync already painted; clear pending so end-of-frame flush
+        -- does not SyncActionReadiness again with the same inputs.
+        StockPiler3Window._footerRefreshPending = false
+        StockPiler3Window._footerSyncAllowDeferred = false
     elseif StockPiler3.Macro and StockPiler3.Macro.RefreshMacroButtonAppearance then
         StockPiler3.Macro.RefreshMacroButtonAppearance({
             canBrew = Brew.CanBrewNow() == true,
@@ -1921,11 +1947,16 @@ function Brew.OnCraftingUpdated()
             local a = AA()
             LogBrew("crafting-updated settle hold reason=" .. tostring(why)
                 .. " SuccessChance=" .. tostring(a and a.SuccessChance and a.SuccessChance() or "?"))
+            -- Do not ForceBrew here - settle fires 3-5 CraftingUpdateds per load
+            -- (empty-board / bad-craft-state / engine-will-fail) and each paint
+            -- stacked Footer + WatchRows on SkillUp brew spikes.
+            return
         end
     end
     -- Re-tint macros: engine greys ActionButtons during craft even when CanBrewNow
     -- stays true, and SyncActionReadiness would otherwise skip as "unchanged".
-    ForceBrewUiRefresh()
+    -- Footer/Macro only - WatchRows wait for idle/after-brew refresh.
+    ForceBrewUiRefresh({ rows = false })
 end
 
 --- After a brew completes: sync live stock; unload when target met or no longer Ready.

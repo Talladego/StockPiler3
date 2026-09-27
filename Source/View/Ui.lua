@@ -235,15 +235,19 @@ function Ui.FlushWatchUiIfDirty()
     local Orch = StockPiler3.Orchestrator
     local brewSessionActive = Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true
     -- Mid-brew: hold full RefreshWatch; chrome via ForceBrewUiRefresh; ~1s Stock/Status catch-up.
-    -- Still rebind listData when planGen moves — otherwise a stuck brew session (e.g. scenario
-    -- load) leaves an empty ListBox while PlanSnapshot already has SkillUp rows again.
+    -- Rebind listData only when the ListBox is empty (stuck session / scenario load).
+    -- planGen bumps every brew cycle otherwise caused SkillUp row flicker/disappear.
     if brewSessionActive then
+        local listData = StockPiler3TabWatch and StockPiler3TabWatch.listData
+        local listEmpty = type(listData) ~= "table" or #listData == 0
         local planGen = CurrentPlanGen()
         local planChanged = planGen ~= (tonumber(Ui._watchUiLastPlanGen) or 0)
         if planChanged then
             Ui._watchUiLastPlanGen = planGen
-            if StockPiler3TabWatch and StockPiler3TabWatch.Refresh then
+            if listEmpty and StockPiler3TabWatch and StockPiler3TabWatch.Refresh then
                 StockPiler3TabWatch.Refresh({ forcePlan = false })
+            elseif StockPiler3TabWatch and StockPiler3TabWatch.UpdateRows then
+                StockPiler3TabWatch.UpdateRows()
             end
             -- Keep dirty so a full flush runs when the session ends.
             return
@@ -268,13 +272,16 @@ function Ui.FlushWatchUiIfDirty()
             return
         end
         Ui._watchUiBrewCatchupAt = now
-        local listData = StockPiler3TabWatch and StockPiler3TabWatch.listData
+        listData = StockPiler3TabWatch and StockPiler3TabWatch.listData
+        listEmpty = type(listData) ~= "table" or #listData == 0
         local snap = StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Get
             and StockPiler3.PlanSnapshot.Get()
         local planRows = type(snap) == "table" and snap.rows or nil
         if type(planRows) == "table" and planRows ~= listData then
-            if StockPiler3TabWatch and StockPiler3TabWatch.Refresh then
+            if listEmpty and StockPiler3TabWatch and StockPiler3TabWatch.Refresh then
                 StockPiler3TabWatch.Refresh({ forcePlan = false })
+            elseif StockPiler3TabWatch and StockPiler3TabWatch.UpdateRows then
+                StockPiler3TabWatch.UpdateRows()
             end
             return
         end

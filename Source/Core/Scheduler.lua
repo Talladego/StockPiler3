@@ -165,6 +165,14 @@ local function FlushBagIfDue()
         Sch._bagAt = Now() + Sch.BAG_COALESCE_SEC
         return false
     end
+    -- Brew load AddItem storms enqueue flushes; do not Inv.Flush on the same
+    -- Update as AdvanceLoadJob (libperf Brew.LoadJob + BagFlush pileup).
+    -- Keep _bagDue; do not extend _bagAt so flush runs on the first eligible
+    -- Update after the job clears. Load uses live BagAdapter.
+    local Brew = StockPiler3.Brew
+    if Brew and type(Brew._job) == "table" then
+        return false
+    end
     if Now() < (tonumber(Sch._bagAt) or 0) then
         return false
     end
@@ -239,9 +247,22 @@ local function RebuildPlanIfDue()
             if (Now() - holdStart) < holdMax then
                 return false
             end
+            -- Hold expired still cold: re-enqueue prewarm and extend hold (avoid sync
+            -- Build.WarmHave hitch) up to a few retries, then fall through.
+            local retries = tonumber(Sch._planWarmHoldRetries) or 0
+            local maxRetries = 2
+            if retries < maxRetries then
+                Sch._planWarmHoldRetries = retries + 1
+                Sch._planWarmHoldAt = Now()
+                RequestCachePrewarm("plan-hold-warm-retry")
+                if FW and FW.IsPrewarmBusy and FW.IsPrewarmBusy() == true then
+                    return false
+                end
+            end
         end
     end
     Sch._planWarmHoldAt = 0
+    Sch._planWarmHoldRetries = 0
     Sch._planDue = false
     Sch._planAt = 0
     Sch._lastPlanBuiltAt = Now()
@@ -367,9 +388,9 @@ local function OnInventorySnapshot()
             Sch._autoGrowFast = true
         end
     end
-    if Refine and Refine.InvalidateBufferFlags then
-        Refine.InvalidateBufferFlags()
-    end
+    -- Do not InvalidateBufferFlags on every snap: BufferFlagsCacheKey includes snapGen,
+    -- so the next real read rebuilds on key mismatch. PeekFreshBufferPending treats
+    -- stale/nil as unknown (orch falls through to full check).
     Sch.MarkWatchUiDirty()
 end
 
@@ -820,6 +841,12 @@ function Sch.OnUpdate(timeElapsed)
         end
         local skipOrch = Sch._skipOrchThisFrame == true
         Sch._skipOrchThisFrame = false
+        -- Skip Orch while brew load job runs (AddItem path). Keep Orch when
+        -- phase=loaded with no job so ProbeStuckAutoLoaded still ticks.
+        local Brew = StockPiler3.Brew
+        if Brew and type(Brew._job) == "table" then
+            skipOrch = true
+        end
         if not didHeavy and not skipOrch
             and StockPiler3.Orchestrator and StockPiler3.Orchestrator.Tick
         then

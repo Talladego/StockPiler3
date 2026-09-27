@@ -3468,9 +3468,9 @@ local function BuildWatchRows(ctx)
             end
         end
         -- Full rebuild can miss SkillUp while tradeSkills briefly read 0. Carry
-        -- prior ephemeral rows when CharRow toggles are still on.
-        local needCult = SkillUp.IsCultToggleOn and SkillUp.IsCultToggleOn() == true
-        local needApo = SkillUp.IsApoToggleOn and SkillUp.IsApoToggleOn() == true
+        -- prior ephemeral rows only while SkillUp still wants them (not at cap).
+        local needCult = SkillUp.WantCultWatchRow and SkillUp.WantCultWatchRow() == true
+        local needApo = SkillUp.WantApoWatchRow and SkillUp.WantApoWatchRow() == true
         if needCult or needApo then
             local haveCult, haveApo = false, false
             for i = 1, #rows do
@@ -3700,18 +3700,16 @@ local function RefreshSkillUpWatchRows(rows, opts)
                     end
                 end
             else
-                -- Ephemeral no longer emitted (arrive done / Cult-max buffer full /
-                -- SkillUp off or at cap): drop the row instead of leaving a zombie.
-                -- Do not drop SkillUp rows on a transient empty Build (combat/scenario
-                -- tradeSkill blip) while the matching toggle is still on.
+                -- Ephemeral no longer emitted (arrive done / SkillUp off or at cap):
+                -- drop the row instead of leaving a zombie. Keep only on a transient
+                -- empty Build (combat/scenario skill blip) via Want*WatchRow.
                 local keepSkillUp = false
                 if row.skillUp == true and SkillUp then
                     local kind = tostring(row.skillUpKind or "")
                     if kind == "apo" then
-                        keepSkillUp = SkillUp.IsApoToggleOn and SkillUp.IsApoToggleOn() == true
+                        keepSkillUp = SkillUp.WantApoWatchRow and SkillUp.WantApoWatchRow() == true
                     elseif kind == "cult" then
-                        keepSkillUp = (SkillUp.IsCultToggleOn and SkillUp.IsCultToggleOn() == true)
-                            or (SkillUp.IsApoToggleOn and SkillUp.IsApoToggleOn() == true)
+                        keepSkillUp = SkillUp.WantCultWatchRow and SkillUp.WantCultWatchRow() == true
                     end
                 end
                 if keepSkillUp then
@@ -3759,12 +3757,14 @@ local function PatchWatchRowsLiveCounts(rows, opts)
         allowWarmHave = false
     end
     local Brew = StockPiler3.Brew
+    local brewSessionActive = false
     if Brew and Brew.GetSession then
         local session = Brew.GetSession()
         if type(session) == "table"
             and (session.phase == "loading" or session.phase == "loaded")
         then
             allowWarmHave = false
+            brewSessionActive = true
         end
     end
     local snapGen = CurrentSnapGen()
@@ -3937,7 +3937,11 @@ local function PatchWatchRowsLiveCounts(rows, opts)
     end
     -- SkillUp rows are not count-patched above; rebuild status so waiting → planting
     -- flips when watches stock without a full plan rebuild.
-    RefreshSkillUpWatchRows(rows, { syncSnapshot = syncSnapshot })
+    -- Mid-brew: skip — SeedBufferOk → BufferFlags after every ApplySlots (libperf hitch).
+    -- ForceBrew / post-session full flush refreshes SkillUp status.
+    if not brewSessionActive then
+        RefreshSkillUpWatchRows(rows, { syncSnapshot = syncSnapshot })
+    end
     -- Shared contest: mat buys (flasks) often leave potion deficit/craftable unchanged,
     -- so contestDirty alone misses clearing craftableShared / Buy-flasks paint.
     local needSharedPolish = contestDirty

@@ -104,6 +104,14 @@ local function HasAutoGrowWork()
     if Refine and Refine._refineDirty == true then
         return true
     end
+    -- Freshness-aware peek: only trust a hit whose cache key still matches.
+    -- Nil/stale falls through to full HasPendingBufferRefine (may rebuild).
+    if Refine and Refine.PeekFreshBufferPending then
+        local peeked = Refine.PeekFreshBufferPending()
+        if peeked ~= nil then
+            return peeked == true
+        end
+    end
     return HasPendingBufferRefine()
 end
 
@@ -256,6 +264,29 @@ function Orch.Tick()
     if Orch._inTick == true then
         return
     end
+
+    -- Quiet idle: skip entirely (no Perf.Begin) when nothing to do.
+    -- Brew session still ticks for ProbeStuckAutoLoaded.
+    if Orch.IsBrewSessionActive() ~= true and Orch.IsHarvestActive() ~= true then
+        local buyNeed = HasAutoBuyWork()
+        local Watch = StockPiler3.Watch
+        local autoGrowOn = Watch and Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() == true
+        if not autoGrowOn then
+            if buyNeed ~= true then
+                return
+            end
+        elseif HasAutoGrowWork() ~= true and buyNeed ~= true then
+            local Sch = StockPiler3.Scheduler
+            if Sch and Sch.SetAutoGrowIdle then
+                Sch.SetAutoGrowIdle(true)
+            end
+            if Orch.Phase ~= "idle" then
+                SetPhase("idle", "idle-grow-quiet")
+            end
+            return
+        end
+    end
+
     Orch._inTick = true
 
     local ok, err = pcall(Orch._TickBody)

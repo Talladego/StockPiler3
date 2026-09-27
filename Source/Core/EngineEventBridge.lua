@@ -145,6 +145,12 @@ function Bridge.OnCraftingUpdated()
     if StockPiler3.Brew and StockPiler3.Brew.OnCraftingUpdated then
         StockPiler3.Brew.OnCraftingUpdated()
     end
+    -- Brew.ForceBrewUiRefresh already synced footer/macro this frame.
+    local Brew = StockPiler3.Brew
+    local frame = tonumber(StockPiler3.FrameCounter) or 0
+    if Brew and tonumber(Brew._brewUiForcedFrame) == frame and frame > 0 then
+        return
+    end
     if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
         StockPiler3Window.RequestFooterRefresh()
     end

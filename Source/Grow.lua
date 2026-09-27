@@ -1689,6 +1689,7 @@ function Grow.GetPlantJob()
     end
     local job = Grow.PickPlantCandidate()
     Grow.MarkPlantJobProbed(job)
+    Grow._plantPickFrame = tonumber(StockPiler3.FrameCounter) or 0
     return job
 end
 
@@ -1808,7 +1809,12 @@ function Grow.IssuePlantOne(opId)
     end
 
     local job = Grow.GetPlantJob()
-    if job == nil and Grow.HasEmptyPlot() and Grow._commitForceCleared ~= true then
+    -- One PickPlantCandidate per FrameCounter: Orch already probed this tick; do not
+    -- InvalidatePlantQueue + re-Pick (PickPlantCandidate x2 next to CollectIntents).
+    local frame = tonumber(StockPiler3.FrameCounter) or 0
+    if job == nil and Grow.HasEmptyPlot() and Grow._commitForceCleared ~= true
+        and Grow._plantPickFrame ~= frame
+    then
         Grow.InvalidatePlantQueue({ force = true, keepCommitForceCleared = true })
         Grow._commitForceCleared = true
         job = Grow.GetPlantJob()

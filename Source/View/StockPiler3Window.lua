@@ -68,10 +68,14 @@ function StockPiler3Window.RequestFooterRefresh()
 end
 
 --- Sync Harvest/Brew readiness: macros always; footer chrome only when window is open.
+--- At most one full Footer/Macro paint per FrameCounter. Later same-frame callers store
+--- the latest canHarvest/canBrew; if those change after the first paint, one deferred
+--- flush is allowed so readiness is not dropped.
 function StockPiler3Window.SyncActionReadiness(opts)
     opts = type(opts) == "table" and opts or {}
     local immediate = opts.immediate == true
     local Perf = StockPiler3.Perf
+    local frame = tonumber(StockPiler3.FrameCounter) or 0
 
     local windowOpen = DoesWindowExist("StockPiler3Window")
         and WindowGetShowing("StockPiler3Window") == true
@@ -94,6 +98,20 @@ function StockPiler3Window.SyncActionReadiness(opts)
     end
     local canClearWatches = enabledWatches > 0
 
+    -- Same-frame coalesce: first call paints; later calls only re-queue if inputs moved.
+    if StockPiler3Window._footerSyncFrame == frame and frame > 0 then
+        local prevH = StockPiler3Window._footerCanHarvest
+        local prevB = StockPiler3Window._footerCanBrew
+        StockPiler3Window._footerCanHarvest = canHarvest
+        StockPiler3Window._footerCanBrew = canBrew
+        StockPiler3Window._footerCanClearWatches = canClearWatches
+        if prevH ~= canHarvest or prevB ~= canBrew then
+            StockPiler3Window._footerRefreshPending = true
+            StockPiler3Window._footerSyncAllowDeferred = true
+        end
+        return canHarvest, canBrew
+    end
+
     local appearanceKey = tostring(canHarvest) .. ":" .. tostring(canBrew) .. ":"
         .. tostring(canClearWatches) .. ":" .. tostring(showClearWatches)
     local unchanged = StockPiler3Window._footerWindowOpen == windowOpen
@@ -110,6 +128,7 @@ function StockPiler3Window.SyncActionReadiness(opts)
             or StockPiler3.Macro._lastAppearanceKey == nil
             or StockPiler3.Macro._lastAppearanceKey == appearanceKey
         then
+            StockPiler3Window._footerSyncFrame = frame
             return canHarvest, canBrew
         end
     end
@@ -198,6 +217,9 @@ function StockPiler3Window.SyncActionReadiness(opts)
         end
     end
 
+    StockPiler3Window._footerSyncFrame = frame
+    StockPiler3Window._footerSyncAllowDeferred = false
+
     if Perf and Perf.End then
         Perf.End("Footer")
     end
@@ -215,6 +237,14 @@ function StockPiler3Window.FlushPendingFooterRefresh()
     if Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true then
         return
     end
+    -- Same-frame: skip flush after an immediate Sync unless readiness inputs moved.
+    local frame = tonumber(StockPiler3.FrameCounter) or 0
+    if StockPiler3Window._footerSyncFrame == frame and frame > 0
+        and StockPiler3Window._footerSyncAllowDeferred ~= true
+    then
+        StockPiler3Window._footerRefreshPending = false
+        return
+    end
     local RP = StockPiler3.RefinePipeline
     if RP and RP.HasOutstanding and RP.HasOutstanding() == true then
         return
@@ -229,6 +259,9 @@ function StockPiler3Window.FlushPendingFooterRefresh()
         end
     end
     StockPiler3Window._footerRefreshPending = false
+    StockPiler3Window._footerSyncAllowDeferred = false
+    -- Reset frame latch so deferred flush can paint once with latest inputs.
+    StockPiler3Window._footerSyncFrame = nil
     StockPiler3Window.SyncActionReadiness()
     if StockPiler3.HarvestTooltip and StockPiler3.HarvestTooltip.TickLive then
         StockPiler3.HarvestTooltip.TickLive()

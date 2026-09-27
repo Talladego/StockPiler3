@@ -343,7 +343,7 @@ end
 
 --- Seeds still needed for planting / AutoBuy.
 --- mode "climb" (default): with buffer on, buy to (buffer + empty) so climb surplus exists.
---- mode "skillup": max(headroom, empty-plot need) - SkillUp fills all plots.
+--- mode "skillup": max(headroom, empty-plot need) - AutoBuy / refine target only.
 function US.SeedDeficit(seedUid, mode)
     seedUid = tonumber(seedUid) or 0
     mode = tostring(mode or "climb")
@@ -372,7 +372,10 @@ end
 --- How many bag seeds may be planted without dipping the keep cushion.
 --- opts.mode "climb" (default): L1 prefers buffer but never stalls empty plots;
 --- intermediate rungs keep 0 (not vendor-restocked).
---- opts.mode "skillup": plant up to headroom when buffer-short, else fill empties.
+--- opts.mode "skillup": always fill empty plots (min bag, empty). Planting moves
+--- live→ground so seed-buffer *credit* is unchanged; PreferRefine + Apo plant
+--- reserve protect the cushion. A keep-1 while buffer-short left empty plots idle
+--- with 2 bag seeds (plantable=1) and stalled Cult XP.
 --- opts.intermediate: climb-only - treat as non-vendor intermediate rung.
 function US.PlantableSurplus(seedUid, bagSeeds, empty, opts)
     seedUid = tonumber(seedUid) or 0
@@ -386,10 +389,6 @@ function US.PlantableSurplus(seedUid, bagSeeds, empty, opts)
     local buffer = tonumber(budget.bufferMin) or 0
     local mode = tostring(opts.mode or "climb")
     if mode == "skillup" then
-        local headroom = tonumber(budget.headroom) or 0
-        if buffer > 0 and headroom > 0 then
-            return math.min(bagSeeds, empty, headroom)
-        end
         return math.min(bagSeeds, empty)
     end
     -- Climb: intermediate rungs keep 0 - those seeds are not at the vendor; holding
