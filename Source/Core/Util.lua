@@ -13,8 +13,9 @@ function U.NowSec()
             return t
         end
     end
-    if type(FrameCounter) == "number" then
-        return FrameCounter * 0.001
+    local fc = tonumber(StockPiler3.FrameCounter)
+    if fc ~= nil then
+        return fc * 0.001
     end
     return 0
 end

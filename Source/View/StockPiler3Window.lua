@@ -102,18 +102,29 @@ function StockPiler3Window.SyncActionReadiness(opts)
     if StockPiler3Window._footerSyncFrame == frame and frame > 0 then
         local prevH = StockPiler3Window._footerCanHarvest
         local prevB = StockPiler3Window._footerCanBrew
+        local prevClear = StockPiler3Window._footerCanClearWatches
+        local prevOnWatch = StockPiler3Window._footerOnWatch
+        local prevOnPotions = StockPiler3Window._footerOnPotions
+        local prevOnPlants = StockPiler3Window._footerOnPlants
         StockPiler3Window._footerCanHarvest = canHarvest
         StockPiler3Window._footerCanBrew = canBrew
         StockPiler3Window._footerCanClearWatches = canClearWatches
-        if prevH ~= canHarvest or prevB ~= canBrew then
+        StockPiler3Window._footerOnWatch = onWatch
+        StockPiler3Window._footerOnPotions = onPotions
+        StockPiler3Window._footerOnPlants = onPlants
+        if prevH ~= canHarvest or prevB ~= canBrew
+            or prevClear ~= canClearWatches
+            or prevOnWatch ~= onWatch
+            or prevOnPotions ~= onPotions
+            or prevOnPlants ~= onPlants
+        then
             StockPiler3Window._footerRefreshPending = true
             StockPiler3Window._footerSyncAllowDeferred = true
         end
         return canHarvest, canBrew
     end
 
-    local appearanceKey = tostring(canHarvest) .. ":" .. tostring(canBrew) .. ":"
-        .. tostring(canClearWatches) .. ":" .. tostring(showClearWatches)
+    local appearanceKey = tostring(canHarvest) .. ":" .. tostring(canBrew)
     local unchanged = StockPiler3Window._footerWindowOpen == windowOpen
         and StockPiler3Window._footerOnWatch == onWatch
         and StockPiler3Window._footerOnPotions == onPotions
@@ -124,9 +135,11 @@ function StockPiler3Window.SyncActionReadiness(opts)
     -- `immediate` must re-apply macro tint: ActionButton.UpdateEnabledState greys
     -- our macros mid-craft while CanBrewNow can stay true, so appearanceKey is unchanged.
     if unchanged and not immediate then
+        local macroKey = StockPiler3.Macro and StockPiler3.Macro.GetReadinessKey
+            and StockPiler3.Macro.GetReadinessKey()
         if StockPiler3.Macro == nil
-            or StockPiler3.Macro._lastAppearanceKey == nil
-            or StockPiler3.Macro._lastAppearanceKey == appearanceKey
+            or macroKey == nil
+            or macroKey == appearanceKey
         then
             StockPiler3Window._footerSyncFrame = frame
             return canHarvest, canBrew
@@ -165,8 +178,11 @@ function StockPiler3Window.SyncActionReadiness(opts)
     end
 
     local prevOnWatch = StockPiler3Window._footerOnWatch
+    local prevOnPotions = StockPiler3Window._footerOnPotions
+    local prevOnPlants = StockPiler3Window._footerOnPlants
     local prevHarvest = StockPiler3Window._footerCanHarvest
     local prevBrew = StockPiler3Window._footerCanBrew
+    local prevClear = StockPiler3Window._footerCanClearWatches
     StockPiler3Window._footerWindowOpen = windowOpen
     StockPiler3Window._footerOnWatch = onWatch
     StockPiler3Window._footerOnPotions = onPotions
@@ -175,8 +191,11 @@ function StockPiler3Window.SyncActionReadiness(opts)
     StockPiler3Window._footerCanBrew = canBrew
     StockPiler3Window._footerCanClearWatches = canClearWatches
     local readinessChanged = prevOnWatch ~= onWatch
+        or prevOnPotions ~= onPotions
+        or prevOnPlants ~= onPlants
         or prevHarvest ~= canHarvest
         or prevBrew ~= canBrew
+        or prevClear ~= canClearWatches
 
     if not readinessChanged and StockPiler3.Macro then
         local skipDrift = false
@@ -191,9 +210,9 @@ function StockPiler3Window.SyncActionReadiness(opts)
             end
         end
         if not skipDrift then
-            if StockPiler3.Macro._lastAppearanceKey ~= nil
-                and StockPiler3.Macro._lastAppearanceKey ~= appearanceKey
-            then
+            local macroKey = StockPiler3.Macro.GetReadinessKey
+                and StockPiler3.Macro.GetReadinessKey()
+            if macroKey ~= nil and macroKey ~= appearanceKey then
                 readinessChanged = true
             end
         end
@@ -231,10 +250,9 @@ function StockPiler3Window.FlushPendingFooterRefresh()
         return
     end
     local Sch = StockPiler3.Scheduler
-    if Sch and Sch.SkipUiHoldFooter and Sch.SkipUiHoldFooter() == true then
-        return
-    end
-    if Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true then
+    if Sch and Sch.SkipUiHoldFooter and Sch.SkipUiHoldFooter() == true
+        and StockPiler3Window._openPaintPending ~= true
+    then
         return
     end
     -- Same-frame: skip flush after an immediate Sync unless readiness inputs moved.
@@ -249,7 +267,8 @@ function StockPiler3Window.FlushPendingFooterRefresh()
     if RP and RP.HasOutstanding and RP.HasOutstanding() == true then
         return
     end
-    local brewJob = StockPiler3.Brew and type(StockPiler3.Brew._job) == "table"
+    local brewJob = StockPiler3.Brew and StockPiler3.Brew.IsLoadJobActive
+        and StockPiler3.Brew.IsLoadJobActive() == true
     if not brewJob then
         if Sch and Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
             return
@@ -290,15 +309,21 @@ function StockPiler3Window.Initialize()
     end
     if DoesWindowExist(CLEAR_WATCHES_WIN) then
         ButtonSetText(CLEAR_WATCHES_WIN, T("ui.clear_watches"))
+        WindowSetShowing(CLEAR_WATCHES_WIN, false)
     end
     if DoesWindowExist(HARVEST_WIN) then
         ButtonSetText(HARVEST_WIN, T("ui.harvest"))
+        WindowSetShowing(HARVEST_WIN, false)
         if StockPiler3.HarvestChrome and StockPiler3.HarvestChrome.EnsureHarvestActionBound then
             StockPiler3.HarvestChrome.EnsureHarvestActionBound()
         end
     end
+    if DoesWindowExist("StockPiler3WindowHarvestAction") then
+        WindowSetShowing("StockPiler3WindowHarvestAction", false)
+    end
     if DoesWindowExist(BREW_WIN) then
         ButtonSetText(BREW_WIN, T("ui.brew"))
+        WindowSetShowing(BREW_WIN, false)
     end
     for _, tab in ipairs(StockPiler3Window.Tabs) do
         ButtonSetText(tab.name, T(tab.labelKey))
@@ -306,6 +331,9 @@ function StockPiler3Window.Initialize()
     -- Defer Watch paint: sync SelectTab->RefreshActiveTab Flattened with WarmHave
     -- inside PatchWatchRowsLiveCounts on the same frame as CultivationUpdated x4.
     StockPiler3Window.SelectTab(StockPiler3Window.SelectedTab, { deferRefresh = true })
+    -- Reload with the window already open restores showing=true (savesettings)
+    -- without a later /sp3 OnShown. Arm the same Watch ListBox bind either way.
+    StockPiler3Window.BeginOpenPaint()
 end
 
 function StockPiler3Window.RefreshActiveTab()
@@ -336,11 +364,14 @@ function StockPiler3Window.FlushPendingListRepopulate()
     if WindowGetShowing("StockPiler3Window") ~= true then
         return
     end
-    StockPiler3Window._repopulatePending = false
-    if StockPiler3.Ui and StockPiler3.Ui.MarkWatchUiDirty then
-        StockPiler3.Ui.MarkWatchUiDirty()
+    if StockPiler3Window._openPaintPending == true
+        and StockPiler3Window.SelectedTab == StockPiler3Window.TABS_WATCH
+    then
         return
     end
+    StockPiler3Window._repopulatePending = false
+    -- First-open / tab-show must bind ListBox now. Remarking dirty left Watch empty
+    -- until a later flush that settle/prewarm often skipped.
     StockPiler3Window.RefreshActiveTab()
 end
 
@@ -375,6 +406,171 @@ function StockPiler3Window.PrimeTabListsIfNeeded()
     end
 end
 
+local function ForceAnchors(winName)
+    if type(winName) ~= "string" or winName == "" then
+        return
+    end
+    if not (DoesWindowExist and DoesWindowExist(winName)) then
+        return
+    end
+    if type(WindowForceProcessAnchors) ~= "function" then
+        return
+    end
+    if StockPiler3.Debug and StockPiler3.Debug.TryCall then
+        StockPiler3.Debug.TryCall("WindowForceProcessAnchors", WindowForceProcessAnchors, winName)
+    else
+        pcall(WindowForceProcessAnchors, winName)
+    end
+end
+
+local function WatchListPopulated()
+    local indices = SP3TabWatchList and SP3TabWatchList.PopulatorIndices
+    if type(indices) ~= "table" then
+        return false
+    end
+    local dataIndex = indices[1]
+    if dataIndex == nil then
+        return false
+    end
+    local list = StockPiler3TabWatch and StockPiler3TabWatch.listData
+    return type(list) == "table" and type(list[dataIndex]) == "table"
+end
+
+local function WatchListHasPaintedRow()
+    if not DoesWindowExist("SP3TabWatchListRow1") then
+        return false
+    end
+    return WindowGetShowing("SP3TabWatchListRow1") == true
+end
+
+local function WatchHasContent()
+    local Watch = StockPiler3.Watch
+    if Watch and Watch.CountEnabled and (tonumber(Watch.CountEnabled()) or 0) > 0 then
+        return true
+    end
+    if Watch and Watch.CountEnabledPlantWatches
+        and (tonumber(Watch.CountEnabledPlantWatches()) or 0) > 0
+    then
+        return true
+    end
+    local SkillUp = StockPiler3.SkillUp
+    if SkillUp and SkillUp.ShouldShowWatchStatus and SkillUp.ShouldShowWatchStatus() == true then
+        return true
+    end
+    local US = StockPiler3.UpgradeSeed
+    return US and US.ShouldShowWatchStatus and US.ShouldShowWatchStatus() == true
+end
+
+function StockPiler3Window.BeginOpenPaint()
+    StockPiler3Window._openPaintPending = true
+    StockPiler3Window._openPaintGaveUp = false
+    StockPiler3Window._openPaintAttempts = 0
+    StockPiler3Window._openPaintShownFrame = tonumber(StockPiler3.FrameCounter) or 0
+    StockPiler3Window._openPaintNeedKick = true
+    if StockPiler3.Ui then
+        StockPiler3.Ui._watchUiLastKey = nil
+        StockPiler3.Ui._watchUiFlushedAt = 0
+        if StockPiler3.Ui.MarkWatchUiDirty then
+            StockPiler3.Ui.MarkWatchUiDirty()
+        end
+    end
+    StockPiler3Window.RequestListRepopulate()
+end
+
+--- Bind Watch ListBox after the parent has a real size. Scheduler skip/settle
+--- must not cancel this — that left first-open empty until a tab click.
+function StockPiler3Window.FlushOpenPaint()
+    if StockPiler3Window._openPaintPending ~= true then
+        -- Reload while shown: OnShown may not run; catch an unpainted Watch tab.
+        if StockPiler3Window._openPaintGaveUp ~= true
+            and DoesWindowExist("StockPiler3Window")
+            and WindowGetShowing("StockPiler3Window") == true
+            and StockPiler3Window.SelectedTab == StockPiler3Window.TABS_WATCH
+            and WatchHasContent()
+            and not WatchListHasPaintedRow()
+        then
+            StockPiler3Window._openPaintPending = true
+            StockPiler3Window._openPaintNeedKick = true
+        else
+            return
+        end
+    end
+    if not DoesWindowExist("StockPiler3Window") then
+        return
+    end
+    if WindowGetShowing("StockPiler3Window") ~= true then
+        return
+    end
+    local attempts = (tonumber(StockPiler3Window._openPaintAttempts) or 0) + 1
+    StockPiler3Window._openPaintAttempts = attempts
+    if attempts > 300 then
+        StockPiler3Window._openPaintPending = false
+        StockPiler3Window._openPaintGaveUp = true
+        return
+    end
+    local frame = tonumber(StockPiler3.FrameCounter) or 0
+    local shownAt = tonumber(StockPiler3Window._openPaintShownFrame) or 0
+    if frame < shownAt + 2 then
+        ForceAnchors("StockPiler3Window")
+        ForceAnchors("StockPiler3WindowSocket")
+        ForceAnchors("SP3TabWatch")
+        ForceAnchors("SP3TabWatchList")
+        return
+    end
+    local selected = StockPiler3Window.SelectedTab
+    if selected ~= StockPiler3Window.TABS_WATCH then
+        StockPiler3Window.RefreshActiveTab()
+        StockPiler3Window._openPaintPending = false
+        return
+    end
+    -- Reload-restore can leave SP3TabWatchList at 0 size until a hide/show edge.
+    if StockPiler3Window._openPaintNeedKick == true or (attempts % 5) == 0 then
+        if StockPiler3TabWatch and StockPiler3TabWatch.KickListBoxLayout then
+            StockPiler3TabWatch.KickListBoxLayout()
+        elseif DoesWindowExist("SP3TabWatch") then
+            WindowSetShowing("SP3TabWatch", false)
+            WindowSetShowing("SP3TabWatch", true)
+        end
+        ForceAnchors("StockPiler3Window")
+        ForceAnchors("StockPiler3WindowSocket")
+        ForceAnchors("SP3TabWatch")
+        ForceAnchors("SP3TabWatchList")
+        StockPiler3Window._openPaintNeedKick = false
+    end
+    local listCount = 0
+    if StockPiler3TabWatch and type(StockPiler3TabWatch.listData) == "table" then
+        listCount = #StockPiler3TabWatch.listData
+    end
+    if WatchListPopulated() or (listCount > 0 and WatchListHasPaintedRow()) then
+        StockPiler3Window._openPaintPending = false
+        return
+    end
+    if StockPiler3TabWatch and StockPiler3TabWatch.Refresh then
+        StockPiler3TabWatch.Refresh({ forceRebind = true, forcePlan = false })
+    else
+        StockPiler3Window.RefreshActiveTab()
+    end
+    listCount = 0
+    if StockPiler3TabWatch and type(StockPiler3TabWatch.listData) == "table" then
+        listCount = #StockPiler3TabWatch.listData
+    end
+    if WatchListPopulated() or (listCount > 0 and WatchListHasPaintedRow()) then
+        StockPiler3Window._openPaintPending = false
+        return
+    end
+    if listCount <= 0 then
+        if not WatchHasContent() then
+            StockPiler3Window._openPaintPending = false
+        else
+            -- Plan not built yet; do not burn the attempt budget.
+            StockPiler3Window._openPaintAttempts = attempts - 1
+            StockPiler3Window._openPaintNeedKick = true
+        end
+        return
+    end
+    StockPiler3Window._openPaintNeedKick = true
+end
+
 function StockPiler3Window.OnShow()
     WindowUtils.OnShown()
     if StockPiler3.Inventory and StockPiler3.Inventory.RefreshAllIfNeeded then
@@ -382,26 +578,34 @@ function StockPiler3Window.OnShow()
             force = StockPiler3.Inventory.IsDirty and StockPiler3.Inventory.IsDirty(),
         })
     end
-    if StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Invalidate then
-        StockPiler3.PlanSnapshot.Invalidate()
-    end
     if StockPiler3TabWatch and StockPiler3TabWatch.RefreshSkillGates then
         StockPiler3TabWatch.RefreshSkillGates()
     end
     if StockPiler3TabWatch and StockPiler3TabWatch.ClearRowPaintCache then
         StockPiler3TabWatch.ClearRowPaintCache()
     end
-    if StockPiler3TabWatch and StockPiler3TabWatch.PrimeRowChrome then
-        StockPiler3TabWatch.PrimeRowChrome()
-    end
+    -- Allow PrimeTabListsIfNeeded to run on every show; first-open layout is stale
+    -- if we only primed while the window was still hidden.
+    StockPiler3Window._tabListsPrimed = false
     StockPiler3Window.PrimeTabListsIfNeeded()
-    -- Coalesced paint after FrameWork prewarm + PlanRebuild (never sync Flatten).
-    if StockPiler3.Ui and StockPiler3.Ui.MarkWatchUiDirty then
-        StockPiler3.Ui.MarkWatchUiDirty()
-    else
-        StockPiler3Window.RequestListRepopulate()
+    ForceAnchors("StockPiler3Window")
+    local tab = StockPiler3Window.Tabs[StockPiler3Window.SelectedTab]
+    if tab and DoesWindowExist(tab.window) then
+        -- Same hidden->shown edge as clicking the tab. Init already left the
+        -- selected child showing while this parent was hidden, so ListBox never laid out.
+        WindowSetShowing(tab.window, false)
+        WindowSetShowing(tab.window, true)
+        ForceAnchors(tab.window)
+        if tab.window == "SP3TabWatch" then
+            ForceAnchors("SP3TabWatchList")
+        end
     end
-    StockPiler3Window.RequestFooterRefresh()
+    -- Footer Harvest/Brew vs Clear Watches must apply on this show, not after
+    -- UPDATE_PROCESSED (XML defaults all three visible and they overlap).
+    StockPiler3Window._footerSyncFrame = nil
+    StockPiler3Window._footerWindowOpen = false
+    StockPiler3Window.SyncActionReadiness({ immediate = true })
+    StockPiler3Window.BeginOpenPaint()
 end
 
 function StockPiler3Window.OnClose()
@@ -435,7 +639,12 @@ function StockPiler3Window.ConfirmClearWatches()
     if StockPiler3TabWatch and StockPiler3TabWatch.Refresh then
         StockPiler3TabWatch.Refresh({ forcePlan = true })
     end
-    StockPiler3Window.RefreshFooterButtons()
+    -- Clear Watches must grey immediately after bulk clear.
+    if StockPiler3Window.SyncActionReadiness then
+        StockPiler3Window.SyncActionReadiness()
+    else
+        StockPiler3Window.RefreshFooterButtons()
+    end
 end
 
 function StockPiler3Window.OnClearWatches()
@@ -588,11 +797,17 @@ function StockPiler3Window.SelectTab(tabNumber, opts)
             end
         end
     end
+    -- Footer Harvest/Brew/Clear show-hide must track the tab on the click frame
+    -- (do not wait for UPDATE_PROCESSED FlushPendingFooterRefresh).
+    StockPiler3Window.SyncActionReadiness()
     if opts.deferRefresh == true then
         if StockPiler3.Ui and StockPiler3.Ui.MarkWatchUiDirty then
             StockPiler3.Ui.MarkWatchUiDirty()
         end
+        local parentOpen = DoesWindowExist("StockPiler3Window")
+            and WindowGetShowing("StockPiler3Window") == true
         if tabNumber == StockPiler3Window.TABS_WATCH
+            and parentOpen ~= true
             and StockPiler3TabWatch
             and StockPiler3TabWatch.PrimeRowChrome
         then

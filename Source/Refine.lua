@@ -128,13 +128,26 @@ local function IntentCacheKey()
         gardenGen = tonumber(Garden.GetPlanGen and Garden.GetPlanGen() or Garden.GetGen and Garden.GetGen()) or 0
     end
     -- NO snapGen. Include active cooldowns + buffer enabled.
+    -- Cult/Apo + TargetMaxSkill: empty-intent latch must bust on tier-floor
+    -- skill-ups (bags unchanged) or SkillUp refine stalls at 175/200 crossings.
     local bufferOn = Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true
+    local Caps = StockPiler3.TradeSkillCaps
+    local cult = Caps and Caps.GetCultSkill and tonumber(Caps.GetCultSkill()) or 0
+    local apo = Caps and Caps.GetApoSkill and tonumber(Caps.GetApoSkill()) or 0
+    local targetMax = 0
+    local SkillUp = StockPiler3.SkillUp
+    if SkillUp and SkillUp.TargetMaxSkill then
+        targetMax = tonumber(SkillUp.TargetMaxSkill()) or 0
+    end
     return table.concat({
         tostring(Watch and Watch.GetGen and Watch.GetGen() or 0),
         tostring(RP and RP.GetGen and RP.GetGen() or 0),
         tostring(gardenGen),
         SeedBufferCooldownCacheToken(),
         bufferOn and "1" or "0",
+        "tm:" .. tostring(targetMax),
+        "c:" .. tostring(cult),
+        "a:" .. tostring(apo),
     }, ":")
 end
 
@@ -498,18 +511,56 @@ local function LineConvertiblePending(line)
     return refinable > 0
 end
 
+local function PeekBufferFlagsSticky()
+    if type(Refine._bufferFlags) == "table" then
+        return Refine._bufferFlags
+    end
+    if type(Refine._bufferFlagsSticky) == "table" then
+        return Refine._bufferFlagsSticky
+    end
+    return { pending = false, short = false }
+end
+
 local function EnsureBufferFlagsCached()
     local Watch = StockPiler3.Watch
     if not (Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true) then
         Refine._bufferFlags = { pending = false, short = false }
+        Refine._bufferFlagsSticky = Refine._bufferFlags
         Refine._bufferFlagsKey = nil
         Refine._bufferFlagsStructKey = nil
         return Refine._bufferFlags
     end
+    -- Hard gate: only Scheduler EnsureBufferFlagsNow may rebuild (libperf Orch trails).
+    if Refine._allowBufferFlagsRebuild ~= true then
+        local Sch = StockPiler3.Scheduler
+        local quiet = Sch and (
+            (Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true)
+            or (Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true)
+            or (Sch.IsOrchDecisionHold and Sch.IsOrchDecisionHold() == true)
+        )
+        local Orch = StockPiler3.Orchestrator
+        local Brew = StockPiler3.Brew
+        local brewHold = (Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true)
+            or (Brew and Brew.IsBusy and Brew.IsBusy() == true)
+        if quiet or brewHold then
+            return PeekBufferFlagsSticky()
+        end
+        local key = BufferFlagsCacheKey()
+        if Refine._bufferFlagsKey == key and type(Refine._bufferFlags) == "table" then
+            return Refine._bufferFlags
+        end
+        local structKey = BufferFlagsStructuralKey()
+        if type(Refine._bufferFlags) == "table"
+            and Refine._bufferFlagsStructKey == structKey
+        then
+            return Refine._bufferFlags
+        end
+        Refine.RequestBufferFlagsRebuild()
+        return PeekBufferFlagsSticky()
+    end
     local key = BufferFlagsCacheKey()
     local frame = tonumber(StockPiler3.FrameCounter) or 0
-    -- Same-frame: after one rebuild, ignore snapGen-only misses (CollectIntents /
-    -- IssueOne then ApplySlots used to pay BufferFlags x2 on one orch tick).
+    -- Same-frame: after one rebuild, ignore snapGen-only misses.
     if frame > 0 and Refine._bufferFlagsFrame == frame and type(Refine._bufferFlags) == "table" then
         if Refine._bufferFlagsKey == key then
             return Refine._bufferFlags
@@ -519,24 +570,10 @@ local function EnsureBufferFlagsCached()
             return Refine._bufferFlags
         end
     end
-    -- Mid-brew: AutoGrow is paused; ignore snapGen-only misses and keep struct-matched
-    -- cache so SkillUp status / ApplySlots catch-up does not rebuild BufferFlags.
-    local Orch = StockPiler3.Orchestrator
-    local Brew = StockPiler3.Brew
-    local brewHold = (Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true)
-        or (Brew and Brew.IsBusy and Brew.IsBusy() == true)
-    if brewHold and type(Refine._bufferFlags) == "table" then
-        local structKey = BufferFlagsStructuralKey()
-        if Refine._bufferFlagsStructKey == structKey then
-            Refine._bufferFlagsFrame = frame
-            return Refine._bufferFlags
-        end
-    end
     local RP = StockPiler3.RefinePipeline
     local hasOut = RP and RP.HasOutstanding and RP.HasOutstanding() == true
     local fullGarden = not (StockPiler3.Grow and StockPiler3.Grow.HasEmptyPlot and StockPiler3.Grow.HasEmptyPlot())
     if hasOut and fullGarden and type(Refine._bufferFlags) == "table" then
-        -- Include snapGen so bag changes cannot keep stale pending/short.
         if Refine._bufferFlagsKey == key then
             Refine._bufferFlagsFrame = frame
             return Refine._bufferFlags
@@ -565,6 +602,7 @@ local function EnsureBufferFlagsCached()
         end
     end
     Refine._bufferFlags = { pending = pending, short = short }
+    Refine._bufferFlagsSticky = Refine._bufferFlags
     Refine._bufferFlagsKey = key
     Refine._bufferFlagsStructKey = BufferFlagsStructuralKey()
     Refine._bufferFlagsFrame = frame
@@ -645,10 +683,36 @@ function Refine.InvalidateIntentCache()
 end
 
 function Refine.InvalidateBufferFlags()
+    -- Keep sticky for orch peek; latch idle rebuild (never sync on Orch plant frame).
+    if type(Refine._bufferFlags) == "table" then
+        Refine._bufferFlagsSticky = Refine._bufferFlags
+    end
     Refine._bufferFlagsKey = nil
     Refine._bufferFlags = nil
     Refine._bufferFlagsStructKey = nil
     Refine._bufferFlagsFrame = nil
+    Refine.RequestBufferFlagsRebuild()
+end
+
+function Refine.RequestBufferFlagsRebuild()
+    local Sch = StockPiler3.Scheduler
+    if Sch then
+        Sch._pendingBufferFlagsRebuild = true
+    end
+end
+
+function Refine.EnsureBufferFlagsNow()
+    Refine._allowBufferFlagsRebuild = true
+    local ok, result = pcall(EnsureBufferFlagsCached)
+    Refine._allowBufferFlagsRebuild = false
+    if ok == true then
+        return result
+    end
+    return PeekBufferFlagsSticky()
+end
+
+function Refine.HasBufferFlagsCache()
+    return type(Refine._bufferFlags) == "table" or type(Refine._bufferFlagsSticky) == "table"
 end
 
 --- Last cached pending flag without rebuilding (snap wake path).
@@ -1098,9 +1162,23 @@ function Refine.CollectIntents()
     end
 
     -- 2) Plant-need / 3) Resin-need share one demand snapshot (warm-cache hit is free).
+    -- Orch decision hold / plant quiet: cacheOnly — never WarmHave.miss on this frame.
     local demand = nil
     if RS and RS.BuildBalancedSpecDemand then
-        demand = RS.BuildBalancedSpecDemand()
+        local Sch = StockPiler3.Scheduler
+        local hold = Sch and (
+            (Sch.IsOrchDecisionHold and Sch.IsOrchDecisionHold() == true)
+            or (Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true)
+            or (Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true)
+        )
+        if hold == true then
+            demand = RS.BuildBalancedSpecDemand({ cacheOnly = true })
+            if type(demand) ~= "table" and Sch.RequestCachePrewarm then
+                Sch.RequestCachePrewarm("refine-demand-cold")
+            end
+        else
+            demand = RS.BuildBalancedSpecDemand()
+        end
     end
 
     -- 2) Plant-need
@@ -1279,7 +1357,7 @@ function Refine.IssueOne(intent, opId)
     local reason = tostring(intent.reason or "refine")
     local pending = tonumber(Refine._pendingByPlant[plantUid]) or 0
     local stack = tonumber(item.stackCount) or tonumber(item.StackCount) or 1
-        local maxUses = (reason == "seed-buffer" or reason == "resin-need" or reason == "skill-up") and 5 or 1
+        local maxUses = 1
     uses = math.min(uses, stack, (Refine.MAX_PENDING_PER_PLANT or 6) - pending, maxUses)
 
     -- Clamp to live headroom (not resin-need).

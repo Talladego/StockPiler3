@@ -501,23 +501,29 @@ local function RowDataFromActiveChild()
     return StockPiler3TabPotions.listData[dataIndex]
 end
 
-local function AfterWatchToggle()
-    -- SetEnabled already BumpGen'd; do not double-bump or sync-Build (double Status.Craftable).
+local function AfterWatchToggle(opts)
+    opts = type(opts) == "table" and opts or {}
+    if StockPiler3TabWatch and StockPiler3TabWatch.AfterCatalogWatchToggle then
+        StockPiler3TabWatch.AfterCatalogWatchToggle(opts)
+        return
+    end
+    -- Fallback if Watch tab module missing.
     if StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Invalidate then
         StockPiler3.PlanSnapshot.Invalidate()
     end
     local Sch = StockPiler3.Scheduler
     if Sch and Sch.EnqueuePlanRebuild then
-        Sch.EnqueuePlanRebuild()
+        Sch.EnqueuePlanRebuild({ urgent = true })
     end
-    if StockPiler3.Ui and StockPiler3.Ui.MarkWatchUiDirty then
-        StockPiler3.Ui.MarkWatchUiDirty()
+    if StockPiler3.Ui then
+        StockPiler3.Ui._watchUiLastKey = nil
+        StockPiler3.Ui._watchUiFlushedAt = 0
+        if StockPiler3.Ui.MarkWatchUiDirty then
+            StockPiler3.Ui.MarkWatchUiDirty()
+        end
     end
-    if StockPiler3TabWatch and StockPiler3TabWatch.Refresh
-        and StockPiler3Window and StockPiler3Window.SelectedTab == StockPiler3Window.TABS_WATCH
-    then
-        -- Paint follows coalesced rebuild; forcePlan would enqueue a second rebuild.
-        StockPiler3TabWatch.Refresh({ forcePlan = false })
+    if StockPiler3Window and StockPiler3Window.SyncActionReadiness then
+        StockPiler3Window.SyncActionReadiness()
     end
 end
 
@@ -548,6 +554,35 @@ function StockPiler3TabPotions.Refresh()
         ListBoxSetDisplayOrder("SP3TabPotionsList", StockPiler3TabPotions.displayOrder)
         StockPiler3TabPotions.UpdateRows()
     end
+end
+
+--- Bag-snap live Have (CountByUid) without ListBox rebuild — Watch catchup parity.
+function StockPiler3TabPotions.PatchLiveHave()
+    local list = StockPiler3TabPotions.listData
+    if type(list) ~= "table" or #list == 0 then
+        return false
+    end
+    local Catalog = StockPiler3.Catalog
+    local Inv = StockPiler3.Inventory
+    local dirty = false
+    for i = 1, #list do
+        local row = list[i]
+        if type(row) == "table" then
+            local have = 0
+            local uid = tonumber(row.uniqueID) or 0
+            if Catalog and Catalog.PotionHaveCombined then
+                have = tonumber(Catalog.PotionHaveCombined({ outputUid = uid })) or 0
+            elseif uid > 0 and Inv and Inv.CountByUid then
+                have = tonumber(Inv.CountByUid(uid)) or 0
+            end
+            if (tonumber(row.have) or 0) ~= have then
+                row.have = have
+                row.haveText = towstring(tostring(have))
+                dirty = true
+            end
+        end
+    end
+    return dirty
 end
 
 function StockPiler3TabPotions.UpdateRows()
@@ -696,7 +731,11 @@ function StockPiler3TabPotions.OnToggleWatch()
         end
     end
     data.watched = enabled
-    AfterWatchToggle()
+    AfterWatchToggle({
+        enabled = enabled,
+        potionKey = potionKey,
+        kind = "potion",
+    })
     if StockPiler3TabPotions.UpdateRows then
         StockPiler3TabPotions.UpdateRows()
     end

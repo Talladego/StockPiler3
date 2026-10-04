@@ -16,12 +16,20 @@ Brew.LOAD_SETTLE_SEC = 1.25
 -- Probe interval for auto-loaded boards that never get another crafting-updated
 -- (settle hold then silence). Stuck loaded blocks AutoGrow + plan rebuild.
 Brew.STUCK_PROBE_SEC = 0.5
+-- Open phase: call OpenWindow every N ticks (not every frame). Per-tick
+-- SendInitCrafting/ToggleShowing caused audio buzz when apo skill stayed 0.
+Brew.OPEN_RETRY_TICKS = 20
+-- After open-timeout, latch until zone load / manual Load / apo session up.
+-- Timed backoff still re-armed every ~21s and kept CanBrewNow false while Ready.
+Brew.OPEN_FAIL_BACKOFF_SEC = 0
 
 Brew._session = Brew._session or { phase = "idle" }
 Brew._job = nil
 Brew._loadSource = nil -- "auto" | "manual"
 Brew._brewOpLockUntil = 0
 Brew._adoptBlockUntil = 0
+Brew._openFailBlockUntil = 0
+Brew._openFailLatched = false
 Brew._loadSettleUntil = 0
 Brew._stuckProbeAt = 0
 Brew._canBrewCache = nil
@@ -783,6 +791,41 @@ local function RowCraftableGreen(row)
     return row.seedBufferShort ~= true
 end
 
+local function NonemptyKey(v)
+    local s = tostring(v or "")
+    if s == "" then
+        return nil
+    end
+    return s
+end
+
+local function RowMatchesSession(row, session)
+    if type(row) ~= "table" or type(session) ~= "table" then
+        return false
+    end
+    local rowKeys = {
+        NonemptyKey(row.potionRecipeKey),
+        NonemptyKey(row.id),
+        NonemptyKey(row.potionKey),
+    }
+    local sessKeys = {
+        NonemptyKey(session.potionRecipeKey),
+        NonemptyKey(session.potionKey),
+        NonemptyKey(session.rowId),
+    }
+    for i = 1, #rowKeys do
+        local rk = rowKeys[i]
+        if rk ~= nil then
+            for j = 1, #sessKeys do
+                if sessKeys[j] ~= nil and rk == sessKeys[j] then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
 local function TBrew(key, tokens)
     if StockPiler3.T then
         return StockPiler3.T(key, tokens)
@@ -843,9 +886,6 @@ local function ForceBrewUiRefresh(opts)
     if StockPiler3TabWatch and StockPiler3TabWatch.InvalidateBrewChrome then
         StockPiler3TabWatch.InvalidateBrewChrome()
     end
-    if StockPiler3.Ui and StockPiler3.Ui.MarkWatchUiDirty then
-        StockPiler3.Ui.MarkWatchUiDirty()
-    end
     local wantRows = opts.rows ~= false
     -- Load-job slot ticks: Footer/Macro only. Paint rows when _job clears (loaded).
     if wantRows and type(Brew._job) == "table" then
@@ -855,18 +895,23 @@ local function ForceBrewUiRefresh(opts)
     if wantRows and Brew._awaitingBrewComplete == true and opts.rows ~= true then
         wantRows = false
     end
-    -- At most one UpdateRows per FrameCounter. Later same-frame ForceBrew calls
-    -- only invalidate/dirty; a pending flag lets the first paint wait until we
-    -- actually run rows once (invalidate-before-paint on that call).
-    if wantRows
-        and DoesWindowExist("StockPiler3Window")
+    -- Mid-brew Footer/Macro path must not MarkWatchUiDirty — that queued a full
+    -- RefreshActiveTab (ListBoxSetDisplayOrder) once the inter-craft hold expired
+    -- and blanked every Watch row between crafts. Paint chrome in place only.
+    if wantRows then
+        Brew.ArmWatchUiHold()
+    end
+    -- At most one UpdateRows per FrameCounter.
+    if DoesWindowExist("StockPiler3Window")
         and WindowGetShowing("StockPiler3Window") == true
         and StockPiler3TabWatch
         and StockPiler3TabWatch.UpdateRows
     then
         if Brew._brewRowsPaintFrame ~= frame then
             Brew._brewRowsPaintFrame = frame
-            StockPiler3TabWatch.UpdateRows()
+            -- Always keepVisible: PopulatorIndices lag mid-brew / apo open-close;
+            -- wantRows~=true previously inverted this and hid every row.
+            StockPiler3TabWatch.UpdateRows({ keepVisible = true })
         end
     end
     if StockPiler3Window and StockPiler3Window.SyncActionReadiness then
@@ -880,6 +925,45 @@ local function ForceBrewUiRefresh(opts)
             canBrew = Brew.CanBrewNow() == true,
         })
     end
+end
+
+--- Hold Watch ListBox rebinds across inter-craft idle (after-brew clears session
+--- before the next BeginForRow). Full Refresh → ListBoxSetDisplayOrder blanks rows.
+Brew.WATCH_UI_HOLD_SEC = 6.0
+
+function Brew.ArmWatchUiHold(sec)
+    sec = tonumber(sec) or tonumber(Brew.WATCH_UI_HOLD_SEC) or 3.0
+    if sec < 0 then
+        sec = 0
+    end
+    local untilT = NowSec() + sec
+    local cur = tonumber(Brew._watchUiHoldUntil) or 0
+    if untilT > cur then
+        Brew._watchUiHoldUntil = untilT
+    end
+end
+
+function Brew.IsWatchUiHold()
+    local Orch = StockPiler3.Orchestrator
+    if Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true then
+        return true
+    end
+    -- Timed hold across inter-craft idle only. Do not key off CanBrewNow(): that
+    -- stayed true for the whole AutoBrew run and permanently skipped ListBox
+    -- rebinds after PopulatorIndices cleared (Target chips died).
+    local untilT = tonumber(Brew._watchUiHoldUntil) or 0
+    if untilT <= 0 then
+        return false
+    end
+    if NowSec() < untilT then
+        return true
+    end
+    Brew._watchUiHoldUntil = 0
+    -- Hold just expired: one deferred ListBox rebind if keepVisible left indices empty.
+    if StockPiler3TabWatch then
+        StockPiler3TabWatch._pendingListRebind = true
+    end
+    return false
 end
 
 local function ClearSession(opts)
@@ -911,6 +995,43 @@ local function ClearSession(opts)
         Brew._adoptBlockUntil = NowSec() + (tonumber(Brew.ADOPT_BLOCK_SEC) or 1.5)
     end
     Brew.InvalidateCanBrewCache()
+end
+
+local function OpenFailBlocked()
+    if Brew._openFailLatched == true then
+        -- Clear if apo craft session became active (player opened Apo, etc.).
+        local a = AA()
+        if a and a.IsCraftingSessionActive and a.IsCraftingSessionActive() == true then
+            Brew._openFailLatched = false
+            Brew._openFailBlockUntil = 0
+            return false
+        end
+        return true
+    end
+    local untilT = tonumber(Brew._openFailBlockUntil) or 0
+    if untilT <= 0 then
+        return false
+    end
+    if NowSec() < untilT then
+        return true
+    end
+    Brew._openFailBlockUntil = 0
+    return false
+end
+
+local function NoteOpenFail(skillType)
+    -- Latch: do not time-retry (that re-failed every ~21s and held CanBrewNow false).
+    Brew._openFailLatched = true
+    Brew._openFailBlockUntil = 0
+    LogBrew(string.format(
+        "open-fail latched skill=%s (manual Load or /reload to retry)",
+        tostring(skillType)
+    ))
+end
+
+function Brew.ClearOpenFailBackoff()
+    Brew._openFailLatched = false
+    Brew._openFailBlockUntil = 0
 end
 
 local function InLoadSettle()
@@ -1064,6 +1185,10 @@ function Brew.CanBrewNow()
     if Brew.IsBusy() then
         return false
     end
+    -- Apo craft session failed to open recently (scenario / skill=0): keep macros dark.
+    if OpenFailBlocked() then
+        return false
+    end
     local session = GetSession()
     local phase = tostring(session.phase or "idle")
 
@@ -1193,16 +1318,35 @@ local function BeginLoadJob(row, source)
     if type(row) ~= "table" then
         return false
     end
-    -- Never stomp an in-flight or already-loaded board (Validate-fail used to
-    -- fall through TryBrewClick into a second BeginLoadJob).
-    if type(Brew._job) == "table" then
-        LogBrew("load skip job-active")
+    -- Auto/macro after open-timeout: latched until manual Load / zone / apo up.
+    if source ~= "manual" and OpenFailBlocked() then
         return false
     end
-    local curPhase = tostring(GetSession().phase or "idle")
+    if source == "manual" then
+        Brew.ClearOpenFailBackoff()
+    end
+    -- Never stomp an in-flight or already-loaded board (Validate-fail used to
+    -- fall through TryBrewClick into a second BeginLoadJob).
+    -- Manual Load on a *different* watch: unload then load that recipe.
+    local session = GetSession()
+    local curPhase = tostring(session.phase or "idle")
+    local sameRow = RowMatchesSession(row, session)
+    if type(Brew._job) == "table" then
+        if source ~= "manual" or sameRow then
+            LogBrew("load skip job-active")
+            return false
+        end
+        LogBrew("load abort job for switch")
+        Brew._job = nil
+    end
     if curPhase == "loading" or curPhase == "loaded" then
-        LogBrew("load skip already-" .. curPhase)
-        return false
+        if source ~= "manual" or sameRow then
+            LogBrew("load skip already-" .. curPhase)
+            return false
+        end
+        LogBrew("load switch from " .. tostring(session.potionRecipeKey or session.rowId or "?"))
+        Brew.ClearLoadedSession({ reason = "switch-row" })
+        session = GetSession()
     end
     local recipe = row.recipe
     -- SkillUp: never trust a stale plan recipe after Apo max / toggle off.
@@ -1329,7 +1473,8 @@ local function BeginLoadJob(row, source)
     return true
 end
 
-local OPEN_WAIT_TICKS = 90
+-- Leave room for SkillType to stamp after ToggleShowing (no mid-init HideWindowOnly).
+local OPEN_WAIT_TICKS = 180
 local CLEAR_WAIT_TICKS = 90
 
 --- Every saved recipe step must still be present on the apo board.
@@ -1384,23 +1529,44 @@ local function AdvanceLoadJob()
         return true
     end
     if phase == "open" then
-        -- Stealth OpenWindow hides the apo UI; do not gate on IsWindowOpen.
+        -- Headless OpenWindow never shows apo UI; do not gate on IsWindowOpen.
         job.waitTicks = (tonumber(job.waitTicks) or 0) + 1
         local sessionReady = a.IsCraftingSessionActive and a.IsCraftingSessionActive() == true
-        if not sessionReady then
+        if sessionReady then
+            -- Session came up - clear any prior open-fail latch.
+            Brew.ClearOpenFailBackoff()
+            -- Keep apo UI suppressed (show intercept, not alpha cloak).
+            local session = GetSession()
+            if a.EnforceStealthHide then
+                a.EnforceStealthHide(session)
+            elseif a.HideWindowOnly and session and session._brewOwnedSession == true
+                and a.IsWindowOpen and a.IsWindowOpen() then
+                a.HideWindowOnly()
+                session._brewApoStealth = true
+            end
+            job.phase = "clear"
+            job.waitTicks = 0
+            return true
+        end
+        -- Throttle OpenWindow: every-tick SendInitCrafting/ToggleShowing buzzes audio
+        -- when CraftingStatus.SkillType stays 0 (scenario / craft blocked).
+        local retryEvery = tonumber(Brew.OPEN_RETRY_TICKS) or 20
+        if retryEvery < 5 then
+            retryEvery = 5
+        end
+        if job.waitTicks == 1 or (job.waitTicks % retryEvery) == 0 then
             if a.OpenWindow then
                 a.OpenWindow(GetSession())
             end
-            if job.waitTicks > OPEN_WAIT_TICKS then
-                LogBrew("load abort open-timeout skill="
-                    .. tostring(a.CraftingSkillType and a.CraftingSkillType()))
-                ClearSession({ reason = "open-timeout" })
-                return false
-            end
-            return true
         end
-        job.phase = "clear"
-        job.waitTicks = 0
+        if job.waitTicks > OPEN_WAIT_TICKS then
+            local skillType = a.CraftingSkillType and a.CraftingSkillType()
+            LogBrew("load abort open-timeout skill=" .. tostring(skillType))
+            NoteOpenFail(skillType)
+            ClearSession({ reason = "open-timeout" })
+            ForceBrewUiRefresh()
+            return false
+        end
         return true
     end
     if phase == "clear" then
@@ -1435,6 +1601,34 @@ local function AdvanceLoadJob()
             Brew._loadSettleUntil = NowSec() + (tonumber(Brew.LOAD_SETTLE_SEC) or 0.75)
             ForceBrewUiRefresh()
             return true
+        end
+        -- First load tick: dry-run every step so a mid-recipe miss never partial-fills.
+        if idx == 1 and job.preflightDone ~= true then
+            job.preflightDone = true
+            local reserved = {}
+            for i = 1, #slots do
+                local pre = slots[i]
+                if type(pre) == "table" then
+                    local exemplarUid = tonumber(pre.uniqueID) or tonumber(pre.uid) or 0
+                    local want = pre.spec
+                    if type(want) ~= "table" and StockPiler3.RecipeSpec
+                        and StockPiler3.RecipeSpec.ResolveSlotSpec
+                    then
+                        want = StockPiler3.RecipeSpec.ResolveSlotSpec(pre)
+                    end
+                    local bagSlot, _, bagType = FindCraftingBagItemBySpec(want, exemplarUid, reserved)
+                    if not (bagSlot > 0) then
+                        LogBrew(string.format(
+                            "load preflight-miss role=%s exemplar=%s - abort before AddItem",
+                            tostring(pre.role), tostring(exemplarUid)
+                        ))
+                        AbortIncompleteLoad("preflight-miss-" .. tostring(pre.role or "?"))
+                        return false
+                    end
+                    local rkey = tostring(bagType or 0) .. ":" .. tostring(bagSlot)
+                    reserved[rkey] = (tonumber(reserved[rkey]) or 0) + 1
+                end
+            end
         end
         local slot = slots[idx]
         job.index = idx + 1
@@ -1505,14 +1699,18 @@ function Brew.BeginForRow(row, opts)
     local source = opts.manual == true and "manual" or "auto"
     -- Auto holds: plant/refine/harvest. Seed buffer is per-watch Ready status.
     if source == "auto" then
+        if OpenFailBlocked() then
+            return false
+        end
         local blocked, why = AutoBrewBlocked()
         if blocked then
             LogBrew("auto load blocked " .. tostring(why))
             return false
         end
     end
-    -- Manual skips AutoGrow holds (plant/harvest/refine).
+    -- Manual skips AutoGrow holds (plant/harvest/refine); clears open-fail backoff.
     if BeginLoadJob(row, source) then
+        Brew.ArmWatchUiHold()
         KickLoadJob()
         return true
     end
@@ -1531,6 +1729,16 @@ function Brew.ClearLoadedSession(opts)
         a.ClearSlots()
     end
     Brew._postBrewClearArmed = false
+    local reason = tostring(opts.reason or "clear")
+    -- Inter-craft idle: session goes idle before the next load; hold Watch rebinds
+    -- so planGen churn does not ListBoxSetDisplayOrder (blank rows).
+    if string.find(reason, "after-brew", 1, true)
+        or reason == "clear"
+        or reason == "plan-updated"
+        or reason == "cannot-continue"
+    then
+        Brew.ArmWatchUiHold()
+    end
     ClearSession({ reason = opts.reason or "clear", adoptBlock = opts.adoptBlock == true })
     ForceBrewUiRefresh()
 end
@@ -1549,12 +1757,9 @@ function Brew.OnRowCraftClick(row)
         return false
     end
     local session = GetSession()
-    local rowKey = tostring(row.potionRecipeKey or row.id or row.potionKey or "")
-    local sessKey = tostring(session.potionRecipeKey or session.potionKey or session.rowId or "")
+    local sameRow = RowMatchesSession(row, session)
     if session.phase == "loaded"
-        and rowKey ~= ""
-        and sessKey ~= ""
-        and rowKey == sessKey
+        and sameRow
         and Brew._loadSource == "manual"
     then
         local ok = Brew.TryPerform(nil)
@@ -1571,10 +1776,6 @@ function Brew.OnRowCraftClick(row)
         else
             ChatBrewBlocked("not_ready")
         end
-        return false
-    end
-    if not RowCanPrematureLoad(row) and not RowIsReadyToCraft(row) then
-        ChatBrewBlocked("not_ready")
         return false
     end
     local ok = Brew.BeginForRow(row, { manual = true })
@@ -1693,6 +1894,9 @@ function Brew.TryBrewClick()
     if Brew.IsBusy() then
         return "blocked"
     end
+    if OpenFailBlocked() then
+        return "blocked"
+    end
     local session = GetSession()
     local phase = tostring(session.phase or "idle")
 
@@ -1779,8 +1983,12 @@ end
 -- Tick / closed-window sync
 ----------------------------------------------------------------
 
+function Brew.IsLoadJobActive()
+    return type(Brew._job) == "table"
+end
+
 function Brew.Tick()
-    if type(Brew._job) == "table" then
+    if Brew.IsLoadJobActive() then
         local Perf = StockPiler3.Perf
         if Perf and Perf.Begin then
             Perf.Begin("Brew.LoadJob")
@@ -1804,6 +2012,9 @@ function Brew.MaybeAutoLoadSkillUp()
         return false
     end
     if NowSec() < (tonumber(Brew._adoptBlockUntil) or 0) then
+        return false
+    end
+    if OpenFailBlocked() then
         return false
     end
     local blocked = AutoBrewBlocked()
@@ -1917,6 +2128,11 @@ function Brew.SyncLiveStatusClosedWindow()
 end
 
 function Brew.OnCraftingUpdated()
+    -- Stock SetStateData tries to show apo children; swallow those shows while we own apo.
+    local a = AA()
+    if a and a.EnforceStealthHide then
+        a.EnforceStealthHide(GetSession())
+    end
     if GetSession().phase == "loaded" or GetSession().phase == "loading" then
         Brew.InvalidateCanBrewCache()
     end
@@ -2054,14 +2270,27 @@ function Brew.RefreshSessionAfterBrew()
     ))
 
     if deficit <= 0 then
+        -- Manual: keep Brew while the board can still perform (same loadout).
+        if Brew._loadSource == "manual" and stillValid == true then
+            ForceBrewUiRefresh()
+            return
+        end
         PatchPlanRowTargetMet(session, session.potionHave)
         LogBrew("target met - unload have=" .. tostring(session.potionHave)
             .. "/" .. tostring(session.potionMin))
         Brew.ClearLoadedSession({ reason = "after-brew-target-met" })
         return
     end
-    -- Always unload after a completed brew (manual / auto / any load trigger).
-    -- Auto may re-arm via bag flush when the watch is still uncontested Ready.
+    if Brew._loadSource == "manual" then
+        if stillValid == true then
+            ForceBrewUiRefresh()
+            return
+        end
+        LogBrew("after-brew manual unload valid=false")
+        Brew.ClearLoadedSession({ reason = "after-brew-manual-invalid" })
+        return
+    end
+    -- Auto: unload after a completed brew; re-arm via bag flush when still Ready.
     local row = FindSessionRow()
     local wantContinue = stillValid == true
         and Brew._loadSource ~= "manual"
@@ -2088,6 +2317,12 @@ function Brew.OnInventorySnapshot()
     end
     SyncSessionStockFromBags(session)
     if not RowNeedsMorePotions(session) then
+        if Brew._loadSource == "manual" and Brew.ValidateApothecaryPerform() == true then
+            Brew._postBrewClearArmed = false
+            Brew._brewHaveBefore = nil
+            ForceBrewUiRefresh()
+            return
+        end
         PatchPlanRowTargetMet(session, session.potionHave)
         LogBrew("post-brew bag sync - unload have="
             .. tostring(session.potionHave) .. "/" .. tostring(session.potionMin))
@@ -2187,6 +2422,7 @@ function Brew.RegisterEventHandlers()
             Brew._busTokens[#Brew._busTokens + 1] = B.Subscribe(E.SESSION_LOADED, function()
                 Brew._readyNotifyKeys = nil
                 Brew._brewReadyLatched = false
+                Brew.ClearOpenFailBackoff()
                 Brew.InvalidateCanBrewCache()
                 -- Scenario/zone load leaves apo board invalid; a stuck loaded session
                 -- also holds Watch UI in mid-brew catchup (SkillUp rows never rebind).
@@ -2339,7 +2575,8 @@ function Brew.DumpPlan(emit)
             and StockPiler3.RefinePipeline.HasOutstanding())
     ))
     emit("respectGrowReserve=" .. tostring(BrewRespectGrowReserve()))
-    emit("hasReady=" .. tostring(Brew.HasReadyToCraft()))
+    emit("hasReady=" .. tostring(Brew.HasReadyToCraft())
+        .. " openFailBlocked=" .. tostring(OpenFailBlocked()))
     local ready = Brew.PickReadyWatch()
     if type(ready) == "table" then
         emit(string.format(

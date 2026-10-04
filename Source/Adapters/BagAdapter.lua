@@ -260,9 +260,26 @@ function BA.InvalidateCache()
 end
 
 --- Thin DataUtils / engine wrappers. Trusts dirty gate unless forceRefresh.
-function BA.GetBagTable(bagType)
+--- Force path calls GetCraftingItemData / GetInventoryItemData directly.
+--- Stock DataUtils.GetCraftingItems never clears craftingItemsDirty (it wrongly
+--- clears itemsDirty instead) — once dirty at init, every ReloadCraftingItems
+--- refetches. Do NOT clear craftingItemsDirty/itemsDirty here: clearing made
+--- DataUtils serve a stale table on the next slot event (after the first move).
+function BA.GetBagTable(bagType, opts)
+    opts = type(opts) == "table" and opts or {}
+    local force = opts.force == true
     bagType = tostring(bagType or BAG_MAIN)
     if bagType == BAG_CRAFT then
+        if force == true and type(GetCraftingItemData) == "function" then
+            local ok, data = TryQuiet("BagAdapter.GetCraftingItemData.force", GetCraftingItemData)
+            if ok and type(data) == "table" then
+                BA._warmCraft = data
+                if DataUtilsData then
+                    DataUtilsData.craftingItems = data
+                end
+                return data
+            end
+        end
         if DataUtils and type(DataUtils.GetCraftingItems) == "function" then
             local ok, data = TryQuiet("BagAdapter.GetCraftingItems", DataUtils.GetCraftingItems)
             if ok and type(data) == "table" then
@@ -277,6 +294,16 @@ function BA.GetBagTable(bagType)
             end
         end
         return nil
+    end
+    if force == true and type(GetInventoryItemData) == "function" then
+        local ok, data = TryQuiet("BagAdapter.GetInventoryItemData.force", GetInventoryItemData)
+        if ok and type(data) == "table" then
+            BA._warmMain = data
+            if DataUtilsData then
+                DataUtilsData.items = data
+            end
+            return data
+        end
     end
     if DataUtils and type(DataUtils.GetItems) == "function" then
         local ok, data = TryQuiet("BagAdapter.GetItems", DataUtils.GetItems)
@@ -297,33 +324,35 @@ end
 --- Warm both bag tables once (session / storm recover). Does not force dirty unless opts.force.
 function BA.WarmBagTables(opts)
     opts = type(opts) == "table" and opts or {}
+    local forceOpts = opts.force == true and { force = true } or nil
     if opts.force == true and GameData and GameData.Player then
         GameData.Player.itemsDirty = true
         GameData.Player.craftingItemsDirty = true
     end
-    local main = BA.GetBagTable(BAG_MAIN)
+    local main = BA.GetBagTable(BAG_MAIN, forceOpts)
     if opts.force == true and GameData and GameData.Player then
         -- GetItems clears itemsDirty (client quirk); re-stick craft dirty for second read.
         GameData.Player.craftingItemsDirty = true
     end
-    local craft = BA.GetBagTable(BAG_CRAFT)
+    local craft = BA.GetBagTable(BAG_CRAFT, forceOpts)
     return main, craft
 end
 
 local function FetchBags(forceRefresh)
+    local forceOpts = forceRefresh == true and { force = true } or nil
     if forceRefresh == true and GameData and GameData.Player then
         GameData.Player.itemsDirty = true
         GameData.Player.craftingItemsDirty = true
     end
     local bags = {}
-    local main = BA.GetBagTable(BAG_MAIN)
+    local main = BA.GetBagTable(BAG_MAIN, forceOpts)
     if type(main) == "table" then
         bags[#bags + 1] = { bagType = BAG_MAIN, data = main }
     end
     if forceRefresh == true and GameData and GameData.Player then
         GameData.Player.craftingItemsDirty = true
     end
-    local craft = BA.GetBagTable(BAG_CRAFT)
+    local craft = BA.GetBagTable(BAG_CRAFT, forceOpts)
     if type(craft) == "table" then
         bags[#bags + 1] = { bagType = BAG_CRAFT, data = craft }
     end
@@ -340,14 +369,18 @@ end
 
 function BA.FetchBag(bagType, forceRefresh)
     bagType = tostring(bagType or BAG_MAIN)
-    if forceRefresh == true and GameData and GameData.Player then
-        if bagType == BAG_CRAFT then
-            GameData.Player.craftingItemsDirty = true
-        else
-            GameData.Player.itemsDirty = true
+    local forceOpts = nil
+    if forceRefresh == true then
+        forceOpts = { force = true }
+        if GameData and GameData.Player then
+            if bagType == BAG_CRAFT then
+                GameData.Player.craftingItemsDirty = true
+            else
+                GameData.Player.itemsDirty = true
+            end
         end
     end
-    local data = BA.GetBagTable(bagType)
+    local data = BA.GetBagTable(bagType, forceOpts)
     if type(data) == "table" then
         return { bagType = bagType == BAG_CRAFT and BAG_CRAFT or BAG_MAIN, data = data }
     end
@@ -437,6 +470,46 @@ function BA.ApplySlot(bagType, slot, bagTable)
         return BA.ReadSlotFromTable(bagTable, slot)
     end
     return BA.ReadSlot(bagType, slot)
+end
+
+--- Filled + capacity for a bag table (#bag is capacity when dense).
+--- Returns nil,nil when the bag table is unavailable.
+function BA.CountBagOccupancy(bagType)
+    local bag = BA.GetBagTable(bagType)
+    if type(bag) ~= "table" then
+        return nil, nil
+    end
+    local capacity = #bag
+    local filled = 0
+    if capacity > 0 then
+        for slot = 1, capacity do
+            if ItemPresent(bag[slot]) then
+                filled = filled + 1
+            end
+        end
+        return filled, capacity
+    end
+    for slot, item in pairs(bag) do
+        if type(slot) == "number" and ItemPresent(item) then
+            filled = filled + 1
+            if slot > capacity then
+                capacity = slot
+            end
+        end
+    end
+    if capacity <= 0 then
+        return nil, nil
+    end
+    return filled, capacity
+end
+
+--- True when every craft-bag slot is occupied (no free slot for brew/harvest).
+function BA.IsCraftBagFull()
+    local filled, capacity = BA.CountBagOccupancy(BAG_CRAFT)
+    if filled == nil or capacity == nil or capacity <= 0 then
+        return false
+    end
+    return filled >= capacity
 end
 
 --- Find a bag slot holding seedUid. Cached by Inventory snapGen; InvalidateCache on structure change.

@@ -803,6 +803,16 @@ function SkillUp.PickBestBagSeed()
     if targetMax < 1 then
         targetMax = 1
     end
+    local snapGen = 0
+    local PS = StockPiler3.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    if type(plan) == "table" then
+        snapGen = tonumber(plan.planGen) or 0
+    end
+    local cacheKey = tostring(snapGen) .. ":" .. tostring(cult) .. ":" .. tostring(targetMax)
+    if SkillUp._bestBagSeedKey == cacheKey then
+        return SkillUp._bestBagSeed
+    end
     local SM = StockPiler3.SeedMap
     local Inv = StockPiler3.Inventory
     local Refine = StockPiler3.Refine
@@ -878,11 +888,20 @@ function SkillUp.PickBestBagSeed()
             }
         end
     end)
+    SkillUp._bestBagSeedKey = cacheKey
+    SkillUp._bestBagSeed = best
     return best
 end
 
---- Seed budget - UpgradeSeed facade over Refine.GetSeedBudget.
+--- Seed budget - SeedEconomy / UpgradeSeed facade over Refine.GetSeedBudget.
 local function SeedBudget(seedUid)
+    local SE = StockPiler3.SeedEconomy
+    if SE and SE.GetSeedBudget then
+        local b = SE.GetSeedBudget(seedUid)
+        if type(b) == "table" then
+            return b
+        end
+    end
     local US = StockPiler3.UpgradeSeed
     if US and US.GetSeedBudget then
         return US.GetSeedBudget(seedUid)
@@ -2725,30 +2744,50 @@ end
 
 --- Plants to hold before Apo SkillUp may brew - same rule as watch GrowReserve:
 --- seed-buffer headroom only (plus short-watch demand). When the seed buffer is
---- full (headroom=0), plants are brewable surplus.
---- Max headroom across: resolved seed, every grow/refine-linked seed for this
---- plant, and the genus-ladder seed at the plant's skillReq. Crit plants often
---- resolve to the lower planted seed (buffer met) while the true same-tier seed
---- is still short — holding only the resolved seed let Apo brew the only plant.
+--- full (headroom=0 / satisfied), plants are brewable surplus.
+--- Max headroom across: resolved same-tier seed and the genus-ladder seed at the
+--- plant's skillReq. Do not max over every grow/refine-linked leftover.
 function SkillUp.PlantFeedstockReserve(seedUid, plantUid)
     seedUid = tonumber(seedUid) or 0
     plantUid = tonumber(plantUid) or 0
+    local RefineMod = StockPiler3.Refine
+    if RefineMod and RefineMod.IsSeedBufferSatisfied and RefineMod.IsSeedBufferSatisfied() == true then
+        local watchNeed = 0
+        if plantUid > 0 then
+            watchNeed = SkillUp.WatchDemandReserve(plantUid)
+        end
+        if seedUid > 0 then
+            local seedNeed = SkillUp.WatchDemandReserve(seedUid)
+            if seedNeed > watchNeed then
+                watchNeed = seedNeed
+            end
+        end
+        return watchNeed
+    end
     local reserve = 0
-    local function bumpFromSeed(uid)
+    local plantReq = 0
+    local function seedSkillReq(uid)
         uid = tonumber(uid) or 0
         if uid <= 0 then
-            return
+            return 0
         end
-        local budget = SeedBudget(uid)
-        local headroom = tonumber(budget.headroom) or 0
-        if headroom > reserve then
-            reserve = headroom
+        local Inv = StockPiler3.Inventory
+        local sample = Inv and Inv.GetSample and Inv.GetSample(uid)
+        if type(sample) ~= "table" and StockPiler3.Items and StockPiler3.Items.GetByUid then
+            sample = StockPiler3.Items.GetByUid(uid)
         end
+        if type(sample) ~= "table" then
+            return 0
+        end
+        local req = tonumber(sample.craftingSkillRequirement) or tonumber(sample.skillReq)
+            or tonumber(sample.skillLevel) or 0
+        if req <= 0 and type(sample.bonuses) == "table" then
+            req = tonumber(sample.bonuses[9]) or 0
+        end
+        return req
     end
-    bumpFromSeed(seedUid)
     if plantUid > 0 then
         local SM = StockPiler3.SeedMap
-        local plantReq = 0
         if StockPiler3.Items and StockPiler3.Items.ToSpec then
             local spec = StockPiler3.Items.ToSpec(plantUid)
             plantReq = tonumber(spec and spec.skillLevel) or 0
@@ -2760,18 +2799,47 @@ function SkillUp.PlantFeedstockReserve(seedUid, plantUid)
                 sample = Inv.GetByUid(plantUid)
             end
             if type(sample) == "table" then
-                plantReq = tonumber(sample.craftingSkillRequirement) or tonumber(sample.skillReq) or 0
+                plantReq = tonumber(sample.craftingSkillRequirement) or tonumber(sample.skillReq)
+                    or tonumber(sample.skillLevel) or 0
                 if plantReq <= 0 and type(sample.bonuses) == "table" then
                     plantReq = tonumber(sample.bonuses[9]) or 0
                 end
             end
         end
-        local linked = SM and SM.GetSeedUidsForPlant and SM.GetSeedUidsForPlant(plantUid) or {}
-        if type(linked) == "table" then
-            for i = 1, #linked do
-                bumpFromSeed(linked[i])
+    end
+    local function bumpFromSeed(uid, requireSameTier)
+        uid = tonumber(uid) or 0
+        if uid <= 0 then
+            return
+        end
+        if requireSameTier and plantReq > 0 then
+            local sReq = seedSkillReq(uid)
+            if sReq > 0 and sReq ~= plantReq then
+                return
+            end
+            if sReq <= 0 then
+                return
             end
         end
+        local budget = SeedBudget(uid)
+        local headroom = tonumber(budget.headroom) or 0
+        if headroom > reserve then
+            reserve = headroom
+        end
+    end
+    -- Resolved seed: count when same-tier or skill unknown; skip known-lower.
+    if seedUid > 0 then
+        local sReq = seedSkillReq(seedUid)
+        if plantReq <= 0 or sReq <= 0 or sReq == plantReq then
+            local budget = SeedBudget(seedUid)
+            local headroom = tonumber(budget.headroom) or 0
+            if headroom > reserve then
+                reserve = headroom
+            end
+        end
+    end
+    if plantUid > 0 then
+        local SM = StockPiler3.SeedMap
         if plantReq > 0 and SM and SM.GetGenusLadderForSpec then
             local ladder = SM.GetGenusLadderForSpec({
                 uid = plantUid,
@@ -2782,7 +2850,7 @@ function SkillUp.PlantFeedstockReserve(seedUid, plantUid)
                 for i = 1, #ladder.rungs do
                     local rung = ladder.rungs[i]
                     if (tonumber(rung.skillReq) or 0) == plantReq then
-                        bumpFromSeed(rung.seedUid)
+                        bumpFromSeed(rung.seedUid, true)
                         break
                     end
                 end

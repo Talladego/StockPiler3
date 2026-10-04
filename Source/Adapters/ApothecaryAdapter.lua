@@ -235,61 +235,228 @@ function AA.ClearSlots()
     return cleared
 end
 
-function AA.HideWindowOnly()
-    local name = AA.WindowName()
-    if DoesWindowExist(name) and WindowGetShowing(name) then
-        TryCall("WindowSetShowing", WindowSetShowing, name, false)
-        if type(WindowUtils) == "table" and type(WindowUtils.RemoveFromOpenList) == "function" then
-            TryQuiet("RemoveFromOpenList", WindowUtils.RemoveFromOpenList, name)
-        end
+-- Park the Apo root off-screen while SP3 owns brew. Do not hide widgets or
+-- swallow WindowSetShowing: SkillType needs a real show, and SetStateData
+-- re-shows bottles/slots independently of the frame. Do not eat the player
+-- Apothecary ability (stock ToggleShowing).
+local PARK_X = -4000
+local PARK_Y = -4000
+
+local function ApoRootName()
+    return AA.WindowName()
+end
+
+local function CallOrigToggle(tradeSkill)
+    local fn = AA._origToggleShowing
+    if type(fn) ~= "function" and CraftingSystem and type(CraftingSystem.ToggleShowing) == "function" then
+        fn = CraftingSystem.ToggleShowing
+    end
+    if type(fn) == "function" then
+        TryCall("CraftingSystem.ToggleShowing", fn, tradeSkill)
         return true
     end
     return false
 end
 
---- Open apo crafting session (prefer headless / stealth when possible).
-function AA.OpenWindow(session)
-    session = type(session) == "table" and session or nil
-    if AA.IsWindowOpen() then
+local function SetRootHandleInput(handle)
+    if type(WindowSetHandleInput) ~= "function" then
+        return
+    end
+    local name = ApoRootName()
+    if DoesWindowExist and DoesWindowExist(name) then
+        TryQuiet("WindowSetHandleInput", WindowSetHandleInput, name, handle == true)
+    end
+end
+
+local function UnparkApoRoot()
+    local name = ApoRootName()
+    AA._apoParked = false
+    if not (DoesWindowExist and DoesWindowExist(name)) then
+        return
+    end
+    if type(WindowClearAnchors) == "function" then
+        TryQuiet("WindowClearAnchors", WindowClearAnchors, name)
+    end
+    SetRootHandleInput(true)
+    if type(WindowSetAlpha) == "function" then
+        TryQuiet("WindowSetAlpha", WindowSetAlpha, name, 1)
+    end
+    if type(WindowSetFontAlpha) == "function" then
+        TryQuiet("WindowSetFontAlpha", WindowSetFontAlpha, name, 1)
+    end
+end
+
+local function PlaceApoOnScreen()
+    local name = ApoRootName()
+    UnparkApoRoot()
+    if not (DoesWindowExist and DoesWindowExist(name)) then
+        return
+    end
+    local function CloseCallback()
         if CraftingSystem and type(CraftingSystem.SetCurrentTradeSkill) == "function" then
             TryQuiet("SetCurrentTradeSkill", CraftingSystem.SetCurrentTradeSkill, AA.TradeSkill())
         end
-        return true
+        CallOrigToggle(AA.TradeSkill())
     end
+    if type(WindowUtils) == "table" and type(WindowUtils.AddToOpenList) == "function" then
+        local mode = WindowUtils.Cascade and WindowUtils.Cascade.MODE_AUTOMATIC
+        TryQuiet("AddToOpenList", WindowUtils.AddToOpenList, name, CloseCallback, mode)
+    elseif type(WindowAddAnchor) == "function" then
+        TryQuiet("WindowAddAnchor", WindowAddAnchor, name, "center", "Root", "center", 0, 0)
+    end
+    if type(WindowForceProcessAnchors) == "function" then
+        pcall(WindowForceProcessAnchors, name)
+    end
+end
+
+function AA.ParkApoRoot()
+    if AA._playerWantsApo == true then
+        return false
+    end
+    local name = ApoRootName()
+    if not (DoesWindowExist and DoesWindowExist(name)) then
+        return false
+    end
+    if type(WindowClearAnchors) == "function" then
+        TryQuiet("WindowClearAnchors", WindowClearAnchors, name)
+    end
+    if type(WindowAddAnchor) == "function" then
+        TryQuiet("WindowAddAnchor", WindowAddAnchor, name, "topleft", "Root", "topleft", PARK_X, PARK_Y)
+    end
+    if type(WindowForceProcessAnchors) == "function" then
+        pcall(WindowForceProcessAnchors, name)
+    end
+    SetRootHandleInput(false)
+    if type(WindowUtils) == "table" and type(WindowUtils.RemoveFromOpenList) == "function" then
+        TryQuiet("RemoveFromOpenList", WindowUtils.RemoveFromOpenList, name)
+    end
+    AA._apoParked = true
+    return true
+end
+
+function AA.InstallStealthHooks()
+    if CraftingSystem and type(CraftingSystem.ToggleShowing) == "function" and not AA._origToggleShowing then
+        AA._origToggleShowing = CraftingSystem.ToggleShowing
+        CraftingSystem.ToggleShowing = function(tradeSkill)
+            if AA._sp3Opening == true then
+                return AA._origToggleShowing(tradeSkill)
+            end
+            local apo = AA.TradeSkill()
+            local isApo = tradeSkill == nil or tradeSkill == apo
+            if isApo and AA._apoParked == true then
+                AA._playerWantsApo = true
+                PlaceApoOnScreen()
+                local name = ApoRootName()
+                if DoesWindowExist(name) and WindowGetShowing(name) == true then
+                    return
+                end
+            end
+            return AA._origToggleShowing(tradeSkill)
+        end
+    end
+    if type(ApothecaryWindow) == "table" and type(ApothecaryWindow.OnHidden) == "function" and not AA._origApoOnHidden then
+        AA._origApoOnHidden = ApothecaryWindow.OnHidden
+        ApothecaryWindow.OnHidden = function(...)
+            AA._playerWantsApo = false
+            AA._apoParked = false
+            return AA._origApoOnHidden(...)
+        end
+    end
+end
+
+function AA.BeginOwnedSession()
+    AA.InstallStealthHooks()
+end
+
+function AA.BeginStealthUi()
+    AA.BeginOwnedSession()
+    AA.ParkApoRoot()
+end
+
+function AA.EndStealthUi()
+    AA._sp3Opening = false
+    AA._playerWantsApo = false
+    UnparkApoRoot()
+end
+
+function AA.InitHeadlessSession()
+    local apo = AA.TradeSkill()
     if CraftingSystem and type(CraftingSystem.SetCurrentTradeSkill) == "function" then
-        TryQuiet("SetCurrentTradeSkill", CraftingSystem.SetCurrentTradeSkill, AA.TradeSkill())
+        TryQuiet("SetCurrentTradeSkill", CraftingSystem.SetCurrentTradeSkill, apo)
     end
     if CraftingSystem and type(CraftingSystem.SetStaticData) == "function" then
         TryQuiet("SetStaticData", CraftingSystem.SetStaticData)
     end
     if type(SendInitCrafting) == "function" then
-        TryCall("SendInitCrafting", SendInitCrafting, AA.TradeSkill())
+        TryCall("SendInitCrafting", SendInitCrafting, apo)
     end
     AA.SetSoftLocks(true)
-    if session then
-        session._idleForceClosed = false
-        session._brewOwnedSession = true
-        session._brewApoStealth = true
+    if type(ApothecaryWindow) == "table" and type(ApothecaryWindow.Show) == "function" then
+        TryQuiet("ApothecaryWindow.Show", ApothecaryWindow.Show)
     end
-    AA.HideWindowOnly()
-    if AA.CraftingSkillType() == AA.TradeSkill() then
-        return true
-    end
-    if not (CraftingSystem and type(CraftingSystem.ToggleShowing) == "function") then
-        return AA.CraftingSkillType() == AA.TradeSkill()
-    end
-    TryCall("CraftingSystem.ToggleShowing", CraftingSystem.ToggleShowing, AA.TradeSkill())
-    if AA.CraftingSkillType() ~= AA.TradeSkill() and not AA.IsWindowOpen() then
+end
+
+function AA.RestoreWindowChrome()
+    UnparkApoRoot()
+end
+
+function AA.HideWindowOnly()
+    return AA.ParkApoRoot()
+end
+
+function AA.CloakWindowOnly()
+    return AA.ParkApoRoot()
+end
+
+function AA.HideApoUi()
+    return AA.ParkApoRoot()
+end
+
+function AA.EnforceStealthHide(session)
+    session = type(session) == "table" and session or nil
+    if not session or session._brewOwnedSession ~= true then
         return false
     end
+    if AA._playerWantsApo == true then
+        return false
+    end
+    AA.BeginOwnedSession()
+    if AA.CraftingSkillType() == AA.TradeSkill() then
+        session._brewApoStealth = true
+        return AA.ParkApoRoot()
+    end
+    return false
+end
+
+--- Stock ToggleShowing must actually show so SkillType stamps. Then park the
+--- root off-screen (children follow). Player ability unparks via the hook.
+function AA.OpenWindow(session)
+    session = type(session) == "table" and session or nil
+    local apo = AA.TradeSkill()
+    AA.BeginOwnedSession()
+    AA._playerWantsApo = false
     if session then
         session._idleForceClosed = false
         session._brewOwnedSession = true
-        session._brewOpenedApo = true
-        session._brewApoStealth = true
+        session._brewApoStealth = false
     end
-    AA.HideWindowOnly()
-    return true
+
+    AA.InitHeadlessSession()
+    local name = ApoRootName()
+    local alreadyShowing = DoesWindowExist(name) and WindowGetShowing(name) == true
+    if not alreadyShowing then
+        AA._sp3Opening = true
+        CallOrigToggle(apo)
+        AA._sp3Opening = false
+    end
+    if AA.CraftingSkillType() == apo then
+        if session then
+            session._brewApoStealth = true
+        end
+        AA.ParkApoRoot()
+        return true
+    end
+    return false
 end
 
 function AA.CloseWindow(session)
@@ -314,6 +481,7 @@ function AA.CloseWindow(session)
     local endEngine = ownedSession or stealth or closeApo
         or (apoSkillActive == true and not playerVisible)
     if not endEngine then
+        AA.EndStealthUi()
         return
     end
 
@@ -342,6 +510,7 @@ function AA.CloseWindow(session)
             TryQuiet("RemoveFromOpenList", WindowUtils.RemoveFromOpenList, name)
         end
     end
+    AA.EndStealthUi()
 end
 
 function AA.AddItemToCrafting(craftSlot, bagSlot, bagType)

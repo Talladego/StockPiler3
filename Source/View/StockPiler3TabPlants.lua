@@ -45,8 +45,8 @@ local function ToNarrow(text)
 end
 
 local function GetSettings()
-    if StockPiler3.Persistence and StockPiler3.Persistence.GetSettings then
-        return StockPiler3.Persistence.GetSettings()
+    if StockPiler3.Persistence and StockPiler3.Persistence.EnsureSettings then
+        return StockPiler3.Persistence.EnsureSettings()
     end
     StockPiler3.Settings = StockPiler3.Settings or {}
     return StockPiler3.Settings
@@ -78,7 +78,17 @@ local function IconMarkup(iconNum)
 end
 
 local function CompareName(a, b)
-    return string.lower(ToNarrow(a.name)) < string.lower(ToNarrow(b.name))
+    local na = string.lower(ToNarrow(a.name))
+    local nb = string.lower(ToNarrow(b.name))
+    if na ~= nb then
+        return na < nb
+    end
+    local ua = tonumber(a.plantUid) or tonumber(a.uniqueID) or 0
+    local ub = tonumber(b.plantUid) or tonumber(b.uniqueID) or 0
+    if ua ~= ub then
+        return ua < ub
+    end
+    return tostring(a.plantKey or "") < tostring(b.plantKey or "")
 end
 
 local function CompareRows(a, b, column, ascending)
@@ -334,6 +344,37 @@ function StockPiler3TabPlants.Refresh()
     end
 end
 
+--- Bag-snap live stock (CountByUid) without ListBox rebuild — Watch catchup parity.
+function StockPiler3TabPlants.PatchLiveHave()
+    local list = StockPiler3TabPlants.listData
+    if type(list) ~= "table" or #list == 0 then
+        return false
+    end
+    local Catalog = StockPiler3.Catalog
+    local Inv = StockPiler3.Inventory
+    local dirty = false
+    for i = 1, #list do
+        local row = list[i]
+        if type(row) == "table" then
+            local plantUid = tonumber(row.plantUid) or 0
+            local have = 0
+            if Catalog and Catalog.PlantHave then
+                have = tonumber(Catalog.PlantHave(plantUid)) or 0
+            elseif plantUid > 0 and Inv and Inv.CountByUid then
+                have = tonumber(Inv.CountByUid(plantUid)) or 0
+            end
+            if (tonumber(row.have) or 0) ~= have then
+                row.have = have
+                local stockW = towstring(tostring(have))
+                row.stockText = stockW
+                row.yieldText = stockW
+                dirty = true
+            end
+        end
+    end
+    return dirty
+end
+
 function StockPiler3TabPlants.UpdateRows()
     if not SP3TabPlantsList then
         return
@@ -369,6 +410,9 @@ function StockPiler3TabPlants.UpdateRows()
                 if DoesWindowExist(rowName .. "Name") then
                     LabelSetText(rowName .. "Name", data.name or L"")
                     LabelSetTextColor(rowName .. "Name", data.nameR or 255, data.nameG or 255, data.nameB or 255)
+                end
+                if DoesWindowExist(rowName .. "Yield") then
+                    LabelSetText(rowName .. "Yield", data.stockText or towstring(tostring(data.have or 0)))
                 end
                 if DoesWindowExist(rowName .. "Recipe") then
                     WindowSetShowing(rowName .. "Recipe", data.hasRecipes == true)
@@ -427,11 +471,29 @@ function StockPiler3TabPlants.OnToggleWatch()
             ButtonSetDisabledFlag(win, data.watchBlocked == true)
         end
     end
-    if StockPiler3.Scheduler and StockPiler3.Scheduler.EnqueuePlanRebuild then
-        StockPiler3.Scheduler.EnqueuePlanRebuild()
-    end
-    if StockPiler3TabWatch and StockPiler3TabWatch.Refresh then
-        StockPiler3TabWatch.Refresh({ forcePlan = true })
+    if StockPiler3TabWatch and StockPiler3TabWatch.AfterCatalogWatchToggle then
+        StockPiler3TabWatch.AfterCatalogWatchToggle({
+            enabled = enable,
+            plantKey = data.plantKey,
+            kind = "plant",
+        })
+    else
+        if StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Invalidate then
+            StockPiler3.PlanSnapshot.Invalidate()
+        end
+        if StockPiler3.Scheduler and StockPiler3.Scheduler.EnqueuePlanRebuild then
+            StockPiler3.Scheduler.EnqueuePlanRebuild({ urgent = true })
+        end
+        if StockPiler3.Ui then
+            StockPiler3.Ui._watchUiLastKey = nil
+            StockPiler3.Ui._watchUiFlushedAt = 0
+            if StockPiler3.Ui.MarkWatchUiDirty then
+                StockPiler3.Ui.MarkWatchUiDirty()
+            end
+        end
+        if StockPiler3Window and StockPiler3Window.SyncActionReadiness then
+            StockPiler3Window.SyncActionReadiness()
+        end
     end
 end
 

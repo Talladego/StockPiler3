@@ -329,6 +329,17 @@ function Items.StoreItem(itemData, kindHint)
     local key = tostring(uid)
     local existing = store[key]
     local isNew = type(existing) ~= "table"
+    local priorRole = nil
+    local priorFx = 0
+    local priorSkill = 0
+    if type(existing) == "table" then
+        priorRole = existing.role
+        priorFx = tonumber(existing.effectId) or 0
+        if priorFx <= 0 and type(existing.bonuses) == "table" then
+            priorFx = tonumber(existing.bonuses[6]) or 0
+        end
+        priorSkill = tonumber(existing.skillReq) or 0
+    end
     local row = isNew and { uniqueID = uid } or existing
     row.uniqueID = uid
     local priorEffectId = 0
@@ -461,6 +472,15 @@ function Items.StoreItem(itemData, kindHint)
     end
 
     store[key] = row
+    local fxNow = tonumber(row.effectId) or 0
+    local skillNow = tonumber(row.skillReq) or 0
+    local structural = isNew
+        or tostring(row.role or "") ~= tostring(priorRole or "")
+        or fxNow ~= priorFx
+        or skillNow ~= priorSkill
+    if structural and StockPiler3.Knowledge and StockPiler3.Knowledge.Touch then
+        StockPiler3.Knowledge.Touch("item")
+    end
     return row, isNew
 end
 

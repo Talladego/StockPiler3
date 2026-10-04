@@ -567,21 +567,17 @@ local function FinalizePendingBuyForStop()
         return
     end
     local uid = tonumber(pending.uid) or 0
-    local qty = math.max(1, tonumber(pending.qty) or 1)
-    local bagNow = BagCountUid(uid)
-    local bagBefore = tonumber(pending.bagBefore) or 0
-    if uid > 0 and bagNow >= (bagBefore + qty) then
-        AccountConfirmedBuy(pending, PlayerMoneyBrass())
-        Buy._pendingBuy = nil
-        return
-    end
     local live = PlayerMoneyBrass()
-    local before = tonumber(pending.beforeMoney) or 0
-    if live > 0 and before > 0 and live < before then
+    local bagNow = BagCountUid(uid)
+    local ok = select(1, PendingEvidenceOk(pending, live, bagNow))
+    if ok then
         AccountConfirmedBuy(pending, live)
         Buy._pendingBuy = nil
         return
     end
+    local bagBefore = tonumber(pending.bagBefore) or 0
+    local qty = math.max(1, tonumber(pending.qty) or 1)
+    local before = tonumber(pending.beforeMoney) or 0
     LogBuy(string.format(
         "pending-drop-on-stop uid=%s qty=%d bag=%d->%d money=%d->%d",
         tostring(uid),
@@ -621,19 +617,39 @@ local function WakeBrewAfterBuyFill(reason)
     if Planner then
         -- Allow closed-window sync to re-run on this snap after buy fill.
         Planner._closedLiveSnapGen = nil
+        if Planner.InvalidateHaveWarm then
+            Planner.InvalidateHaveWarm()
+        end
+    end
+    local function PatchRows(rows, syncSnapshot)
+        if type(rows) ~= "table" or #rows == 0 then
+            return
+        end
+        if not Planner or not Planner.PatchWatchRowsLiveCounts then
+            return
+        end
+        for i = 1, #rows do
+            local row = rows[i]
+            if type(row) == "table" then
+                row._craftableSnapGen = -1
+            end
+        end
+        Planner.PatchWatchRowsLiveCounts(rows, {
+            syncSnapshot = syncSnapshot ~= false,
+            allowWarmHave = true,
+        })
     end
     local PS = StockPiler3.PlanSnapshot
     local plan = PS and PS.Get and PS.Get()
-    if type(plan) == "table" and type(plan.rows) == "table" and #plan.rows > 0 then
-        if Planner and Planner.PatchWatchRowsLiveCounts then
-            -- Force shared polish path even when potion craftable/deficit unchanged.
-            Planner.PatchWatchRowsLiveCounts(plan.rows, {
-                syncSnapshot = true,
-                allowWarmHave = true,
-            })
-        elseif Planner and Planner.SyncLiveStatusClosedWindow then
-            Planner.SyncLiveStatusClosedWindow()
-        end
+    local planRows = type(plan) == "table" and plan.rows or nil
+    if type(planRows) == "table" and #planRows > 0 then
+        PatchRows(planRows, true)
+    elseif Planner and Planner.SyncLiveStatusClosedWindow then
+        Planner.SyncLiveStatusClosedWindow()
+    end
+    local listData = StockPiler3TabWatch and StockPiler3TabWatch.listData
+    if type(listData) == "table" and #listData > 0 and listData ~= planRows then
+        PatchRows(listData, false)
     end
     local Brew = StockPiler3.Brew
     if Brew and Brew.InvalidateCanBrewCache then
@@ -645,8 +661,16 @@ local function WakeBrewAfterBuyFill(reason)
     if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
         StockPiler3Window.RequestFooterRefresh()
     end
-    if StockPiler3.Ui and StockPiler3.Ui.MarkWatchUiDirty then
-        StockPiler3.Ui.MarkWatchUiDirty()
+    if StockPiler3.Ui then
+        StockPiler3.Ui._watchUiLastKey = nil
+        StockPiler3.Ui._watchUiFlushedAt = 0
+        if StockPiler3.Ui.MarkWatchUiDirty then
+            StockPiler3.Ui.MarkWatchUiDirty()
+        end
+    end
+    -- Do not wait for store-close / coalesced flush - visit often stays open.
+    if StockPiler3TabWatch and StockPiler3TabWatch.UpdateRows then
+        StockPiler3TabWatch.UpdateRows({ keepVisible = true })
     end
     LogBuy("wake-brew-after-fill reason=" .. reason)
 end
@@ -703,6 +727,10 @@ local function BeginVisitIfNeeded()
     elseif not open and Buy._storeWasOpen == true then
         ChatVisitStop("close")
         ArmPlanAfterBuyFill("store-close")
+        -- idle-no-jobs may have armed already; still paint Watch now that the store is gone.
+        if (tonumber(Buy._visitBought) or 0) > 0 then
+            WakeBrewAfterBuyFill("store-close")
+        end
         Buy.InvalidateJobsCache()
     end
     Buy._storeWasOpen = open == true
@@ -723,6 +751,19 @@ function Buy.IsEnabled()
         return false
     end
     return true
+end
+
+--- Hold Watch rebind only while this visit is still purchasing. After fill/stop,
+--- Watch must paint Buy flasks/materials -> Ready even if the store stays open.
+function Buy.ShouldDeferWatchPaint()
+    if Buy.IsEnabled() ~= true then
+        return false
+    end
+    local VA = StockPiler3.VendorAdapter
+    if not VA or not VA.IsStoreOpen or VA.IsStoreOpen() ~= true then
+        return false
+    end
+    return Buy._visitStopReason == nil
 end
 
 function Buy.GetReserveGold()
@@ -1170,8 +1211,8 @@ function Buy.IssueOne(opId)
                     tostring(meta.focusWatchCount)
                 ))
             end
-            ArmPlanAfterBuyFill("idle-no-jobs")
             ChatVisitStop("idle-no-jobs")
+            ArmPlanAfterBuyFill("idle-no-jobs")
         end
         return done(false)
     end

@@ -118,7 +118,7 @@
                 </Window>
                 <Window name="SP3TabWatch" inherits="StockPiler3TabWatch" />
 
-                <Button name="$parentClearWatches" inherits="EA_Button_DefaultResizeable">
+                <Button name="$parentClearWatches" inherits="EA_Button_DefaultResizeable" showing="false">
                     <Anchors>
                         <Anchor point="bottom" relativePoint="bottom" relativeTo="StockPiler3Window">
                             <AbsPoint x="0" y="-10" />
@@ -129,7 +129,7 @@
                         <EventHandler event="OnMouseOver" function="StockPiler3Window.OnMouseOverClearWatches" />
                     </EventHandlers>
                 </Button>
-                <Button name="$parentHarvest" inherits="EA_Button_DefaultResizeable" gameactionbutton="left">
+                <Button name="$parentHarvest" inherits="EA_Button_DefaultResizeable" gameactionbutton="left" showing="false">
                     <Anchors>
                         <Anchor point="bottom" relativePoint="bottom" relativeTo="StockPiler3Window">
                             <AbsPoint x="-70" y="-10" />
@@ -142,7 +142,7 @@
                     </EventHandlers>
                 </Button>
                 <!-- Unused fallback; native harvest uses visible $parentHarvest gameactionbutton. -->
-                <Button name="$parentHarvestAction" inherits="EA_Button_DefaultResizeable" gameactionbutton="left">
+                <Button name="$parentHarvestAction" inherits="EA_Button_DefaultResizeable" gameactionbutton="left" showing="false">
                     <Size>
                         <AbsPoint x="1" y="1" />
                     </Size>
@@ -152,7 +152,7 @@
                         </Anchor>
                     </Anchors>
                 </Button>
-                <Button name="$parentBrew" inherits="EA_Button_DefaultResizeable">
+                <Button name="$parentBrew" inherits="EA_Button_DefaultResizeable" showing="false">
                     <Anchors>
                         <Anchor point="bottom" relativePoint="bottom" relativeTo="StockPiler3Window">
                             <AbsPoint x="70" y="-10" />

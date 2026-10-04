@@ -500,7 +500,7 @@
 
                 <Label name="$parentName" font="font_chat_text" maxchars="64" textalign="leftcenter" handleinput="true" wordwrap="false">
                     <Size>
-                        <AbsPoint x="224" y="28" />
+                        <AbsPoint x="256" y="28" />
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
@@ -514,11 +514,11 @@
 
                 <Label name="$parentStatus" font="font_chat_text" maxchars="48" textalign="leftcenter" handleinput="true" wordwrap="false">
                     <Size>
-                        <AbsPoint x="248" y="28" />
+                        <AbsPoint x="216" y="28" />
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
-                            <AbsPoint x="312" y="2" />
+                            <AbsPoint x="344" y="2" />
                         </Anchor>
                     </Anchors>
                     <EventHandlers>

@@ -25,11 +25,16 @@ function BrewChrome.RefreshBrewUi()
     if StockPiler3TabWatch and StockPiler3TabWatch.InvalidateBrewChrome then
         StockPiler3TabWatch.InvalidateBrewChrome()
     end
-    if StockPiler3.Ui and StockPiler3.Ui.MarkWatchUiDirty then
-        StockPiler3.Ui.MarkWatchUiDirty()
-    end
-    if StockPiler3Window and StockPiler3Window.RequestListRepopulate then
-        StockPiler3Window.RequestListRepopulate()
+    -- Chrome-only keepVisible paint. Do not MarkWatchUiDirty / RequestListRepopulate:
+    -- those queued a full RefreshActiveTab (ListBoxSetDisplayOrder) once the
+    -- inter-craft hold expired and blanked every Watch row between crafts.
+    if DoesWindowExist("StockPiler3Window")
+        and WindowGetShowing("StockPiler3Window") == true
+        and StockPiler3Window.SelectedTab == StockPiler3Window.TABS_WATCH
+        and StockPiler3TabWatch
+        and StockPiler3TabWatch.UpdateRows
+    then
+        StockPiler3TabWatch.UpdateRows({ keepVisible = true })
     end
     if Brew and Brew.MaybeNotifyBrewReady then
         Brew.MaybeNotifyBrewReady()

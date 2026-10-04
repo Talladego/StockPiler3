@@ -1,6 +1,6 @@
 ﻿<?xml version="1.0" encoding="UTF-8"?>
 <ModuleFile xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    <UiMod name="StockPiler3" version="0.3.256" date="2026-09-27">
+    <UiMod name="StockPiler3" version="0.3.292" date="2026-10-04">
         <Author name="Talladego" email="" />
         <Description text="StockPiler3 - lean cult/apo stock automation. Parallel-safe with StockPiler / StockPiler2." />
         <VersionSettings gameVersion="1.4.8" windowsVersion="1.0" savedVariablesVersion="1.0" />
@@ -13,6 +13,8 @@
             <Dependency name="EA_ChatWindow" />
             <Dependency name="EASystem_Tooltips" />
             <Dependency name="EA_ActionBars" />
+            <Dependency name="EA_CultivationWindow" />
+            <Dependency name="EA_CraftingSystem" />
             <Dependency name="LibSlash" optional="true" />
             <Dependency name="LibPerf" optional="true" />
         </Dependencies>
@@ -50,10 +52,12 @@
             <File name="Source/Stores/GardenStore.lua" />
             <File name="Source/Stores/RefinePipelineStore.lua" />
             <File name="Source/Stores/PlanSnapshotStore.lua" />
+            <File name="Source/Planner/Reservations.lua" />
             <File name="Source/Planner/Planner.lua" />
             <File name="Source/Grow.lua" />
             <File name="Source/SkillUp.lua" />
             <File name="Source/UpgradeSeed.lua" />
+            <File name="Source/Core/SeedEconomy.lua" />
             <File name="Source/Brew.lua" />
             <File name="Source/Refine.lua" />
             <File name="Source/Buy.lua" />

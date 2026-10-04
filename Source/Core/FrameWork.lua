@@ -240,10 +240,14 @@ function FW.EnqueueWarmHave(gen)
                 end
                 return "done"
             end
-            if state.phase == "collect" then
+            if state.phase == "collect" or state.phase == "bag" then
                 state.phase = "bag"
                 if P.FinishWarmHaveSlice then
-                    P.FinishWarmHaveSlice()
+                    local result = P.FinishWarmHaveSlice()
+                    -- Defer bag walk off BagFlush/PlanRebuild same frame.
+                    if result == "defer" then
+                        return "continue"
+                    end
                 end
                 return "done"
             end

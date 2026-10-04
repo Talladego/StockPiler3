@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.256** — Hide SkillUp watch rows at Cult/Apo 200; stop mid-brew Watch list rebinds that flickered rows.
+**Version 0.3.292** — Watch bag/craftable catch-up, headless Apo brew, Load/Brew chrome, AutoBuy status after vendor fill.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -132,6 +132,12 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.262 | Watch: Craft bag full status + AutoGrow stall chat (not Restocking when bag has no free slots) |
+| 0.3.261 | LibPerf: Orch decision hold remounts have/demand; Pick/Collect cacheOnly Demand; defer BufferFlags + WarmHave bag off BagFlush |
+| 0.3.260 | Watch: cloak Apo mid-open; keepVisible rows; scrub never drops watch recipes; heal Learn recipe |
+| 0.3.259 | Brew: no HideWindowOnly until SkillType=Apo; open-fail latches (manual/zone clear); Craft brew>soft harvest |
+| 0.3.258 | Brew open: OpenWindow every N ticks; open-timeout backoff greys macros (no SendInitCrafting storm) |
+| 0.3.257 | Review A–D: CultivationWindow deps; footer/macro key; fingerprint Stim/Goldweed; StoreItem Touch; AutoBuy stop evidence; Seed Lx->Ly; one refine/tick; fill-block seconds; first-error log; 4Hz polls; SeedEconomy; plan reservations |
 | 0.3.256 | SkillUp watch rows hide at 200; mid-brew Watch Refresh only if list empty (no flicker) |
 | 0.3.255 | SkillUp PickBestBagSeed: skillReq primary; settle bonus <1M (no L150 over L175 in bags) |
 | 0.3.254 | Brew ForceBrewUiRefresh: skip WatchRows mid-load/perform; settle hold returns without paint |

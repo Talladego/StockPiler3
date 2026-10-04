@@ -16,9 +16,12 @@ Sch.PLAN_COALESCE_WHEN_AWAKE_SEC = 3.0
 Sch.PLAN_MIN_GAP_SEC = 2.0
 Sch.PLAN_WARM_HOLD_MAX_SEC = 3.0
 Sch.SESSION_SETTLE_SEC = 2.5
+-- 75 frames ended settle in ~1.2s at 60fps — AutoGrow planted before LOADING_END.
+Sch.SESSION_SETTLE_MIN_FRAMES = 90
 Sch.AUTO_TICK_SEC = 1.0
 Sch.AUTO_TICK_IDLE_SEC = 5.0
 Sch.HARVEST_STORM_MIN_SEC = 1.5
+Sch.POLL_SEC = 0.25
 -- Cover plant/refine inventory + CultivationUpdated lag (0.75 left WarmHave
 -- miss storms between IssueOne and the next orch tick).
 Sch.PLANT_QUIET_BASE_SEC = 1.25
@@ -35,13 +38,23 @@ Sch._suppressInvTicks = 0
 Sch._pendingBagFlushAfterSuppress = false
 Sch._pendingBagNeedQueueAfterSuppress = false
 Sch._pendingPlanAfterSuppress = false
+Sch._pendingPrewarmAfterQuiet = false
+Sch._pendingPrewarmReason = nil
+Sch._pendingPlanAfterPrewarm = false
 Sch._initialized = false
 Sch._harvestStormUntil = 0
 Sch._plantQuietUntil = 0
+Sch._holds = {}
+Sch._pollAt = 0
+Sch._brewLightAt = 0
 Sch._skipPlanThisFrame = false
 Sch._skipUiThisFrame = false
 Sch._skipUiHoldFooter = false
 Sch._skipOrchThisFrame = false
+Sch._awaitingSessionLoad = false
+Sch._orchDecisionHoldTicks = 0
+Sch._heavyWorkFrame = -1
+Sch._pendingBufferFlagsRebuild = false
 Sch._busTokens = nil
 
 local function Now()
@@ -92,7 +105,7 @@ local function RequestCachePrewarm(reason)
     if StockPiler3.Inventory and StockPiler3.Inventory.GetSnapGen then
         snapGen = tonumber(StockPiler3.Inventory.GetSnapGen()) or 0
     end
-    local genKey = tostring(snapGen) .. ":" .. tostring(reason or "")
+    local genKey = tostring(snapGen)
     if FW.EnqueueWarmHave then
         FW.EnqueueWarmHave(genKey)
     end
@@ -122,6 +135,37 @@ local function FlushPendingPrewarmAfterQuiet()
         Planner.InvalidateHaveCacheAfterQuiet()
     end
     RequestCachePrewarm(reason)
+    -- Rebuild after prewarm finishes — never same frame as quiet-end flush.
+    Sch._pendingPlanAfterPrewarm = true
+end
+
+--- After quiet/storm prewarm: enqueue one coalesced rebuild when FrameWork is idle.
+local function FlushPendingPlanAfterPrewarm()
+    if Sch._pendingPlanAfterPrewarm ~= true then
+        return false
+    end
+    if Sch.SkipPlanThisFrameActive and Sch.SkipPlanThisFrameActive() == true then
+        return false
+    end
+    if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
+        return false
+    end
+    if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+        return false
+    end
+    local FW = StockPiler3.FrameWork
+    if FW and FW.IsPrewarmBusy and FW.IsPrewarmBusy() == true then
+        return false
+    end
+    if FW and FW.Busy and FW.Busy() == true then
+        return false
+    end
+    Sch._pendingPlanAfterPrewarm = false
+    if Sch.EnqueuePlanRebuild then
+        Sch.EnqueuePlanRebuild({ nudge = true })
+    end
+    Sch.MarkWatchUiDirty()
+    return true
 end
 
 local function DecaySuppressInventorySideEffects()
@@ -153,6 +197,33 @@ local function DecaySuppressInventorySideEffects()
     end
 end
 
+--- Idle one-heavy: rebuild BufferFlags after invalidate (never on Orch plant frame).
+local function FlushPendingBufferFlagsRebuild(didHeavy)
+    if Sch._pendingBufferFlagsRebuild ~= true then
+        return false
+    end
+    if didHeavy == true then
+        return false
+    end
+    if Sch.SkipPlanThisFrameActive and Sch.SkipPlanThisFrameActive() == true then
+        return false
+    end
+    if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
+        return false
+    end
+    if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+        return false
+    end
+    local Refine = StockPiler3.Refine
+    if not (Refine and Refine.EnsureBufferFlagsNow) then
+        Sch._pendingBufferFlagsRebuild = false
+        return false
+    end
+    Sch._pendingBufferFlagsRebuild = false
+    Refine.EnsureBufferFlagsNow()
+    return true
+end
+
 local function FlushBagIfDue()
     if Sch._bagDue ~= true then
         return false
@@ -170,7 +241,7 @@ local function FlushBagIfDue()
     -- Keep _bagDue; do not extend _bagAt so flush runs on the first eligible
     -- Update after the job clears. Load uses live BagAdapter.
     local Brew = StockPiler3.Brew
-    if Brew and type(Brew._job) == "table" then
+    if Brew and Brew.IsLoadJobActive and Brew.IsLoadJobActive() then
         return false
     end
     if Now() < (tonumber(Sch._bagAt) or 0) then
@@ -209,6 +280,10 @@ local function RebuildPlanIfDue()
     if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
         return false
     end
+    -- Orch probe remounts have; wait for hold to drop before CheapRebuild.
+    if Sch.IsOrchDecisionHold and Sch.IsOrchDecisionHold() == true then
+        return false
+    end
     local Orch = StockPiler3.Orchestrator
     if Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true then
         return false
@@ -229,35 +304,36 @@ local function RebuildPlanIfDue()
     if FW and FW.Busy and FW.Busy() == true then
         return false
     end
-    -- Hold full rebuild until WarmHave prewarm finishes (never publish partial plan).
-    if Planner and Planner.CanCheapOrGardenPatch and Planner.CanCheapOrGardenPatch() ~= true then
-        local warm = Planner.IsHaveCacheWarmForSnap and Planner.IsHaveCacheWarmForSnap() == true
-        if not warm then
-            RequestCachePrewarm("plan-hold-warm")
-            -- Never cold-build while a prewarm job is still queued after RequestCachePrewarm.
+    -- Hold rebuild until WarmHave finishes — including Cheap/Garden paths.
+    -- Snap bumps InvalidateHaveWarm; without this wait CheapRebuild sync-warms
+    -- under a remounted cache and stamps stale craftable after the first move.
+    local warm = Planner and Planner.IsHaveCacheWarmForSnap
+        and Planner.IsHaveCacheWarmForSnap() == true
+    if not warm then
+        RequestCachePrewarm("plan-hold-warm")
+        -- Never cold-build while a prewarm job is still queued after RequestCachePrewarm.
+        if FW and FW.IsPrewarmBusy and FW.IsPrewarmBusy() == true then
+            return false
+        end
+        local holdMax = tonumber(Sch.PLAN_WARM_HOLD_MAX_SEC) or 3.0
+        local holdStart = tonumber(Sch._planWarmHoldAt) or 0
+        if holdStart <= 0 then
+            Sch._planWarmHoldAt = Now()
+            holdStart = Sch._planWarmHoldAt
+        end
+        if (Now() - holdStart) < holdMax then
+            return false
+        end
+        -- Hold expired still cold: re-enqueue prewarm and extend hold (avoid sync
+        -- Build.WarmHave hitch) up to a few retries, then fall through.
+        local retries = tonumber(Sch._planWarmHoldRetries) or 0
+        local maxRetries = 2
+        if retries < maxRetries then
+            Sch._planWarmHoldRetries = retries + 1
+            Sch._planWarmHoldAt = Now()
+            RequestCachePrewarm("plan-hold-warm-retry")
             if FW and FW.IsPrewarmBusy and FW.IsPrewarmBusy() == true then
                 return false
-            end
-            local holdMax = tonumber(Sch.PLAN_WARM_HOLD_MAX_SEC) or 3.0
-            local holdStart = tonumber(Sch._planWarmHoldAt) or 0
-            if holdStart <= 0 then
-                Sch._planWarmHoldAt = Now()
-                holdStart = Sch._planWarmHoldAt
-            end
-            if (Now() - holdStart) < holdMax then
-                return false
-            end
-            -- Hold expired still cold: re-enqueue prewarm and extend hold (avoid sync
-            -- Build.WarmHave hitch) up to a few retries, then fall through.
-            local retries = tonumber(Sch._planWarmHoldRetries) or 0
-            local maxRetries = 2
-            if retries < maxRetries then
-                Sch._planWarmHoldRetries = retries + 1
-                Sch._planWarmHoldAt = Now()
-                RequestCachePrewarm("plan-hold-warm-retry")
-                if FW and FW.IsPrewarmBusy and FW.IsPrewarmBusy() == true then
-                    return false
-                end
             end
         end
     end
@@ -289,15 +365,18 @@ local function FlushWatchUiIfDue(didHeavy)
     if Sch._skipUiThisFrame == true then
         return false
     end
-    if Sch.IsSessionSettling and Sch.IsSessionSettling() == true then
-        return false
-    end
-    local FW = StockPiler3.FrameWork
-    if FW and FW.IsPrewarmBusy and FW.IsPrewarmBusy() == true then
-        return false
-    end
-    if FW and FW.Busy and FW.Busy() == true then
-        return false
+    local openPaint = StockPiler3Window and StockPiler3Window._openPaintPending == true
+    if not openPaint then
+        if Sch.IsSessionSettling and Sch.IsSessionSettling() == true then
+            return false
+        end
+        local FW = StockPiler3.FrameWork
+        if FW and FW.IsPrewarmBusy and FW.IsPrewarmBusy() == true then
+            return false
+        end
+        if FW and FW.Busy and FW.Busy() == true then
+            return false
+        end
     end
     local Ui = StockPiler3.Ui
     if Ui and Ui.FlushWatchUiIfDirty then
@@ -348,6 +427,12 @@ local function ShouldWakeAutoGrowUrgent()
 end
 
 local function OnInventorySnapshot()
+    -- Every bag snap must re-warm Have before craftable recount. Remount-under-hold
+    -- used to leave IsHaveCacheWarm true with stale mat totals after the first move.
+    local Planner = StockPiler3.Planner
+    if Planner and Planner.InvalidateHaveWarm then
+        Planner.InvalidateHaveWarm()
+    end
     -- Snap path: avoid full WakeAutoGrow (snap-wake storm risk), but clear a
     -- soft fill-block when empty plots are waiting for bag seeds after refine.
     if StockPiler3.Buy and StockPiler3.Buy.OnInventorySnapshot then
@@ -391,6 +476,23 @@ local function OnInventorySnapshot()
     -- Do not InvalidateBufferFlags on every snap: BufferFlagsCacheKey includes snapGen,
     -- so the next real read rebuilds on key mismatch. PeekFreshBufferPending treats
     -- stale/nil as unknown (orch falls through to full check).
+    -- Craft-bag / inventory spends must recount Watch craftable (paint-only leaves
+    -- stale greens after manual apo / buy / harvest). Coalesce via RebuildPlanIfDue;
+    -- never WarmHave or PatchWatch inside this handler.
+    local RP = StockPiler3.RefinePipeline
+    local refineBusy = RP and RP.HasOutstanding and RP.HasOutstanding() == true
+    if not plantQuiet and not storm and not brewSession and not refineBusy then
+        Sch.EnqueuePlanRebuild({ nudge = true })
+    elseif plantQuiet or storm then
+        -- Bag moves during quiet/storm: latch rebuild after quiet-end invalidate.
+        -- Without this, remounted WarmHave stamps stale craftable and Watch only
+        -- catches up on a later stack move.
+        Sch._pendingPrewarmAfterQuiet = true
+        if Sch._pendingPrewarmReason == nil then
+            Sch._pendingPrewarmReason = "snap-during-quiet"
+        end
+        Sch._pendingPlanAfterPrewarm = true
+    end
     Sch.MarkWatchUiDirty()
 end
 
@@ -438,11 +540,14 @@ local function OnPlanUpdated()
 end
 
 local function OnSessionLoaded()
+    Sch._awaitingSessionLoad = false
     if Sch.BeginSessionSettle then
         Sch.BeginSessionSettle()
     end
     Sch.SkipUiThisFrame()
     Sch.EnqueueBagFlush(true)
+    -- Drop any plant job picked on empty bags before LOADING_END.
+    InvalidatePlantQueue("session-loaded")
     -- Soft Invalidate on mid-session LOADING_END (zone/scenario). Hard Clear only when
     -- character identity changes (or first plan with no prior key) - never serve another
     -- character's stale plan via GetOrBuild(false).
@@ -491,6 +596,111 @@ function Sch.SuppressInventorySideEffects(ticks)
     end
 end
 
+--- Orch plant/refine probe: remount have/demand instead of WarmHave.miss bag walk.
+function Sch.ArmOrchDecisionHold(ticks)
+    ticks = tonumber(ticks) or 2
+    if ticks < 1 then
+        ticks = 1
+    end
+    local cur = tonumber(Sch._orchDecisionHoldTicks) or 0
+    if ticks > cur then
+        Sch._orchDecisionHoldTicks = ticks
+    end
+end
+
+function Sch.IsOrchDecisionHold()
+    return (tonumber(Sch._orchDecisionHoldTicks) or 0) > 0
+end
+
+local function DecayOrchDecisionHold()
+    local n = tonumber(Sch._orchDecisionHoldTicks) or 0
+    if n > 0 then
+        Sch._orchDecisionHoldTicks = n - 1
+        if (tonumber(Sch._orchDecisionHoldTicks) or 0) <= 0 then
+            -- Hold end: same Have bust as quiet-end so CheapRebuild cannot trust
+            -- remounted mat totals from the probe window.
+            local Planner = StockPiler3.Planner
+            if Planner and Planner.InvalidateHaveWarm then
+                Planner.InvalidateHaveWarm()
+            end
+            Sch._pendingPrewarmAfterQuiet = true
+            if Sch._pendingPrewarmReason == nil then
+                Sch._pendingPrewarmReason = "orch-hold-end"
+            end
+            Sch._pendingPlanAfterPrewarm = true
+        end
+    end
+end
+
+--- Mark BagFlush / PlanRebuild so WarmHave bag phase can defer same frame.
+function Sch.NoteHeavyWork()
+    Sch._heavyWorkFrame = tonumber(StockPiler3.FrameCounter) or 0
+end
+
+function Sch.ShouldDeferWarmHaveBag()
+    local frame = tonumber(StockPiler3.FrameCounter) or 0
+    if frame > 0 and frame == (tonumber(Sch._heavyWorkFrame) or -1) then
+        return true
+    end
+    return false
+end
+
+--- Expose prewarm enqueue for PickPlantCandidate cold-cache path.
+function Sch.RequestCachePrewarm(reason)
+    return RequestCachePrewarm(reason)
+end
+
+function Sch.Hold(reason, seconds)
+    reason = tostring(reason or "")
+    seconds = tonumber(seconds) or 0
+    if reason == "" then
+        return
+    end
+    if type(Sch._holds) ~= "table" then
+        Sch._holds = {}
+    end
+    local untilT = Now() + math.max(0, seconds)
+    local cur = tonumber(Sch._holds[reason]) or 0
+    if untilT > cur then
+        Sch._holds[reason] = untilT
+    end
+end
+
+function Sch.IsHeld(reason)
+    reason = tostring(reason or "")
+    local untilT = tonumber(Sch._holds and Sch._holds[reason]) or 0
+    if untilT <= 0 then
+        return false
+    end
+    local now = Now()
+    if now <= 0 then
+        return true
+    end
+    if now < untilT then
+        return true
+    end
+    Sch._holds[reason] = nil
+    return false
+end
+
+--- Expire named holds and storm/quiet windows once per frame.
+function Sch.Advance(now)
+    now = tonumber(now) or Now()
+    if Sch.IsHarvestStorm then
+        Sch.IsHarvestStorm()
+    end
+    if Sch.IsPlantQuiet then
+        Sch.IsPlantQuiet()
+    end
+    if type(Sch._holds) == "table" and now > 0 then
+        for reason, untilT in pairs(Sch._holds) do
+            if (tonumber(untilT) or 0) > 0 and now >= untilT then
+                Sch._holds[reason] = nil
+            end
+        end
+    end
+end
+
 function Sch.ArmHarvestStorm(seconds)
     seconds = tonumber(seconds) or Sch.HARVEST_STORM_MIN_SEC or 1.5
     local minSec = tonumber(Sch.HARVEST_STORM_MIN_SEC) or 1.5
@@ -509,6 +719,8 @@ function Sch.ArmHarvestStorm(seconds)
     if quietUntil > curQuiet then
         Sch._plantQuietUntil = quietUntil
     end
+    Sch.Hold("harvestStorm", seconds)
+    Sch.Hold("plantQuiet", quietSec)
 end
 
 function Sch.IsHarvestStorm()
@@ -547,7 +759,17 @@ function Sch.IsPlantQuiet()
     end
     if now >= untilT then
         Sch._plantQuietUntil = 0
+        -- Quiet-end: drop remounted have, prewarm, then rebuild (bag moves during
+        -- quiet never EnqueuePlanRebuild — without this Watch sits one stack behind).
+        Sch.SkipPlanThisFrame()
+        Sch.SkipUiThisFrame()
+        local Planner = StockPiler3.Planner
+        if Planner and Planner.InvalidateHaveCacheAfterQuiet then
+            Planner.InvalidateHaveCacheAfterQuiet()
+        end
         FlushPendingPrewarmAfterQuiet()
+        Sch._pendingPlanAfterPrewarm = true
+        Sch.MarkWatchUiDirty()
     end
     return false
 end
@@ -567,6 +789,7 @@ function Sch.ArmPlantQuiet(seconds)
     if untilT > cur then
         Sch._plantQuietUntil = untilT
     end
+    Sch.Hold("plantQuiet", seconds)
 end
 
 function Sch.SkipPlanThisFrame()
@@ -590,8 +813,8 @@ function Sch.SkipUiThisFrameActive()
     return Sch._skipUiThisFrame == true
 end
 
---- Hold Watch paint for a short window after reload / loading-end so FrameWork
---- prewarm + first PlanRebuild finish before SelectTab/RefreshWatch can Flatten.
+--- Hold Watch paint / AutoGrow plant after reload until LOADING_END, then a
+--- short window so the first real bag flatten can land.
 function Sch.BeginSessionSettle(seconds)
     seconds = tonumber(seconds) or Sch.SESSION_SETTLE_SEC or 2.5
     local untilT = Now() + seconds
@@ -601,7 +824,8 @@ function Sch.BeginSessionSettle(seconds)
     end
     -- Frame-based fallback: GetGameTime can be 0 during early reload.
     local fc = tonumber(StockPiler3.FrameCounter) or 0
-    local frames = math.max(45, math.floor(seconds * 30))
+    local minFrames = tonumber(Sch.SESSION_SETTLE_MIN_FRAMES) or 90
+    local frames = math.max(minFrames, math.floor(seconds * 60))
     local untilFrame = fc + frames
     local curFrame = tonumber(Sch._sessionSettleUntilFrame) or 0
     if untilFrame > curFrame then
@@ -609,7 +833,16 @@ function Sch.BeginSessionSettle(seconds)
     end
 end
 
+function Sch.MarkAwaitingSessionLoad()
+    Sch._awaitingSessionLoad = true
+    Sch.BeginSessionSettle()
+end
+
 function Sch.IsSessionSettling()
+    -- Addon init /reload fires orch ticks before LOADING_END; bags still empty.
+    if Sch._awaitingSessionLoad == true then
+        return true
+    end
     local fc = tonumber(StockPiler3.FrameCounter) or 0
     local untilFrame = tonumber(Sch._sessionSettleUntilFrame) or 0
     if untilFrame > 0 and fc < untilFrame then
@@ -667,6 +900,8 @@ end
 function Sch.EnqueuePlanRebuild(opts)
     opts = type(opts) == "table" and opts or {}
     local nudge = opts.nudge == true
+    -- Structural watch mark/clear: fire on next tick; skip AutoGrow 3s coalesce + min-gap.
+    local urgent = opts.urgent == true
     if Sch.IsInventorySideEffectsSuppressed() then
         Sch._pendingPlanAfterSuppress = true
         return
@@ -675,25 +910,30 @@ function Sch.EnqueuePlanRebuild(opts)
         Sch._bagNeedQueue = true
         return
     end
-    if nudge == true and Sch._planDue == true and (tonumber(Sch._planAt) or 0) > 0 then
+    if nudge == true and urgent ~= true and Sch._planDue == true and (tonumber(Sch._planAt) or 0) > 0 then
         return
     end
     local now = Now()
-    local wait = tonumber(Sch.PLAN_MAX_WAIT_SEC) or 0.5
-    if Sch.ShouldWakeAutoGrow and Sch.ShouldWakeAutoGrow() == true and nudge ~= true then
-        wait = tonumber(Sch.PLAN_COALESCE_WHEN_AWAKE_SEC) or 3.0
+    local wait = 0
+    if urgent ~= true then
+        wait = tonumber(Sch.PLAN_MAX_WAIT_SEC) or 0.5
+        if Sch.ShouldWakeAutoGrow and Sch.ShouldWakeAutoGrow() == true and nudge ~= true then
+            wait = tonumber(Sch.PLAN_COALESCE_WHEN_AWAKE_SEC) or 3.0
+        end
     end
     local at = now + wait
-    local minGap = tonumber(Sch.PLAN_MIN_GAP_SEC) or 2.0
-    local lastBuilt = tonumber(Sch._lastPlanBuiltAt) or 0
-    if lastBuilt > 0 and minGap > 0 then
-        local gapAt = lastBuilt + minGap
-        if gapAt > at then
-            at = gapAt
+    if urgent ~= true then
+        local minGap = tonumber(Sch.PLAN_MIN_GAP_SEC) or 2.0
+        local lastBuilt = tonumber(Sch._lastPlanBuiltAt) or 0
+        if lastBuilt > 0 and minGap > 0 then
+            local gapAt = lastBuilt + minGap
+            if gapAt > at then
+                at = gapAt
+            end
         end
     end
     Sch._planDue = true
-    if Sch._planAt <= 0 then
+    if Sch._planAt <= 0 or urgent == true then
         Sch._planAt = at
     elseif at > Sch._planAt and nudge ~= true then
         Sch._planAt = at
@@ -764,6 +1004,14 @@ function Sch.SetAutoGrowIdle(idle)
 end
 
 function Sch.ShouldDeferAutoGrowPlant()
+    local SchSelf = Sch
+    if SchSelf.IsSessionSettling and SchSelf.IsSessionSettling() == true then
+        return true, "session-settle"
+    end
+    local Inv = StockPiler3.Inventory
+    if Inv and Inv.IsReady and Inv.IsReady() ~= true then
+        return true, "inv-not-ready"
+    end
     local Watch = StockPiler3.Watch
     if Watch and Watch.IsCombatPauseEnabled and Watch.IsCombatPauseEnabled() ~= true then
         return false, nil
@@ -782,25 +1030,38 @@ function Sch.ShouldDeferAutoGrowPlant()
 end
 
 function Sch.OnUpdate(timeElapsed)
-    if StockPiler3.Buy and StockPiler3.Buy.PollStorePresence then
-        StockPiler3.Buy.PollStorePresence()
+    local now = Now()
+    local pollSec = tonumber(Sch.POLL_SEC) or 0.25
+    local pollDue = now <= 0 or (now - (tonumber(Sch._pollAt) or 0) >= pollSec)
+    if pollDue then
+        Sch._pollAt = now
+        if StockPiler3.Buy and StockPiler3.Buy.PollStorePresence then
+            StockPiler3.Buy.PollStorePresence()
+        end
+        if StockPiler3.Grow and StockPiler3.Grow.ExpireStalePending then
+            StockPiler3.Grow.ExpireStalePending()
+        end
     end
-    if StockPiler3.Grow and StockPiler3.Grow.ExpireStalePending then
-        StockPiler3.Grow.ExpireStalePending()
-    end
-    if StockPiler3.Brew and StockPiler3.Brew.OnUpdate then
-        StockPiler3.Brew.OnUpdate(timeElapsed)
+    local Brew = StockPiler3.Brew
+    if Brew and Brew.OnUpdate then
+        local loadJob = Brew.IsLoadJobActive and Brew.IsLoadJobActive() == true
+        if loadJob then
+            Brew.OnUpdate(timeElapsed)
+        else
+            local brewDue = now <= 0 or (now - (tonumber(Sch._brewLightAt) or 0) >= pollSec)
+            if brewDue then
+                Sch._brewLightAt = now
+                Brew.OnUpdate(timeElapsed)
+            end
+        end
     end
     DecaySuppressInventorySideEffects()
-    if Sch.IsHarvestStorm then
-        Sch.IsHarvestStorm()
-    end
-    if Sch.IsPlantQuiet then
-        Sch.IsPlantQuiet()
-    end
+    DecayOrchDecisionHold()
+    Sch.Advance(now)
 
     local didHeavy = false
     if FlushBagIfDue() then
+        Sch.NoteHeavyWork()
         didHeavy = true
     end
     local brewSession = StockPiler3.Orchestrator
@@ -816,7 +1077,15 @@ function Sch.OnUpdate(timeElapsed)
     then
         didHeavy = true
     end
+    if not didHeavy and FlushPendingPlanAfterPrewarm() then
+        -- Enqueued only; RebuildPlanIfDue may still run this frame if due.
+    end
     if not didHeavy and RebuildPlanIfDue() then
+        Sch.NoteHeavyWork()
+        didHeavy = true
+    end
+    -- BufferFlags rebuild: idle one-heavy, never on Orch plant / BagFlush frame.
+    if not didHeavy and FlushPendingBufferFlagsRebuild(false) then
         didHeavy = true
     end
     Sch._skipPlanThisFrame = false
@@ -844,7 +1113,7 @@ function Sch.OnUpdate(timeElapsed)
         -- Skip Orch while brew load job runs (AddItem path). Keep Orch when
         -- phase=loaded with no job so ProbeStuckAutoLoaded still ticks.
         local Brew = StockPiler3.Brew
-        if Brew and type(Brew._job) == "table" then
+        if Brew and Brew.IsLoadJobActive and Brew.IsLoadJobActive() then
             skipOrch = true
         end
         if not didHeavy and not skipOrch
@@ -889,4 +1158,14 @@ function Sch.Shutdown()
     Sch._planDue = false
     Sch._harvestStormUntil = 0
     Sch._plantQuietUntil = 0
+    Sch._pendingPrewarmAfterQuiet = false
+    Sch._pendingPrewarmReason = nil
+    Sch._pendingPlanAfterPrewarm = false
+    Sch._orchDecisionHoldTicks = 0
+    Sch._awaitingSessionLoad = false
+    Sch._heavyWorkFrame = -1
+    Sch._pendingBufferFlagsRebuild = false
+    Sch._holds = {}
+    Sch._pollAt = 0
+    Sch._brewLightAt = 0
 end

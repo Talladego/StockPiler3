@@ -681,6 +681,14 @@ local function GrowReserveForSpec(spec)
         end
     end
 
+    -- Watched seed buffer already met: plants are brewable surplus. Holding for
+    -- lower-tier bag leftovers (unwatched qty 1–4) left craftable=0 with
+    -- plantJob=nil no-demand-short and empty plots idle.
+    local RefineMod = StockPiler3.Refine
+    if RefineMod and RefineMod.IsSeedBufferSatisfied and RefineMod.IsSeedBufferSatisfied() == true then
+        return 0
+    end
+
     local SM = StockPiler3.SeedMap
     local plantOrSeedUid = tonumber(spec and (spec.uid or spec.uniqueID or spec.boundUid)) or 0
     local seedUid = 0
@@ -726,14 +734,31 @@ local function GrowReserveForSpec(spec)
         end
         return math.max(0, minBuf - live)
     end
-    local headroom = headroomOf(seedUid)
-    -- Crit-tier plants often resolve to the lower planted seed (buffer already
-    -- met). Also hold feedstock for every grow/refine-linked seed and the
-    -- genus-ladder seed at this plant's skillReq.
+    local function seedSkillReq(uid)
+        uid = tonumber(uid) or 0
+        if uid <= 0 then
+            return 0
+        end
+        local Inv = StockPiler3.Inventory
+        local sample = Inv and Inv.GetSample and Inv.GetSample(uid)
+        if type(sample) ~= "table" and StockPiler3.Items and StockPiler3.Items.GetByUid then
+            sample = StockPiler3.Items.GetByUid(uid)
+        end
+        if type(sample) ~= "table" then
+            return 0
+        end
+        local req = tonumber(sample.craftingSkillRequirement) or tonumber(sample.skillReq)
+            or tonumber(sample.skillLevel) or 0
+        if req <= 0 and type(sample.bonuses) == "table" then
+            req = tonumber(sample.bonuses[9]) or 0
+        end
+        return req
+    end
     local plantReq = 0
     if not isSeed and plantOrSeedUid > 0 then
         if type(spec) == "table" then
-            plantReq = tonumber(spec.skillLevel) or tonumber(spec.craftingSkillRequirement) or 0
+            plantReq = tonumber(spec.skillLevel) or tonumber(spec.craftingSkillRequirement)
+                or tonumber(spec.skillReq) or 0
         end
         if plantReq <= 0 then
             local Inv = StockPiler3.Inventory
@@ -742,20 +767,24 @@ local function GrowReserveForSpec(spec)
                 sample = StockPiler3.Items.GetByUid(plantOrSeedUid)
             end
             if type(sample) == "table" then
-                plantReq = tonumber(sample.craftingSkillRequirement) or tonumber(sample.skillReq) or 0
+                plantReq = tonumber(sample.craftingSkillRequirement) or tonumber(sample.skillReq)
+                    or tonumber(sample.skillLevel) or 0
                 if plantReq <= 0 and type(sample.bonuses) == "table" then
                     plantReq = tonumber(sample.bonuses[9]) or 0
                 end
             end
         end
-        if SM and SM.GetSeedUidsForPlant then
-            local linked = SM.GetSeedUidsForPlant(plantOrSeedUid) or {}
-            for i = 1, #linked do
-                local h = headroomOf(linked[i])
-                if h > headroom then
-                    headroom = h
-                end
-            end
+    end
+    -- Hold only the resolved seed (when same-tier / unknown) plus the genus
+    -- ladder seed at this plant's skillReq. Never max over every grow/refine
+    -- linked seed — lower-tier leftovers inflate reserve and block brew.
+    local headroom = 0
+    if isSeed then
+        headroom = headroomOf(seedUid)
+    else
+        local sReq = seedSkillReq(seedUid)
+        if plantReq <= 0 or sReq <= 0 or sReq == plantReq then
+            headroom = headroomOf(seedUid)
         end
         if plantReq > 0 and SM and SM.GetGenusLadderForSpec then
             local ladder = SM.GetGenusLadderForSpec(spec or {
@@ -911,6 +940,70 @@ local function PotionActiveRecipeKey(potion)
     return nil
 end
 
+--- True when recipe outcomes include uid (or outcomes unknown).
+local function RecipeProducesOutputUid(recipe, uid)
+    uid = tonumber(uid) or 0
+    if uid <= 0 or type(recipe) ~= "table" then
+        return true
+    end
+    local outcomes = recipe.outcomes
+    if type(outcomes) == "table" and next(outcomes) ~= nil then
+        return outcomes[uid] == true or outcomes[tostring(uid)] ~= nil
+    end
+    local outUid = tonumber(recipe.outputUid) or tonumber(recipe.activeOutcomeUid) or 0
+    return outUid <= 0 or outUid == uid
+end
+
+--- When watch rk was scrubbed, prefer any still-stored recipe that produces this potion.
+local function HealRecipeForPotion(potion, preferKey, outputUid)
+    if type(potion) ~= "table" then
+        return nil
+    end
+    preferKey = tostring(preferKey or "")
+    local uid = tonumber(outputUid) or tonumber(potion.outputUid) or 0
+    local tryKeys = {}
+    local seen = {}
+    local function add(k)
+        k = tostring(k or "")
+        if k ~= "" and seen[k] ~= true then
+            seen[k] = true
+            tryKeys[#tryKeys + 1] = k
+        end
+    end
+    add(preferKey)
+    add(PotionActiveRecipeKey(potion))
+    local keys = PotionRecipeKeys(potion)
+    if type(keys) == "table" then
+        for i = 1, #keys do
+            add(keys[i])
+        end
+    end
+    local recipes = RecipesTable()
+    for i = 1, #tryKeys do
+        local k = tryKeys[i]
+        local recipe = type(recipes) == "table" and recipes[k] or nil
+        -- Reject cross-potion links (e.g. Unguent fingerprint on a Power watch).
+        if type(recipe) == "table" and RecipeProducesOutputUid(recipe, uid) ~= true then
+            recipe = nil
+        end
+        if type(recipe) == "table" then
+            -- Re-home under the watch fingerprint when scrub deleted that key only.
+            if preferKey ~= "" and preferKey ~= k
+                and type(recipes) == "table"
+                and type(recipes[preferKey]) ~= "table"
+            then
+                recipes[preferKey] = recipe
+            end
+            HydrateRecipeSlots(recipe)
+            if uid > 0 then
+                recipe.outputUid = uid
+            end
+            return recipe
+        end
+    end
+    return nil
+end
+
 --- Recipe for a composite potionRecipeKey (uid:N|rk:fingerprint).
 function RS.RecipeSpecForPotionRecipe(potionRecipeKey)
     local parsed = RS.ParsePotionRecipeKey(potionRecipeKey)
@@ -919,7 +1012,14 @@ function RS.RecipeSpecForPotionRecipe(potionRecipeKey)
     end
     local recipe = RS.GetRecipe(parsed.recipeSpecKey)
     if type(recipe) ~= "table" then
-        return nil
+        local potion = RS.GetPotion(parsed.potionKey)
+            or (parsed.outputUid and RS.GetPotion(parsed.outputUid))
+            or nil
+        recipe = HealRecipeForPotion(potion, parsed.recipeSpecKey, parsed.outputUid)
+        if type(recipe) ~= "table" then
+            return nil
+        end
+        return recipe
     end
     local uid = tonumber(parsed.outputUid) or 0
     if uid > 0 then
@@ -939,17 +1039,7 @@ function RS.RecipeSpecForPotion(potionKey)
         return nil
     end
     local key = PotionActiveRecipeKey(potion)
-    if type(key) ~= "string" or key == "" then
-        return nil
-    end
-    local recipe = RS.GetRecipe(key)
-    if type(recipe) ~= "table" then
-        return nil
-    end
-    local uid = tonumber(potion.outputUid) or 0
-    if uid > 0 then
-        recipe.outputUid = uid
-    end
+    local recipe = HealRecipeForPotion(potion, key, potion.outputUid)
     return recipe
 end
 
@@ -1502,8 +1592,10 @@ local FINGERPRINT_ROLE = {
     container = true,
     main = true,
     stabilizer = true,
+    goldweed = true,
     extender = true,
     multiplier = true,
+    stimulant = true,
     ingredient = true,
 }
 
@@ -1682,8 +1774,9 @@ end
 local function RecipeOutcomesOverlap(a, b)
     local ua = RecipeOutcomeUidSet(a)
     local ub = RecipeOutcomeUidSet(b)
-    if next(ua) == nil then
-        return true
+    -- Empty outcomes must not match everything (scrub was deleting live recipes).
+    if next(ua) == nil or next(ub) == nil then
+        return false
     end
     for uid in pairs(ua) do
         if ub[uid] == true then
@@ -1691,6 +1784,29 @@ local function RecipeOutcomesOverlap(a, b)
         end
     end
     return false
+end
+
+--- Recipe fingerprints still pointed at by character potion watches.
+local function WatchReferencedRecipeKeys()
+    local out = {}
+    local Watch = StockPiler3.Watch
+    local watches = Watch and Watch.GetWatches and Watch.GetWatches() or nil
+    if type(watches) ~= "table" then
+        return out
+    end
+    for watchKey, watch in pairs(watches) do
+        if type(watch) == "table" and watch.enabled ~= false then
+            local parsed = RS.ParsePotionRecipeKey(tostring(watchKey))
+            if type(parsed) == "table" and type(parsed.recipeSpecKey) == "string" then
+                out[parsed.recipeSpecKey] = true
+            end
+            local rk = watch.recipeSpecKey or watch.activeRecipeKey
+            if type(rk) == "string" and rk ~= "" then
+                out[rk] = true
+            end
+        end
+    end
+    return out
 end
 
 local function ApplyPotionRecipeKeyList(potion, kept)
@@ -1808,12 +1924,14 @@ end
 
 --- Drop dangling / dominated alternate fingerprints on potions.
 --- Removes keys missing from recipes, and role-subset keys of a richer sibling.
+--- Never drop fingerprints still referenced by an enabled Watch.
 function RS.ScrubSubsetPotionRecipeKeys()
     local potions = PotionsTable()
     local recipes = RecipesTable()
     if type(potions) ~= "table" then
         return 0
     end
+    local watchKeys = WatchReferencedRecipeKeys()
     local removed = 0
     for _, potion in pairs(potions) do
         if type(potion) == "table" then
@@ -1825,6 +1943,8 @@ function RS.ScrubSubsetPotionRecipeKeys()
                     local drop = false
                     if a == "" then
                         drop = true
+                    elseif watchKeys[a] == true then
+                        drop = false
                     elseif type(recipes) ~= "table" or type(recipes[a]) ~= "table" then
                         drop = true
                     else
@@ -1853,6 +1973,7 @@ function RS.ScrubSubsetPotionRecipeKeys()
 end
 
 --- Delete unreferenced recipes that are role-subsets of a richer recipe sharing outcomes.
+--- Never delete fingerprints still referenced by an enabled Watch.
 function RS.ScrubOrphanSubsetRecipes()
     local recipes = RecipesTable()
     local potions = PotionsTable()
@@ -1869,6 +1990,10 @@ function RS.ScrubOrphanSubsetRecipes()
                 end
             end
         end
+    end
+    local watchKeys = WatchReferencedRecipeKeys()
+    for k in pairs(watchKeys) do
+        referenced[k] = true
     end
     local allKeys = {}
     for k, recipe in pairs(recipes) do

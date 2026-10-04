@@ -86,7 +86,13 @@ function StockPiler3TabWatch.PrimeRowChrome()
             TintStepper(rowName .. "PrioChipBg")
             TintStepper(rowName .. "TargetChipBg")
             if type(paintKeys) ~= "table" or paintKeys[rowIndex] == nil then
-                WindowSetShowing(rowName, false)
+                -- Reload-with-window-open: init PrimeRowChrome used to hide rows
+                -- after OnShown and they never came back until a tab click.
+                local parentOpen = DoesWindowExist("StockPiler3Window")
+                    and WindowGetShowing("StockPiler3Window") == true
+                if parentOpen ~= true then
+                    WindowSetShowing(rowName, false)
+                end
             end
         end
     end
@@ -142,6 +148,7 @@ local function ApplyStatusColor(labelWin, statusKey)
         c = COLOR_OK
     elseif statusKey == "ready_to_craft_shared"
         or statusKey == "restocking"
+        or statusKey == "craft_bag_full"
         or statusKey == "need_seeds"
         or statusKey == "upgrading_seed"
         or statusKey == "refining"
@@ -246,6 +253,43 @@ local function EnsureWatchNameRarityColors(data)
     return 255, 255, 255
 end
 
+local function SessionKeys(session)
+    if type(session) ~= "table" then
+        return nil
+    end
+    return {
+        tostring(session.potionRecipeKey or ""),
+        tostring(session.potionKey or ""),
+        tostring(session.rowId or ""),
+    }
+end
+
+local function RowMatchesBrewSession(data, session)
+    if type(data) ~= "table" or type(session) ~= "table" then
+        return false
+    end
+    local sess = SessionKeys(session)
+    if sess == nil then
+        return false
+    end
+    local rowKeys = {
+        tostring(data.potionRecipeKey or ""),
+        tostring(data.id or ""),
+        tostring(data.potionKey or ""),
+    }
+    for i = 1, #rowKeys do
+        local rk = rowKeys[i]
+        if rk ~= "" then
+            for j = 1, #sess do
+                if sess[j] ~= "" and rk == sess[j] then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
 local function GetRowCraftUiState(data)
     local Brew = StockPiler3.Brew
     if not Brew or type(data) ~= "table" then
@@ -259,15 +303,14 @@ local function GetRowCraftUiState(data)
     if phase == "idle" then
         return "idle"
     end
-    local rowKey = tostring(data.potionRecipeKey or data.id or data.potionKey or "")
-    local sessKey = tostring(session.potionRecipeKey or session.potionKey or session.rowId or "")
-    if rowKey ~= "" and sessKey ~= "" and rowKey == sessKey then
-        if phase == "loading" then
-            return "load"
-        end
-        if phase == "loaded" then
-            return "brew"
-        end
+    if not RowMatchesBrewSession(data, session) then
+        return "idle"
+    end
+    if phase == "loading" then
+        return "load"
+    end
+    if phase == "loaded" then
+        return "brew"
     end
     return "idle"
 end
@@ -289,6 +332,18 @@ local function RowCraftableGreen(data)
         return false
     end
     return data.seedBufferShort ~= true
+end
+
+--- Load chip must not look enabled off a craftable number from a prior bag snap.
+local function RowCraftableSnapCurrent(data)
+    if type(data) ~= "table" then
+        return false
+    end
+    local snapGen = 0
+    if StockPiler3.Inventory and StockPiler3.Inventory.GetSnapGen then
+        snapGen = tonumber(StockPiler3.Inventory.GetSnapGen()) or 0
+    end
+    return (tonumber(data._craftableSnapGen) or -1) == snapGen
 end
 
 local function SetButtonTextColorAll(windowName, r, g, b)
@@ -319,6 +374,8 @@ local function ApplyRowBrewButton(btnWin, data)
         return
     end
     WindowSetShowing(btnWin, true)
+    -- Load follows the green Craftable column. Snap-gen mismatch used to grey
+    -- Load while Craftable stayed green after bag/plan catch-up.
     local craftableGreen = RowCraftableGreen(data)
     local state = GetRowCraftUiState(data)
     -- This row's apo session is loaded: always show Brew (ready to perform).
@@ -399,6 +456,11 @@ local function AfterWatchSettingsChanged()
             StockPiler3.Ui.MarkWatchUiDirty()
         end
     end
+    -- Optimistic row paint: do not wait for coalesced flush / plan rebuild.
+    StockPiler3TabWatch._rowPaintKey = nil
+    if StockPiler3TabWatch.UpdateRows then
+        StockPiler3TabWatch.UpdateRows({ keepVisible = true })
+    end
     if StockPiler3.Buy and StockPiler3.Buy.IsEnabled and StockPiler3.Buy.IsEnabled() == true then
         local VA = StockPiler3.VendorAdapter
         if VA and VA.IsStoreOpen and VA.IsStoreOpen() == true then
@@ -421,6 +483,11 @@ local function AfterSoftMoneySetting()
         StockPiler3.Ui.MarkWatchUiDirty()
     end
     StockPiler3TabWatch.RefreshSkillGates()
+    -- Soft money chips already updated via RefreshSkillGates; patch rows now too.
+    StockPiler3TabWatch._rowPaintKey = nil
+    if StockPiler3TabWatch.UpdateRows then
+        StockPiler3TabWatch.UpdateRows({ keepVisible = true })
+    end
 end
 
 local function ApplyTargetOptimistic(data, target)
@@ -744,7 +811,14 @@ local function RowDataFromActiveChild()
         local rowIndex = WindowGetId(win)
         if rowIndex and rowIndex > 0 and DoesWindowExist("SP3TabWatchList") then
             local dataIndex = ListBoxGetDataIndex("SP3TabWatchList", rowIndex)
-            local data = StockPiler3TabWatch.listData[dataIndex]
+            local data = type(StockPiler3TabWatch.listData) == "table"
+                and StockPiler3TabWatch.listData[dataIndex]
+                or nil
+            -- keepVisible paint can show rows while PopulatorIndices is empty;
+            -- fall back to rowIndex so Target/Prio chips stay clickable.
+            if data == nil and type(StockPiler3TabWatch.listData) == "table" then
+                data = StockPiler3TabWatch.listData[rowIndex]
+            end
             if data then
                 return data, win
             end
@@ -890,9 +964,19 @@ local function AfterPrioritySoftChange(potionKey, newTier)
     end
     StockPiler3TabWatch._rowPaintKey = nil
     if DoesWindowExist("SP3TabWatchList") and type(StockPiler3TabWatch.displayOrder) == "table" then
-        ListBoxSetDisplayOrder("SP3TabWatchList", StockPiler3TabWatch.displayOrder)
+        local Brew = StockPiler3.Brew
+        local Orch = StockPiler3.Orchestrator
+        local brewHold = (Brew and Brew.IsWatchUiHold and Brew.IsWatchUiHold() == true)
+            or (Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true)
+        local indices = SP3TabWatchList and SP3TabWatchList.PopulatorIndices
+        local hasPopulated = type(indices) == "table" and next(indices) ~= nil
+        if not hasPopulated then
+            ListBoxSetDisplayOrder("SP3TabWatchList", StockPiler3TabWatch.displayOrder)
+        else
+            StockPiler3TabWatch.UpdateRows({ keepVisible = true })
+        end
     elseif StockPiler3TabWatch.UpdateRows then
-        StockPiler3TabWatch.UpdateRows()
+        StockPiler3TabWatch.UpdateRows({ keepVisible = true })
     end
 end
 
@@ -1011,14 +1095,204 @@ function StockPiler3TabWatch.RefreshSkillGates()
     end
 end
 
+--- Drop a disabled potion/plant watch from live Watch listData (+ plan rows if shared).
+local function OptimisticRemoveWatchRow(opts)
+    opts = type(opts) == "table" and opts or {}
+    local potionKey = opts.potionKey ~= nil and tostring(opts.potionKey) or nil
+    local plantKey = opts.plantKey ~= nil and tostring(opts.plantKey) or nil
+    if potionKey == nil and plantKey == nil then
+        return false
+    end
+    local function filterRows(rows)
+        if type(rows) ~= "table" then
+            return rows, false
+        end
+        local out = {}
+        local changed = false
+        for i = 1, #rows do
+            local row = rows[i]
+            local drop = false
+            if type(row) == "table" then
+                if plantKey ~= nil and (row.kind == "plant" or row.isPlantWatch == true) then
+                    local rk = tostring(row.plantKey or row.id or "")
+                    if rk == plantKey then
+                        drop = true
+                    end
+                elseif potionKey ~= nil and row.kind ~= "plant" and row.isPlantWatch ~= true then
+                    local rk = tostring(row.potionRecipeKey or row.id or row.potionKey or "")
+                    if rk == potionKey then
+                        drop = true
+                    end
+                end
+            end
+            if drop then
+                changed = true
+            else
+                out[#out + 1] = row
+            end
+        end
+        if changed then
+            return out, true
+        end
+        return rows, false
+    end
+    local list = StockPiler3TabWatch.listData
+    local newList, listChanged = filterRows(list)
+    local snap = StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Get
+        and StockPiler3.PlanSnapshot.Get()
+    local snapChanged = false
+    if type(snap) == "table" and type(snap.rows) == "table" then
+        if snap.rows == list and listChanged then
+            snap.rows = newList
+            snapChanged = true
+        else
+            local newSnap, ch = filterRows(snap.rows)
+            if ch then
+                snap.rows = newSnap
+                snapChanged = true
+            end
+        end
+    end
+    if listChanged then
+        StockPiler3TabWatch.listData = newList
+        StockPiler3TabWatch.displayOrder = {}
+        for i = 1, #newList do
+            StockPiler3TabWatch.displayOrder[i] = i
+        end
+        StockPiler3TabWatch._rowPaintKey = nil
+    end
+    return listChanged or snapChanged
+end
+
+--- Potions/Plants eye toggle / clear: urgent rebuild, throttle bypass, optimistic remove,
+--- footer Clear-Watches nudge. Call after Watch.SetEnabled / SetPlantEnabled succeeds.
+function StockPiler3TabWatch.AfterCatalogWatchToggle(opts)
+    opts = type(opts) == "table" and opts or {}
+    local enabled = opts.enabled == true
+    if StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Invalidate then
+        StockPiler3.PlanSnapshot.Invalidate()
+    end
+    local Sch = StockPiler3.Scheduler
+    if Sch and Sch.EnqueuePlanRebuild then
+        Sch.EnqueuePlanRebuild({ urgent = true })
+    end
+    if enabled ~= true then
+        OptimisticRemoveWatchRow(opts)
+    end
+    if StockPiler3.Ui then
+        StockPiler3.Ui._watchUiLastKey = nil
+        StockPiler3.Ui._watchUiFlushedAt = 0
+        if StockPiler3.Ui.MarkWatchUiDirty then
+            StockPiler3.Ui.MarkWatchUiDirty()
+        end
+    end
+    -- Keep Watch listData/paint fresh even when another tab is active.
+    if StockPiler3Window and StockPiler3Window.SelectedTab == StockPiler3Window.TABS_WATCH then
+        if StockPiler3TabWatch.Refresh then
+            StockPiler3TabWatch.Refresh({ forcePlan = false })
+        end
+    elseif type(StockPiler3TabWatch.listData) == "table"
+        and DoesWindowExist("SP3TabWatchList")
+        and StockPiler3TabWatch.UpdateRows
+    then
+        StockPiler3TabWatch.UpdateRows({ keepVisible = true })
+    end
+    -- Clear Watches enable state must flip with the eye, not wait for PLAN_UPDATED.
+    if StockPiler3Window and StockPiler3Window.SyncActionReadiness then
+        StockPiler3Window.SyncActionReadiness()
+    elseif StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
+        StockPiler3Window.RequestFooterRefresh()
+    end
+end
+
 function StockPiler3TabWatch.ClearRowPaintCache()
     StockPiler3TabWatch._rowPaintKey = {}
     StockPiler3TabWatch._rowIconNum = {}
 end
 
 function StockPiler3TabWatch.InvalidateBrewChrome()
-    -- Row chip paint only. Clearing Ui brew/content keys forced mid-brew RefreshWatch.
-    StockPiler3TabWatch._rowPaintKey = nil
+    -- Do not nil _rowPaintKey: that rewrites every label and looks like a full
+    -- list clear/repaint between crafts. Only refresh Load/Brew buttons.
+    StockPiler3TabWatch._brewChromeDirty = true
+end
+
+--- After brew hold: one ListBoxSetDisplayOrder if keepVisible left PopulatorIndices empty.
+function StockPiler3TabWatch.FlushPendingListRebind()
+    if StockPiler3TabWatch._pendingListRebind ~= true then
+        return false
+    end
+    local Brew = StockPiler3.Brew
+    local Orch = StockPiler3.Orchestrator
+    if (Brew and Brew.IsWatchUiHold and Brew.IsWatchUiHold() == true)
+        or (Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true)
+    then
+        return false
+    end
+    if not DoesWindowExist("SP3TabWatchList") then
+        StockPiler3TabWatch._pendingListRebind = nil
+        return false
+    end
+    local listData = StockPiler3TabWatch.listData
+    local listCount = type(listData) == "table" and #listData or 0
+    if listCount <= 0 then
+        StockPiler3TabWatch._pendingListRebind = nil
+        return false
+    end
+    local indices = SP3TabWatchList and SP3TabWatchList.PopulatorIndices
+    local hasPopulated = type(indices) == "table" and next(indices) ~= nil
+    if hasPopulated then
+        StockPiler3TabWatch._pendingListRebind = nil
+        return false
+    end
+    local order = StockPiler3TabWatch.displayOrder
+    if type(order) ~= "table" or #order == 0 then
+        order = {}
+        for i = 1, listCount do
+            order[i] = i
+        end
+        StockPiler3TabWatch.displayOrder = order
+    end
+    StockPiler3TabWatch._pendingListRebind = nil
+    StockPiler3TabWatch._rowPaintKey = {}
+    StockPiler3TabWatch._rowIconNum = {}
+    ListBoxSetDisplayOrder("SP3TabWatchList", order)
+    return true
+end
+
+function StockPiler3TabWatch.KickListBoxLayout()
+    if not DoesWindowExist("StockPiler3Window") or WindowGetShowing("StockPiler3Window") ~= true then
+        return false
+    end
+    if not DoesWindowExist(TAB_ROOT) or not DoesWindowExist("SP3TabWatchList") then
+        return false
+    end
+    -- Child tab is SetShowing(true) during Initialize while the parent is hidden.
+    -- WAR ListBox does not lay out until a hidden->shown edge after the parent is up.
+    WindowSetShowing(TAB_ROOT, false)
+    WindowSetShowing(TAB_ROOT, true)
+    if type(WindowForceProcessAnchors) == "function" then
+        pcall(WindowForceProcessAnchors, TAB_ROOT)
+        pcall(WindowForceProcessAnchors, "SP3TabWatchList")
+    end
+    WindowSetShowing("SP3TabWatchList", false)
+    WindowSetShowing("SP3TabWatchList", true)
+    if type(WindowForceProcessAnchors) == "function" then
+        pcall(WindowForceProcessAnchors, "SP3TabWatchList")
+    end
+    return true
+end
+
+local function RebindWatchListBox(order)
+    order = type(order) == "table" and order or {}
+    StockPiler3TabWatch._pendingListRebind = nil
+    StockPiler3TabWatch._rowPaintKey = {}
+    StockPiler3TabWatch._rowIconNum = {}
+    -- Same kick Potions/Plants use: empty order then real order forces populate.
+    ListBoxSetDisplayOrder("SP3TabWatchList", {})
+    ListBoxSetDisplayOrder("SP3TabWatchList", order)
+    if StockPiler3TabWatch.UpdateRows then
+        StockPiler3TabWatch.UpdateRows({ keepVisible = true })
+    end
 end
 
 function StockPiler3TabWatch.Refresh(opts)
@@ -1033,6 +1307,16 @@ function StockPiler3TabWatch.Refresh(opts)
         return
     end
     local order = StockPiler3TabWatch.displayOrder
+    local listData = StockPiler3TabWatch.listData
+    local listCount = type(listData) == "table" and #listData or 0
+    local indices = SP3TabWatchList and SP3TabWatchList.PopulatorIndices
+    local hasPopulated = type(indices) == "table" and next(indices) ~= nil
+    local Brew = StockPiler3.Brew
+    local Orch = StockPiler3.Orchestrator
+    local brewHold = opts.brewHold == true
+        or (Brew and Brew.IsWatchUiHold and Brew.IsWatchUiHold() == true)
+        or (Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true)
+
     local orderChanged = type(prevOrder) ~= "table" or type(order) ~= "table" or #prevOrder ~= #order
     if not orderChanged and type(prevOrder) == "table" and type(order) == "table" then
         for i = 1, #order do
@@ -1042,33 +1326,69 @@ function StockPiler3TabWatch.Refresh(opts)
             end
         end
     end
-    if orderChanged then
-        StockPiler3TabWatch._rowPaintKey = {}
-        StockPiler3TabWatch._rowIconNum = {}
-        ListBoxSetDisplayOrder("SP3TabWatchList", order or {})
-    else
-        StockPiler3TabWatch.UpdateRows()
+
+    local forceRebind = opts.forceRebind == true
+
+    -- Empty PopulatorIndices mid-brew: keepVisible + defer one SetDisplayOrder
+    -- until hold ends (avoids ListBox flash every ForceBrew; chips rebind once).
+    if brewHold and listCount > 0 and not hasPopulated then
+        StockPiler3TabWatch._pendingListRebind = true
+        StockPiler3TabWatch.UpdateRows({ keepVisible = true })
+        return
     end
+    if not brewHold and (forceRebind or (listCount > 0 and not hasPopulated)) then
+        if forceRebind then
+            StockPiler3TabWatch.KickListBoxLayout()
+        end
+        RebindWatchListBox(order or {})
+        return
+    end
+
+    -- AutoBrew continuum / same order: in-place paint only (no ListBox flash).
+    if brewHold or not orderChanged then
+        if brewHold and listCount > 0 and not hasPopulated then
+            StockPiler3TabWatch._pendingListRebind = true
+        end
+        StockPiler3TabWatch.UpdateRows({ keepVisible = true })
+        return
+    end
+
+    RebindWatchListBox(order or {})
 end
 
-function StockPiler3TabWatch.UpdateRows()
-    if not SP3TabWatchList then
+function StockPiler3TabWatch.UpdateRows(opts)
+    opts = type(opts) == "table" and opts or {}
+    if not DoesWindowExist("SP3TabWatchList") then
         return
     end
     if StockPiler3.Perf and StockPiler3.Perf.Begin then
         StockPiler3.Perf.Begin("WatchRows")
     end
-    local numVisible = tonumber(SP3TabWatchList.numVisibleRows) or 11
-    local indices = SP3TabWatchList.PopulatorIndices
+    local box = SP3TabWatchList
+    local numVisible = 11
+    local indices = nil
+    if type(box) == "table" then
+        numVisible = tonumber(box.numVisibleRows) or 11
+        indices = box.PopulatorIndices
+    end
     local active = {}
     if type(indices) == "table" then
         for rowIndex, dataIndex in ipairs(indices) do
             active[rowIndex] = dataIndex
         end
     end
+    local listData = StockPiler3TabWatch.listData
+    local listCount = type(listData) == "table" and #listData or 0
+    -- ListBox briefly clears PopulatorIndices during order/rebuild; never blank rows.
+    local keepVisible = opts.keepVisible == true
+        or (listCount > 0 and next(active) == nil)
+    if keepVisible and next(active) == nil and listCount > 0 then
+        for rowIndex = 1, math.min(numVisible, listCount) do
+            active[rowIndex] = rowIndex
+        end
+    end
     StockPiler3TabWatch._rowPaintKey = StockPiler3TabWatch._rowPaintKey or {}
     local canGrow = CanAutoGrowUi()
-    local listData = StockPiler3TabWatch.listData
     for rowIndex = 1, numVisible do
         local rowName = "SP3TabWatchListRow" .. rowIndex
         if DoesWindowExist(rowName) then
@@ -1081,6 +1401,7 @@ function StockPiler3TabWatch.UpdateRows()
                 end
                 local brewState = GetRowCraftUiState(data)
                 local craftableGreen = RowCraftableGreen(data)
+                local craftableSnapOk = RowCraftableSnapCurrent(data)
                 local nameR, nameG, nameB = EnsureWatchNameRarityColors(data)
                 local paintKey = table.concat({
                     tostring(data.iconNum or 0),
@@ -1099,6 +1420,8 @@ function StockPiler3TabWatch.UpdateRows()
                     tostring(data.craftableShared == true),
                     tostring(data.seedBufferShort == true),
                     tostring(craftableGreen),
+                    tostring(craftableSnapOk),
+                    tostring(data._craftableSnapGen or -1),
                     tostring(brewState),
                     tostring(canGrow),
                 }, "|")
@@ -1188,13 +1511,18 @@ function StockPiler3TabWatch.UpdateRows()
                     end
                     ApplyRowBrewButton(rowName .. "Load", data)
                     StockPiler3TabWatch._rowPaintKey[rowIndex] = paintKey
+                elseif StockPiler3TabWatch._brewChromeDirty == true then
+                    ApplyRowBrewButton(rowName .. "Load", data)
                 end
             else
-                WindowSetShowing(rowName, false)
-                StockPiler3TabWatch._rowPaintKey[rowIndex] = nil
+                if keepVisible ~= true then
+                    WindowSetShowing(rowName, false)
+                    StockPiler3TabWatch._rowPaintKey[rowIndex] = nil
+                end
             end
         end
     end
+    StockPiler3TabWatch._brewChromeDirty = false
     if StockPiler3.Perf and StockPiler3.Perf.End then
         StockPiler3.Perf.End("WatchRows")
     end
@@ -1585,6 +1913,7 @@ local STATUS_TIP_COLORS = {
     ready_to_craft = COLOR_OK,
     ready_to_craft_shared = COLOR_WARN,
     restocking = COLOR_WARN,
+    craft_bag_full = COLOR_WARN,
     enable_autogrow = COLOR_BLOCK,
     need_apothecary = COLOR_BLOCK,
     need_skill = COLOR_BLOCK,
@@ -1900,6 +2229,10 @@ local function BuildStatusTooltipRows(data)
                     haveColor = RgbDef(COLOR_BLOCK)
                     noteKind = "block"
                 end
+            elseif statusKey == "craft_bag_full" then
+                haveColor = RgbDef(COLOR_WARN)
+                noteKind = "warning"
+                statusNote = T("watch.note.craft_bag_full")
             elseif statusKey == "enable_autogrow" then
                 haveColor = RgbDef(COLOR_BLOCK)
                 noteKind = "block"

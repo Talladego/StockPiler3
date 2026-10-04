@@ -261,8 +261,8 @@ end
 -- Spec-have cache (one-pass WarmSpecHaveCache)
 ----------------------------------------------------------------
 
---- Plant/refine quiet + harvest storm: keep prior have/demand counts instead of
---- WarmHave.miss bag scans on every Inv.ApplySlots snap bump.
+--- Plant/refine quiet + harvest storm + Orch decision hold: keep prior have/demand
+--- counts instead of WarmHave.miss bag scans on every Inv.ApplySlots snap bump.
 local function HoldHaveCacheQuiet()
     local Sch = StockPiler3.Scheduler
     if not Sch then
@@ -272,6 +272,12 @@ local function HoldHaveCacheQuiet()
         return true
     end
     if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+        return true
+    end
+    -- Orch probe frame (before ArmPlantQuiet): remount when have or demand exists.
+    if Sch.IsOrchDecisionHold and Sch.IsOrchDecisionHold() == true
+        and (type(Planner._specHaveCache) == "table" or type(Planner._demandCache) == "table")
+    then
         return true
     end
     return false
@@ -285,10 +291,9 @@ local function EnsureHaveCacheForSnap()
     local snapGen = CurrentSnapGen()
     if Planner._specHaveSnapGen ~= snapGen or type(Planner._specHaveCache) ~= "table" then
         if HoldHaveCacheQuiet() and type(Planner._specHaveCache) == "table" then
-            -- Remount stale counts onto the new snap; orch decisions tolerate
-            -- +/-1 until quiet ends and FrameWork re-warms.
-            Planner._specHaveSnapGen = snapGen
-            MarkHaveCacheWarmed(snapGen)
+            -- Keep prior counts for orch probes, but do NOT claim this snap is warm
+            -- and do NOT advance _specHaveSnapGen. Remount-as-warm left CheapRebuild
+            -- trusting stale mat totals after the first bag move (Watch craftable stuck).
             return Planner._specHaveCache, snapGen
         end
         Planner._specHaveCache = {}
@@ -312,10 +317,9 @@ local function WarmSpecHaveCache(specs)
         MarkHaveCacheWarmed(CurrentSnapGen())
         return 0
     end
-    -- During quiet: never bag-walk; remount marks warm via EnsureHaveCacheForSnap.
+    -- During quiet/orch hold: never bag-walk and never mark warm (stale remount).
     if HoldHaveCacheQuiet() and type(Planner._specHaveCache) == "table" then
-        local _, snapGen = EnsureHaveCacheForSnap()
-        MarkHaveCacheWarmed(snapGen)
+        EnsureHaveCacheForSnap()
         return 0
     end
     local cache, snapGen = EnsureHaveCacheForSnap()
@@ -373,8 +377,9 @@ local function WarmSpecHaveCache(specs)
             if Inv.CanUseCraftingItem and Inv.CanUseCraftingItem(item) ~= true then
                 return
             end
+            -- Seeds/spores are not apo brew mats (same as RecipeSpec / brew load).
             if MS and MS.IsSeedOrSpore and MS.IsSeedOrSpore(item) == true then
-                -- Still allow ProductMatches for grow demand of plant forms via AsApothecaryProduct.
+                return
             end
             local qty = tonumber(item.stackCount) or tonumber(item.stackcount) or 1
             if qty < 1 then
@@ -454,9 +459,9 @@ local function BeginWarmHaveSlice()
     Planner._warmHaveSlice = nil
     if HoldHaveCacheQuiet() then
         if type(Planner._specHaveCache) == "table" then
-            local _, snapGen = EnsureHaveCacheForSnap()
-            MarkHaveCacheWarmed(snapGen)
+            EnsureHaveCacheForSnap()
         end
+        -- Still cold: post-hold / quiet-end must re-warm before craftable recount.
         return "done"
     end
     local specs = CollectWatchedHaveSpecs()
@@ -501,15 +506,21 @@ end
 
 local function FinishWarmHaveSlice()
     local slice = Planner._warmHaveSlice
-    Planner._warmHaveSlice = nil
     if type(slice) ~= "table" or type(slice.pending) ~= "table" then
+        Planner._warmHaveSlice = nil
         MarkHaveCacheWarmed(CurrentSnapGen())
-        return
+        return "done"
     end
+    -- Never bag-walk on the same frame as BagFlush / PlanRebuild (libperf Pump storms).
+    local Sch = StockPiler3.Scheduler
+    if Sch and Sch.ShouldDeferWarmHaveBag and Sch.ShouldDeferWarmHaveBag() == true then
+        return "defer"
+    end
+    Planner._warmHaveSlice = nil
     local cache, snapGen = EnsureHaveCacheForSnap()
     if snapGen ~= (tonumber(slice.snapGen) or -1) then
         -- Snap moved mid-slice; full warm next prewarm.
-        return
+        return "done"
     end
     PerfMark("WarmHave.miss")
     local pending = slice.pending
@@ -526,6 +537,9 @@ local function FinishWarmHaveSlice()
                 return
             end
             if Inv.CanUseCraftingItem and Inv.CanUseCraftingItem(item) ~= true then
+                return
+            end
+            if MS and MS.IsSeedOrSpore and MS.IsSeedOrSpore(item) == true then
                 return
             end
             local qty = tonumber(item.stackCount) or tonumber(item.stackcount) or 1
@@ -562,6 +576,7 @@ local function FinishWarmHaveSlice()
         cache[entry.key] = tonumber(totals[entry.key]) or 0
     end
     MarkHaveCacheWarmed(snapGen)
+    return "done"
 end
 
 local function CountItemsMatchingSpec(spec, opts)
@@ -593,7 +608,13 @@ local function CountItemsMatchingSpec(spec, opts)
     local total = 0
     if Inv and Inv.ForEachItem and MS and MS.ProductMatches then
         Inv.ForEachItem(function(item)
-            if type(item) == "table" and MS.ProductMatches(item, spec) == true then
+            if type(item) ~= "table" then
+                return
+            end
+            if MS.IsSeedOrSpore and MS.IsSeedOrSpore(item) == true then
+                return
+            end
+            if MS.ProductMatches(item, spec) == true then
                 local qty = tonumber(item.stackCount) or 1
                 if qty < 1 then
                     qty = 1
@@ -911,7 +932,8 @@ local function PotionHave(resolved, potion, outputUid)
     return 0
 end
 
-local function BuildBalancedSpecDemand()
+local function BuildBalancedSpecDemand(opts)
+    opts = type(opts) == "table" and opts or {}
     local snapGen = CurrentSnapGen()
     local Watch = StockPiler3.Watch
     local watchGen = Watch and Watch.GetGen and Watch.GetGen() or 0
@@ -922,8 +944,7 @@ local function BuildBalancedSpecDemand()
     if type(Planner._demandCache) == "table" and Planner._demandCacheKey == cacheKey then
         return Planner._demandCache
     end
-    -- Plant/refine quiet: reuse last demand (ignore snap bump). Avoids WarmHave.miss
-    -- on every IssueOne → Inv.ApplySlots while orch still decides next action.
+    -- Plant/refine quiet / Orch decision hold: reuse last demand (ignore snap bump).
     if HoldHaveCacheQuiet() and type(Planner._demandCache) == "table" then
         local prev = tostring(Planner._demandCacheKey or "")
         local suffix = ":" .. tostring(watchGen) .. ":" .. tostring(planGen)
@@ -932,6 +953,15 @@ local function BuildBalancedSpecDemand()
         then
             return Planner._demandCache
         end
+        -- Decision hold: remount onto new snap when watch/plan gens match.
+        return Planner._demandCache
+    end
+    -- Orch PickPlantCandidate: never bag-walk; FrameWork prewarm owns cold fills.
+    if opts.cacheOnly == true then
+        if type(Planner._demandCache) == "table" then
+            return Planner._demandCache
+        end
+        return nil
     end
     PerfBegin("BuildBalancedSpecDemand")
     local demand = {}
@@ -1914,6 +1944,8 @@ local function InvalidateFocusCaches()
     -- plan craftable/gap moved (same snap) left AutoGrow with plantJob=nil no-demand-short.
     Planner._demandCache = nil
     Planner._demandCacheKey = nil
+    Planner._craftBagFull = nil
+    Planner._craftBagFullSnap = nil
 end
 
 ----------------------------------------------------------------
@@ -1964,6 +1996,34 @@ local function PlantWatchesAwaitPotions(rows)
     return Watch.AllEnabledPotionWatchesStocked() ~= true
 end
 
+--- Seed-buffer short for plant watches (used by Reconcile + ApplyPlantWatchStatus).
+--- Must be defined above ReconcileAutoGrowStatus (Lua local visibility).
+local function PlantSeedBufferShort(seedUid, plantUid, spec)
+    local Watch = StockPiler3.Watch
+    if not (Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true) then
+        return false
+    end
+    seedUid = tonumber(seedUid) or 0
+    if seedUid <= 0 then
+        return false
+    end
+    local buffer = Watch.GetSeedBufferMin and tonumber(Watch.GetSeedBufferMin()) or 5
+    local Refine = StockPiler3.Refine
+    if Refine and Refine.GetSeedBudget then
+        local b = Refine.GetSeedBudget(seedUid)
+        if type(b) == "table" then
+            local credit = tonumber(b.credit)
+            if credit == nil then
+                credit = tonumber(b.live) or 0
+            end
+            return credit < buffer
+        end
+    end
+    local Inv = StockPiler3.Inventory
+    local have = Inv and Inv.CountByUid and tonumber(Inv.CountByUid(seedUid)) or 0
+    return have < buffer
+end
+
 local function ReconcileAutoGrowStatus(row)
     if type(row) ~= "table" then
         return false
@@ -1998,7 +2058,9 @@ local function ReconcileAutoGrowStatus(row)
             row.statusKey = "enable_autogrow"
             row.statusText = T("plan.status.enable_autogrow")
             row.statusLines = nil
-        elseif key == "enable_autogrow" or key == "waiting_potions" or key == "restocking" then
+        elseif key == "enable_autogrow" or key == "waiting_potions" or key == "restocking"
+            or key == "craft_bag_full"
+        then
             if PlantWatchesAwaitPotions() then
                 row.statusKey = "waiting_potions"
                 row.statusText = T("plan.status.waiting_potions")
@@ -2014,7 +2076,8 @@ local function ReconcileAutoGrowStatus(row)
         return tostring(row.statusKey or "") ~= prev
     end
     local key = tostring(row.statusKey or "")
-    if key ~= "enable_autogrow" and key ~= "restocking" and key ~= "need_seeds"
+    if key ~= "enable_autogrow" and key ~= "restocking" and key ~= "craft_bag_full"
+        and key ~= "need_seeds"
         and key ~= "upgrading_seed"
     then
         return false
@@ -2033,7 +2096,9 @@ local function ReconcileAutoGrowStatus(row)
         row.statusKey = "restocking"
         row.statusText = T("plan.status.restocking")
         row.statusLines = nil
-    elseif (not armed) and (key == "restocking" or key == "need_seeds" or key == "upgrading_seed") then
+    elseif (not armed) and (key == "restocking" or key == "craft_bag_full"
+        or key == "need_seeds" or key == "upgrading_seed")
+    then
         row.statusKey = "enable_autogrow"
         row.statusText = T("plan.status.enable_autogrow")
         row.statusLines = nil
@@ -2422,6 +2487,27 @@ local function ApplyStockedStatus(row)
     row.craftableShared = false
 end
 
+--- Craft bag has no free slots (brew output / harvest cannot land).
+local function IsCraftBagFullCached()
+    local Inv = StockPiler3.Inventory
+    local snap = Inv and Inv.GetSnapGen and Inv.GetSnapGen() or 0
+    if Planner._craftBagFullSnap == snap and Planner._craftBagFull ~= nil then
+        return Planner._craftBagFull == true
+    end
+    local BA = StockPiler3.BagAdapter
+    local full = BA and BA.IsCraftBagFull and BA.IsCraftBagFull() == true
+    Planner._craftBagFullSnap = snap
+    Planner._craftBagFull = full
+    return full
+end
+
+local function ApplyCraftBagFullStatus(row)
+    row.statusKey = "craft_bag_full"
+    row.statusText = T("plan.status.craft_bag_full")
+    row.statusLines = { T("watch.note.craft_bag_full") }
+    row.craftableShared = false
+end
+
 local function ApplySpecPlanStatus(row, target, recipe, demand)
     row.statusLines = nil
     row.statusTipSlots = nil
@@ -2557,6 +2643,11 @@ local function ApplySpecPlanStatus(row, target, recipe, demand)
     end
     -- Tip slots look covered (raw Have) but craftable may still be 0 under grow reserve,
     -- or partial craftable remains with bottleGap>0 (not Ready until covered).
+    -- Craft bag full: no room for brew output / harvest — do not paint Restocking.
+    if IsCraftBagFullCached() then
+        ApplyCraftBagFullStatus(row)
+        return
+    end
     -- Growable short / partial craftable: gate on skill only; master toggle picks Enable vs Restocking.
     if CanAutoGrowSkill() then
         SetMaterialsShortStatus(row, true, nil)
@@ -2571,12 +2662,24 @@ end
 local function ApplyLiveWatchStatus(row, recipe, deficit, have, craftable, target)
     local key = tostring(row.statusKey or "")
     local potionKey = row.potionRecipeKey or row.id or row.potionKey
+    -- Heal stale Learn recipe when bags/recipe resolve again after brew learn/scrub.
+    if key == "no_recipe" and type(recipe) == "table" then
+        ApplySpecPlanStatus(row, {
+            min = target,
+            deficit = deficit,
+            have = have,
+            potionKey = potionKey,
+            entry = row,
+        }, recipe, Planner._lastDemand)
+        key = tostring(row.statusKey or "")
+    end
     local flippable = key == "ready_to_craft"
         or key == "ready_to_craft_shared"
         or key == "potion_stocked"
         or key == "need_seeds"
         or key == "upgrading_seed"
         or key == "restocking"
+        or key == "craft_bag_full"
         or key == "buy_ingredients"
         or key == "enable_autogrow"
         or key == "need_skill"
@@ -2652,6 +2755,11 @@ local function ApplyLiveWatchStatus(row, recipe, deficit, have, craftable, targe
             row.craftableShared = false
             return
         end
+        -- Tips look covered but craftable is still 0: craft bag full beats Restocking.
+        if IsCraftBagFullCached() then
+            ApplyCraftBagFullStatus(row)
+            return
+        end
         if anyGrowable then
             SetMaterialsShortStatus(row, true, nil)
         else
@@ -2690,6 +2798,7 @@ local function ApplyLiveWatchStatus(row, recipe, deficit, have, craftable, targe
     if key == "ready_to_craft" or key == "ready_to_craft_shared"
         or key == "potion_stocked" or key == "buy_ingredients"
         or key == "restocking"
+        or key == "craft_bag_full"
         or key == "enable_autogrow"
         or key == "need_skill"
         or key == "need_apothecary"
@@ -3045,7 +3154,9 @@ local function PolishWatchRowsStatus(rows)
             local covered = target > 0 and (have + craftable) >= target
             local key = tostring(row.statusKey or "")
             -- Ready only when bags+craftable cover the target.
-            if craftable > 0 and covered and (key == "buy_ingredients" or key == "restocking") then
+            if craftable > 0 and covered
+                and (key == "buy_ingredients" or key == "restocking" or key == "craft_bag_full")
+            then
                 ApplyReadyStatus(row)
                 key = "ready_to_craft"
             end
@@ -3053,11 +3164,15 @@ local function PolishWatchRowsStatus(rows)
             if (not covered or craftable <= 0)
                 and (key == "ready_to_craft" or key == "ready_to_craft_shared")
             then
-                SetMaterialsShortStatus(row, CanAutoGrowSkill(), nil)
+                if IsCraftBagFullCached() then
+                    ApplyCraftBagFullStatus(row)
+                else
+                    SetMaterialsShortStatus(row, CanAutoGrowSkill(), nil)
+                end
                 key = tostring(row.statusKey or "")
             end
-            -- Stale Enable AutoGrow / Restocking after toggles change (cheap rebuild / live rows).
-            if key == "enable_autogrow" or key == "restocking" then
+            -- Stale Enable AutoGrow / Restocking / craft-bag-full after toggles change.
+            if key == "enable_autogrow" or key == "restocking" or key == "craft_bag_full" then
                 if covered then
                     if (tonumber(row.potionDeficit) or 0) <= 0 then
                         if SeedBufferShort(row.recipe, row.potionKey or row.potionRecipeKey or row.id, row) then
@@ -3067,9 +3182,13 @@ local function PolishWatchRowsStatus(rows)
                         end
                     elseif craftable > 0 then
                         ApplyReadyStatus(row)
+                    elseif IsCraftBagFullCached() then
+                        ApplyCraftBagFullStatus(row)
                     else
                         SetMaterialsShortStatus(row, CanAutoGrowSkill(), nil)
                     end
+                elseif IsCraftBagFullCached() then
+                    ApplyCraftBagFullStatus(row)
                 else
                     SetMaterialsShortStatus(row, CanAutoGrowSkill(), nil)
                 end
@@ -3125,32 +3244,6 @@ local function FillWatchRowTips(row, demand)
     end
     row.statusTipSlots = entries
     StampRowSeedBufferUids(row)
-end
-
-local function PlantSeedBufferShort(seedUid, plantUid, spec)
-    local Watch = StockPiler3.Watch
-    if not (Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true) then
-        return false
-    end
-    seedUid = tonumber(seedUid) or 0
-    if seedUid <= 0 then
-        return false
-    end
-    local buffer = Watch.GetSeedBufferMin and tonumber(Watch.GetSeedBufferMin()) or 5
-    local Refine = StockPiler3.Refine
-    if Refine and Refine.GetSeedBudget then
-        local b = Refine.GetSeedBudget(seedUid)
-        if type(b) == "table" then
-            local credit = tonumber(b.credit)
-            if credit == nil then
-                credit = tonumber(b.live) or 0
-            end
-            return credit < buffer
-        end
-    end
-    local Inv = StockPiler3.Inventory
-    local have = Inv and Inv.CountByUid and tonumber(Inv.CountByUid(seedUid)) or 0
-    return have < buffer
 end
 
 local function ApplyPlantWatchStatus(row, potionRows)
@@ -3405,6 +3498,11 @@ local function BuildPlantWatchRows(potionRows)
     return rows
 end
 
+--- Single status entry: spec paint (live patch uses ApplyLiveWatchStatus).
+local function DecideStatus(row, target, recipe, demand)
+    ApplySpecPlanStatus(row, target, recipe, demand)
+end
+
 local function BuildWatchRows(ctx)
     local rows = {}
     local RS = RecipeSpec()
@@ -3439,10 +3537,11 @@ local function BuildWatchRows(ctx)
             priorityTierText = towstring(tostring(tonumber(target.priorityTier) or 1)),
             hasRecipe = type(recipe) == "table",
         }
-        ApplySpecPlanStatus(row, target, recipe, demand)
+        DecideStatus(row, target, recipe, demand)
         FillWatchRowCraftable(row, ctx)
         rows[#rows + 1] = row
     end
+    Planner._lastDemand = demand
     PolishWatchRowsStatus(rows)
     local plantRows = BuildPlantWatchRows(rows)
     for i = 1, #plantRows do
@@ -3621,7 +3720,7 @@ end
 
 local function RefreshSkillUpWatchRows(rows, opts)
     opts = type(opts) == "table" and opts or {}
-    if type(rows) ~= "table" or #rows == 0 then
+    if type(rows) ~= "table" then
         return false
     end
     local SkillUp = StockPiler3.SkillUp
@@ -3657,6 +3756,7 @@ local function RefreshSkillUpWatchRows(rows, opts)
     end
     local dirty = false
     local removed = false
+    local present = {}
     for i = #rows, 1, -1 do
         local row = rows[i]
         if type(row) == "table" and (row.skillUp == true or row.addonOwned == true
@@ -3665,6 +3765,7 @@ local function RefreshSkillUpWatchRows(rows, opts)
             local k = tostring(row.potionKey or row.id or "")
             local sr = byKey[k]
             if type(sr) == "table" then
+                present[k] = true
                 local prevKey = tostring(row.statusKey or "")
                 local prevText = row.statusText
                 local prevLines = row.statusLines
@@ -3725,9 +3826,26 @@ local function RefreshSkillUpWatchRows(rows, opts)
             end
         end
     end
+    -- Re-add ephemerals that BuildWatchStatusRows emits but live patch dropped
+    -- (e.g. transient unstocked mid seed-buffer refine → ephemeral-cleared).
+    for i = 1, #fresh do
+        local sr = fresh[i]
+        if type(sr) == "table" then
+            local k = tostring(sr.potionKey or sr.id or "")
+            if k ~= "" and present[k] ~= true then
+                rows[#rows + 1] = sr
+                present[k] = true
+                dirty = true
+            end
+        end
+    end
     if removed then
-        if StockPiler3Window and StockPiler3Window.RequestListRepopulate then
-            StockPiler3Window.RequestListRepopulate()
+        local B = StockPiler3.EventBus
+        local E = StockPiler3.Events
+        if B and E and E.PLAN_UPDATED then
+            B.Fire(E.PLAN_UPDATED, { reason = "ephemeral-cleared" })
+        elseif StockPiler3.Ui and StockPiler3.Ui.MarkWatchUiDirty then
+            StockPiler3.Ui.MarkWatchUiDirty()
         end
         local Grow = StockPiler3.Grow
         if Grow and Grow.MarkPlantJobDirty then
@@ -3791,15 +3909,31 @@ local function PatchWatchRowsLiveCounts(rows, opts)
     if opts.recountCraftable == false then
         recountCraftable = false
     end
+    -- Quiet/storm remount keeps prior have counts warm for orch probes. Never stamp
+    -- craftable from that remount — Watch would look one bag-move behind.
+    if recountCraftable and HoldHaveCacheQuiet() then
+        recountCraftable = false
+    end
     local selectiveCraftable = false
     local deltaUids, deltaKeys
     if recountCraftable and Inv.GetLastNetUidDelta then
         local delta = Inv.GetLastNetUidDelta()
         if type(delta) == "table" then
-            local unresolved
-            deltaUids, deltaKeys, unresolved = BuildDeltaTouchSets(delta)
-            if unresolved ~= true then
-                selectiveCraftable = true
+            -- Any spend or restore: full craftable recount. Selective touch-sets
+            -- miss family specs (extender/multiplier) and bank L0-slot-set.
+            local anySigned = false
+            for _, d in pairs(delta) do
+                if (tonumber(d) or 0) ~= 0 then
+                    anySigned = true
+                    break
+                end
+            end
+            if anySigned ~= true then
+                local unresolved
+                deltaUids, deltaKeys, unresolved = BuildDeltaTouchSets(delta)
+                if unresolved ~= true then
+                    selectiveCraftable = true
+                end
             end
         end
     end
@@ -3846,6 +3980,19 @@ local function PatchWatchRowsLiveCounts(rows, opts)
                 local deficit = math.max(0, min - have)
                 row.potionDeficit = deficit
                 local recipe = row.recipe or row.specRecipe
+                -- Re-resolve after brew learn/scrub left status=Learn recipe with a live rk.
+                if type(recipe) ~= "table" or tostring(row.statusKey or "") == "no_recipe" then
+                    local RS = RecipeSpec()
+                    local pk = row.potionRecipeKey or row.id or row.potionKey
+                    if RS and RS.RecipeSpecForPotion and pk ~= nil then
+                        local resolved = RS.RecipeSpecForPotion(pk)
+                        if type(resolved) == "table" then
+                            recipe = resolved
+                            row.recipe = resolved
+                            row.hasRecipe = true
+                        end
+                    end
+                end
                 local craftable = tonumber(row.craftable) or 0
                 if type(recipe) == "table" then
                     row.craftsNeeded = CraftsNeededForDeficit(deficit, recipe)
@@ -3861,6 +4008,24 @@ local function PatchWatchRowsLiveCounts(rows, opts)
                             -- Only stamp when recounted. Stamping on a selective miss
                             -- locked Restocking until /sp3 dumpall force-built.
                             row._craftableSnapGen = snapGen
+                            -- Keep tip slot have in sync with WarmHave (CheapRebuild
+                            -- otherwise leaves FillWatchRowTips early-return stale).
+                            local tips = row.statusTipSlots
+                            if type(tips) == "table" then
+                                for t = 1, #tips do
+                                    local entry = tips[t]
+                                    if type(entry) == "table" and type(entry.spec) == "table" then
+                                        local live = CountItemsMatchingSpec(entry.spec, { cacheOnly = true })
+                                        if live ~= nil then
+                                            entry.have = live
+                                            entry.deficit = math.max(0, (tonumber(entry.need) or 0) - live)
+                                            entry.craftsHave = math.floor(
+                                                live / math.max(1, tonumber(entry.perCraft) or 1)
+                                            )
+                                        end
+                                    end
+                                end
+                            end
                         end
                     end
                 end
@@ -3977,8 +4142,8 @@ local function PatchWatchRowsLiveCounts(rows, opts)
             end
         end
         if beforeReady ~= afterReady then
-            if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
-                StockPiler3Window.RequestFooterRefresh()
+            if StockPiler3.Ui and StockPiler3.Ui.RequestFooterRefresh then
+                StockPiler3.Ui.RequestFooterRefresh()
             end
         end
         if Brew and Brew.MaybeNotifyBrewReady then
@@ -4001,8 +4166,8 @@ local function PatchWatchRowsLiveCounts(rows, opts)
         if BrewLive and BrewLive.InvalidateCanBrewCache then
             BrewLive.InvalidateCanBrewCache()
         end
-        if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
-            StockPiler3Window.RequestFooterRefresh()
+        if StockPiler3.Ui and StockPiler3.Ui.RequestFooterRefresh then
+            StockPiler3.Ui.RequestFooterRefresh()
         end
     end
     if StockPiler3.Grow and StockPiler3.Grow.MaybeNotifyAutoGrowStall then
@@ -4067,9 +4232,6 @@ local function PublishPlan(plan, key, meta)
     if PS and PS.Set then
         PS.Set(plan, key)
     end
-    if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
-        StockPiler3Window.RequestFooterRefresh()
-    end
     local B = StockPiler3.EventBus
     local E = StockPiler3.Events
     if B and E and E.PLAN_UPDATED then
@@ -4101,6 +4263,30 @@ local function RefreshStaleCtx(stale)
     return FormatCacheKey(stale.ctx)
 end
 
+--- Potion rows with a recipe must have craftable stamped for this snap before any
+--- cheap/garden publish advances the plan cache key (else Build early-returns stale).
+local function RowsCraftableCurrentForSnap(rows, snapGen)
+    snapGen = tonumber(snapGen) or CurrentSnapGen()
+    if type(rows) ~= "table" then
+        return true
+    end
+    for i = 1, #rows do
+        local row = rows[i]
+        if type(row) == "table"
+            and type(row.recipe or row.specRecipe) == "table"
+            and row.kind ~= "plant"
+            and row.isPlantWatch ~= true
+            and row.skillUp ~= true
+            and row.addonOwned ~= true
+        then
+            if (tonumber(row._craftableSnapGen) or -1) ~= snapGen then
+                return false
+            end
+        end
+    end
+    return true
+end
+
 local function TryCheapRebuild()
     local PS = StockPiler3.PlanSnapshot
     local stale = PS and PS.Get and PS.Get()
@@ -4110,12 +4296,23 @@ local function TryCheapRebuild()
     if type(stale.ctx) ~= "table" then
         return nil
     end
+    -- Remounted have during quiet/orch hold must not publish a new snap cacheKey
+    -- with unrecounted craftable (Build early-return then freezes Watch until dumpall).
+    if HoldHaveCacheQuiet() then
+        return nil
+    end
     local cur = ReadGens()
     if StructuralNonRefineKey(stale.ctx) ~= StructuralNonRefineKey(cur) then
         return nil
     end
     PerfBegin("Planner.CheapRebuild")
     PatchWatchRowsLiveCounts(stale.rows, { syncSnapshot = false })
+    if not RowsCraftableCurrentForSnap(stale.rows, cur.snapGen) then
+        -- Do not RefreshStaleCtx / PublishPlan: advancing the key without a recount
+        -- locks Build into a stale cache hit until another snap or dumpall.
+        PerfEnd("Planner.CheapRebuild")
+        return nil
+    end
     stale.seedBufferTipData = BuildSeedBufferTipData({
         previous = stale.seedBufferTipData,
     })
@@ -4139,6 +4336,11 @@ local function TryGardenPatch()
     if type(stale.ctx) ~= "table" then
         return nil
     end
+    -- Same hold rule as CheapRebuild: garden patch used to publish a new snap key
+    -- with allowWarmHave=false and no craftable stamp.
+    if HoldHaveCacheQuiet() then
+        return nil
+    end
     local cur = ReadGens()
     if RecipeStructuralKey(stale.ctx) ~= RecipeStructuralKey(cur) then
         return nil
@@ -4149,6 +4351,10 @@ local function TryGardenPatch()
         syncSnapshot = false,
         allowWarmHave = false,
     })
+    if not RowsCraftableCurrentForSnap(stale.rows, cur.snapGen) then
+        PerfEnd("Planner.GardenPatch")
+        return nil
+    end
     -- cacheOnly growing notes when Grow provides them
     local Grow = StockPiler3.Grow
     if Grow and Grow.GrowingNotesForSpec then
@@ -4195,7 +4401,9 @@ local function BuildFull(opts)
     local key = FormatCacheKey(ctx)
     local planGen = (tonumber(Planner._planGen) or 0) + 1
     Planner._planGen = planGen
-    local rows, seedBufferTipData = BuildWatchRows(ctx)
+    local rows, seedBufferTipData, demand = BuildWatchRows(ctx)
+    local Res = StockPiler3.Reservations
+    local reservations = Res and Res.FromDemand and Res.FromDemand(demand) or {}
     local plan = {
         planGen = planGen,
         cacheKey = key,
@@ -4205,7 +4413,7 @@ local function BuildFull(opts)
         growJobs = {},
         refineIntents = {},
         brewBlocks = {},
-        reservations = {},
+        reservations = reservations,
         builtAt = (type(GetGameTime) == "function" and GetGameTime()) or 0,
     }
     PublishPlan(plan, key, nil)
@@ -4219,6 +4427,10 @@ end
 
 function Planner.SettingsHash()
     return SettingsHash()
+end
+
+function Planner.DecideStatus(row, target, recipe, demand)
+    DecideStatus(row, target, recipe, demand)
 end
 
 function Planner.CacheKeyFromGens()
@@ -4265,16 +4477,21 @@ function Planner.CountItemsMatchingSpec(spec, opts)
     return CountItemsMatchingSpec(spec, opts)
 end
 
-function Planner.BuildBalancedSpecDemand()
-    return BuildBalancedSpecDemand()
+function Planner.BuildBalancedSpecDemand(opts)
+    return BuildBalancedSpecDemand(opts)
+end
+
+--- Bust Have warm only (bag snap / orch-hold end). Forces re-warm before craftable.
+function Planner.InvalidateHaveWarm()
+    Planner._specHaveSnapGen = -1
+    Planner._specHaveWarmedSnap = nil
+    Planner._warmHaveSlice = nil
 end
 
 --- Quiet-end: force next EnsureHaveCache / demand build to refresh counts.
 function Planner.InvalidateHaveCacheAfterQuiet()
-    Planner._specHaveSnapGen = -1
-    Planner._specHaveWarmedSnap = nil
+    Planner.InvalidateHaveWarm()
     Planner._demandCacheKey = nil
-    Planner._warmHaveSlice = nil
     -- Live craftable must recount after plant/harvest quiet; otherwise Watch can
     -- sit on Restocking with stale craftable=0 until a force Build (/sp3 dumpall).
     local PS = StockPiler3.PlanSnapshot
@@ -4286,6 +4503,10 @@ function Planner.InvalidateHaveCacheAfterQuiet()
                 row._craftableSnapGen = -1
             end
         end
+    end
+    -- Drop cache key so Build cannot early-return a snap stamped without recount.
+    if PS and PS.Invalidate then
+        PS.Invalidate()
     end
 end
 
@@ -4571,8 +4792,8 @@ function Planner.SyncLiveStatusClosedWindow()
     end
     local after = Planner.HasReadyToCraft()
     local flipped = before ~= after
-    if flipped and StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
-        StockPiler3Window.RequestFooterRefresh()
+    if flipped and StockPiler3.Ui and StockPiler3.Ui.RequestFooterRefresh then
+        StockPiler3.Ui.RequestFooterRefresh()
     end
     if Brew and Brew.MaybeNotifyBrewReady then
         Brew.MaybeNotifyBrewReady()
@@ -4617,7 +4838,9 @@ function Planner.Build(opts)
         local key = Planner.CacheKeyFromGens()
         if PS.GetCacheKey() == key then
             local cached = PS.Get and PS.Get()
-            if type(cached) == "table" then
+            -- Miss when potion craftable lags the bag snap (quiet-end clear or
+            -- a prior publish that advanced the key without recounting).
+            if type(cached) == "table" and RowsCraftableCurrentForSnap(cached.rows) then
                 return cached
             end
         end
@@ -5026,9 +5249,11 @@ function Planner.DumpBrewPlan(emit)
     emit("=== StockPiler3 brewplan ===")
     local Brew = StockPiler3.Brew
     local blockedWhy = Brew and Brew.AutoBrewBlockedReason and Brew.AutoBrewBlockedReason() or nil
-    emit(string.format("  hasReady=%s canBrew=%s autoBlocked=%s respectGrowReserve=%s",
+    emit(string.format(
+        "  hasReady=%s canBrew=%s openFail=%s autoBlocked=%s respectGrowReserve=%s",
         tostring(Planner.HasReadyToCraft()),
         tostring(Brew and Brew.CanBrewNow and Brew.CanBrewNow()),
+        tostring(Brew and Brew._openFailLatched == true),
         tostring(blockedWhy or "no"),
         tostring(RespectGrowReserve())))
     local Grow = StockPiler3.Grow

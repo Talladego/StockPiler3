@@ -61,22 +61,37 @@ function D.LogOp(kind, msg)
 end
 
 local _reporting = false
+local _seenErr = {}
+local _chatErrOnce = false
 function D.ReportProtectedCallFailure(context, err, quiet)
     if _reporting == true then
         return
     end
     _reporting = true
     local msg = tostring(context or "unknown") .. ": " .. tostring(err or "unknown error")
+    local key = msg
+    local first = _seenErr[key] ~= true
+    if first then
+        _seenErr[key] = true
+    end
     pcall(function()
         if quiet == true then
-            if D.Enabled == true then
+            if first or D.Enabled == true then
                 D.EmitLog("StockPiler3| TryCallQuiet " .. msg)
+            end
+            if first and _chatErrOnce ~= true then
+                _chatErrOnce = true
+                D.Print(L"An error was logged once. /sp3 debug for details.")
             end
             return
         end
         D.EmitLog("StockPiler3| TryCall " .. msg)
         if type(LogLuaMessage) == "function" and SystemData and SystemData.UiLogFilters then
             LogLuaMessage("Lua", SystemData.UiLogFilters.WARNING, towstring("[StockPiler3] " .. msg))
+        end
+        if first and _chatErrOnce ~= true then
+            _chatErrOnce = true
+            D.Print(L"An error was logged once. /sp3 debug for details.")
         end
     end)
     _reporting = false

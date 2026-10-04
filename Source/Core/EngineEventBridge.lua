@@ -83,6 +83,13 @@ local function ApplyInventorySlots(bagKind, slots, reason)
 end
 
 function Bridge.OnInventoryUpdated(updatedSlots)
+    -- Stock DataUtils.ReloadItems sticks itemsDirty; mirror so force reads see it.
+    if GameData and GameData.Player then
+        GameData.Player.itemsDirty = true
+    end
+    if DataUtils and type(DataUtils.ReloadItems) == "function" then
+        pcall(DataUtils.ReloadItems)
+    end
     Bridge._pendingMainSlots = Bridge._pendingMainSlots or {}
     Bridge._pendingMainSlotSet = Bridge._pendingMainSlotSet or {}
     CoalesceSlots(Bridge._pendingMainSlots, Bridge._pendingMainSlotSet, updatedSlots)
@@ -90,6 +97,14 @@ function Bridge.OnInventoryUpdated(updatedSlots)
 end
 
 function Bridge.OnCraftingSlotUpdated(updatedSlots)
+    -- Stock: PLAYER_CRAFTING_SLOT_UPDATED → DataUtils.ReloadCraftingItems (craft bag).
+    -- Distinct from PLAYER_INVENTORY_SLOT_UPDATED (main bag). Never route craft here→main.
+    if GameData and GameData.Player then
+        GameData.Player.craftingItemsDirty = true
+    end
+    if DataUtils and type(DataUtils.ReloadCraftingItems) == "function" then
+        pcall(DataUtils.ReloadCraftingItems)
+    end
     Bridge._pendingCraftSlots = Bridge._pendingCraftSlots or {}
     Bridge._pendingCraftSlotSet = Bridge._pendingCraftSlotSet or {}
     CoalesceSlots(Bridge._pendingCraftSlots, Bridge._pendingCraftSlotSet, updatedSlots)
@@ -99,6 +114,26 @@ function Bridge.OnCraftingSlotUpdated(updatedSlots)
         and StockPiler3.Scheduler and StockPiler3.Scheduler.WakeAutoGrow
     then
         StockPiler3.Scheduler.WakeAutoGrow()
+    end
+end
+
+--- Stock backpack icon view: PLAYER_CRAFTING_INVENTORY_UPDATED (craft bag capacity / full rebuild).
+function Bridge.OnCraftingInventoryUpdated()
+    if GameData and GameData.Player then
+        GameData.Player.craftingItemsDirty = true
+    end
+    if DataUtils and type(DataUtils.ReloadCraftingItems) == "function" then
+        pcall(DataUtils.ReloadCraftingItems)
+    end
+    local Inv = StockPiler3.Inventory
+    if Inv and Inv.ForceFullRefresh then
+        Inv.ForceFullRefresh({
+            forceEngine = true,
+            needQueue = true,
+            reason = "engine-crafting-inventory",
+        })
+    elseif Inv and Inv.MarkDirty then
+        Inv.MarkDirty({ reason = "engine-crafting-inventory", full = true, needQueue = true })
     end
 end
 
@@ -151,8 +186,8 @@ function Bridge.OnCraftingUpdated()
     if Brew and tonumber(Brew._brewUiForcedFrame) == frame and frame > 0 then
         return
     end
-    if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
-        StockPiler3Window.RequestFooterRefresh()
+    if StockPiler3.Ui and StockPiler3.Ui.RequestFooterRefresh then
+        StockPiler3.Ui.RequestFooterRefresh()
     end
 end
 
@@ -196,8 +231,8 @@ function Bridge.OnCultivationUpdated()
     local quiet = Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true
     local settling = Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true
     if not storm and not quiet and not settling then
-        if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
-            StockPiler3Window.RequestFooterRefresh()
+        if StockPiler3.Ui and StockPiler3.Ui.RequestFooterRefresh then
+            StockPiler3.Ui.RequestFooterRefresh()
         end
     end
     if Grow and Grow.NeedsCurrentStageAdditive and Grow.NeedsCurrentStageAdditive()
@@ -281,22 +316,26 @@ function Bridge.OnTradeSkillUpdated()
         if canScrub and StockPiler3.Watch and StockPiler3.Watch.DisableOverSkillWatches then
             StockPiler3.Watch.DisableOverSkillWatches({ notify = firstSkillsReady and apo > 0 })
         end
+        -- Skill tier floors change refine eligibility without bag deltas; bust
+        -- sticky empty CollectIntents latch (issue #11 / 0.3.256 regression).
+        local Refine = StockPiler3.Refine
+        if Refine and Refine.InvalidateIntentCache then
+            Refine.InvalidateIntentCache()
+        end
+        if Refine and Refine.MarkRefineDue then
+            Refine.MarkRefineDue("skill")
+        end
         if StockPiler3.Scheduler and StockPiler3.Scheduler.EnqueuePlanRebuild then
             StockPiler3.Scheduler.EnqueuePlanRebuild()
         end
-        if StockPiler3TabWatch and StockPiler3TabWatch.RefreshSkillGates then
-            -- Force gate key rebuild (cult/apo visibility just changed).
-            StockPiler3TabWatch._skillGatesKey = nil
-            StockPiler3TabWatch.RefreshSkillGates()
+        if StockPiler3.Ui and StockPiler3.Ui.InvalidateSkillGates then
+            StockPiler3.Ui.InvalidateSkillGates()
         end
-        if StockPiler3TabPotions and StockPiler3TabPotions.UpdateRows then
-            StockPiler3TabPotions.UpdateRows()
+        if StockPiler3.Ui and StockPiler3.Ui.RefreshCatalogRows then
+            StockPiler3.Ui.RefreshCatalogRows()
         end
-        if StockPiler3TabPlants and StockPiler3TabPlants.UpdateRows then
-            StockPiler3TabPlants.UpdateRows()
-        end
-        if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
-            StockPiler3Window.RequestFooterRefresh()
+        if StockPiler3.Ui and StockPiler3.Ui.RequestFooterRefresh then
+            StockPiler3.Ui.RequestFooterRefresh()
         end
         if firstSkillsReady and cult > 0
             and StockPiler3.Scheduler and StockPiler3.Scheduler.WakeAutoGrow
@@ -380,8 +419,74 @@ end
 
 function Bridge.OnCombatFlagUpdated()
     -- Light: combat pause is consulted on Orch plant path; dirty footer readiness only.
-    if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
-        StockPiler3Window.RequestFooterRefresh()
+    if StockPiler3.Ui and StockPiler3.Ui.RequestFooterRefresh then
+        StockPiler3.Ui.RequestFooterRefresh()
+    end
+end
+
+local function RunUpdateProcessed(timeElapsed)
+    StockPiler3.FrameCounter = (tonumber(StockPiler3.FrameCounter) or 0) + 1
+
+    -- Perf.OnFrame first when in-addon hitch logger (LibPerf sets Available=true).
+    local Perf = StockPiler3.Perf
+    if Perf and Perf.OnFrame and Perf.Available ~= true then
+        Perf.OnFrame(timeElapsed)
+    end
+
+    if StockPiler3.Garden and StockPiler3.Garden.FlushPendingSyncAll then
+        StockPiler3.Garden.FlushPendingSyncAll()
+    end
+
+    -- Coalesced Inv.ApplySlots (main + craft)
+    Bridge.FlushPendingMainSlots()
+    Bridge.FlushPendingCraftSlots()
+
+    -- Flush pending snapGen
+    if StockPiler3.Inventory and StockPiler3.Inventory.FlushPendingSnapGen then
+        StockPiler3.Inventory.FlushPendingSnapGen()
+    end
+
+    -- LearnBridge drain
+    if StockPiler3.LearnBridge and StockPiler3.LearnBridge.OnUpdateProcessed then
+        StockPiler3.LearnBridge.OnUpdateProcessed()
+    end
+
+    -- Refine OnUpdate
+    if StockPiler3.Refine and StockPiler3.Refine.OnUpdateProcessed then
+        StockPiler3.Refine.OnUpdateProcessed(timeElapsed)
+    elseif StockPiler3.Refine and StockPiler3.Refine.OnUpdate then
+        StockPiler3.Refine.OnUpdate(timeElapsed)
+    end
+
+    -- Scheduler pump (bag -> FrameWork -> Plan -> Watch UI; Orch tick due)
+    if StockPiler3.Scheduler and StockPiler3.Scheduler.OnUpdate then
+        StockPiler3.Scheduler.OnUpdate(timeElapsed)
+    end
+
+    -- First-open Watch ListBox bind: must run even when Scheduler skips UI.
+    if StockPiler3Window and StockPiler3Window.FlushOpenPaint then
+        StockPiler3Window.FlushOpenPaint()
+    end
+
+    -- Coalesced macro enable sync (footer/cultivation storms).
+    if StockPiler3.Macro and StockPiler3.Macro.DrainEnabledSync then
+        StockPiler3.Macro.DrainEnabledSync()
+    end
+
+    -- Footer after Scheduler so SkipUiHoldFooter can hold this frame.
+    local Sch = StockPiler3.Scheduler
+    local holdFooter = Sch and Sch.SkipUiHoldFooter and Sch.SkipUiHoldFooter() == true
+    if not holdFooter and StockPiler3Window and StockPiler3Window.FlushPendingFooterRefresh then
+        StockPiler3Window.FlushPendingFooterRefresh()
+    end
+    if Sch and Sch.ClearSkipUiHoldFooter then
+        Sch.ClearSkipUiHoldFooter()
+    end
+    -- Deferred tab list repop (SelectTab deferRefresh / OnShow) — SP2 parity.
+    if StockPiler3Window and StockPiler3Window.FlushPendingListRepopulate
+        and StockPiler3Window._repopulatePending == true
+    then
+        StockPiler3Window.FlushPendingListRepopulate()
     end
 end
 
@@ -390,60 +495,7 @@ function Bridge.OnUpdateProcessed(timeElapsed)
         return
     end
     Bridge._inUpdate = true
-    local ok, err = pcall(function()
-        StockPiler3.FrameCounter = (tonumber(StockPiler3.FrameCounter) or 0) + 1
-
-        -- Perf.OnFrame first when in-addon hitch logger (LibPerf sets Available=true).
-        local Perf = StockPiler3.Perf
-        if Perf and Perf.OnFrame and Perf.Available ~= true then
-            Perf.OnFrame(timeElapsed)
-        end
-
-        if StockPiler3.Garden and StockPiler3.Garden.FlushPendingSyncAll then
-            StockPiler3.Garden.FlushPendingSyncAll()
-        end
-
-        -- Coalesced Inv.ApplySlots (main + craft)
-        Bridge.FlushPendingMainSlots()
-        Bridge.FlushPendingCraftSlots()
-
-        -- Flush pending snapGen
-        if StockPiler3.Inventory and StockPiler3.Inventory.FlushPendingSnapGen then
-            StockPiler3.Inventory.FlushPendingSnapGen()
-        end
-
-        -- LearnBridge drain
-        if StockPiler3.LearnBridge and StockPiler3.LearnBridge.OnUpdateProcessed then
-            StockPiler3.LearnBridge.OnUpdateProcessed()
-        end
-
-        -- Refine OnUpdate
-        if StockPiler3.Refine and StockPiler3.Refine.OnUpdateProcessed then
-            StockPiler3.Refine.OnUpdateProcessed(timeElapsed)
-        elseif StockPiler3.Refine and StockPiler3.Refine.OnUpdate then
-            StockPiler3.Refine.OnUpdate(timeElapsed)
-        end
-
-        -- Scheduler pump (bag -> FrameWork -> Plan -> Watch UI; Orch tick due)
-        if StockPiler3.Scheduler and StockPiler3.Scheduler.OnUpdate then
-            StockPiler3.Scheduler.OnUpdate(timeElapsed)
-        end
-
-        -- Coalesced macro enable sync (footer/cultivation storms).
-        if StockPiler3.Macro and StockPiler3.Macro.DrainEnabledSync then
-            StockPiler3.Macro.DrainEnabledSync()
-        end
-
-        -- Footer after Scheduler so SkipUiHoldFooter can hold this frame.
-        local Sch = StockPiler3.Scheduler
-        local holdFooter = Sch and Sch.SkipUiHoldFooter and Sch.SkipUiHoldFooter() == true
-        if not holdFooter and StockPiler3Window and StockPiler3Window.FlushPendingFooterRefresh then
-            StockPiler3Window.FlushPendingFooterRefresh()
-        end
-        if Sch and Sch.ClearSkipUiHoldFooter then
-            Sch.ClearSkipUiHoldFooter()
-        end
-    end)
+    local ok, err = pcall(RunUpdateProcessed, timeElapsed)
     Bridge._inUpdate = false
     if ok ~= true and StockPiler3.Debug and StockPiler3.Debug.ReportProtectedCallFailure then
         StockPiler3.Debug.ReportProtectedCallFailure("Bridge.OnUpdateProcessed", err, true)
@@ -453,7 +505,10 @@ end
 local function RegisterOne(ev, eventKey, handlerName)
     local eventId = ev[eventKey]
     if eventId == nil then
-        return
+        if StockPiler3.Debug and StockPiler3.Debug.LogAlways then
+            StockPiler3.Debug.LogAlways("engine bridge skip missing event " .. tostring(eventKey))
+        end
+        return false
     end
     local host = HostWindow()
     if type(WindowRegisterEventHandler) == "function" then
@@ -462,7 +517,10 @@ local function RegisterOne(ev, eventKey, handlerName)
     elseif type(RegisterEventHandler) == "function" then
         RegisterEventHandler(eventId, handlerName)
         TrackHandler(eventId, handlerName)
+    else
+        return false
     end
+    return true
 end
 
 function Bridge.Register()
@@ -475,8 +533,13 @@ function Bridge.Register()
     end
     Bridge._handlers = {}
     local prefix = "StockPiler3.EngineEventBridge."
+    -- Parity with EA_Window_Backpack + DataUtils:
+    --   PLAYER_INVENTORY_SLOT_UPDATED → main bag
+    --   PLAYER_CRAFTING_SLOT_UPDATED  → craft bag (apo mats)
+    --   PLAYER_CRAFTING_INVENTORY_UPDATED → craft bag capacity / full rebuild
     RegisterOne(ev, "PLAYER_INVENTORY_SLOT_UPDATED", prefix .. "OnInventoryUpdated")
     RegisterOne(ev, "PLAYER_CRAFTING_SLOT_UPDATED", prefix .. "OnCraftingSlotUpdated")
+    RegisterOne(ev, "PLAYER_CRAFTING_INVENTORY_UPDATED", prefix .. "OnCraftingInventoryUpdated")
     RegisterOne(ev, "PLAYER_CRAFTING_UPDATED", prefix .. "OnCraftingUpdated")
     RegisterOne(ev, "PLAYER_CULTIVATION_UPDATED", prefix .. "OnCultivationUpdated")
     RegisterOne(ev, "TRADE_SKILL_UPDATED", prefix .. "OnTradeSkillUpdated")

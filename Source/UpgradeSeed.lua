@@ -509,25 +509,28 @@ local function TargetUpgradePlant(t)
 end
 
 --- Seed/plant uids on the needReq rung (Cult-max destination).
+--- When the rung exists, use its uids only (s0 stays 0). Fallback applies only
+--- when the ladder has no needReq rung — never inherit a lower-tier seed onto a
+--- known orphan high rung (Spiderfrond L25 s0 + full Wispy buffer falsely ended climb).
 local function RungUidsAtNeed(ladder, needReq, fallbackPlantUid, fallbackSeedUid)
     needReq = tonumber(needReq) or 0
-    local seedUid = tonumber(fallbackSeedUid) or 0
-    local plantUid = tonumber(fallbackPlantUid) or 0
+    local seedUid = 0
+    local plantUid = 0
+    local found = false
     if type(ladder) == "table" and type(ladder.rungs) == "table" and needReq >= 1 then
         for i = 1, #ladder.rungs do
             local rung = ladder.rungs[i]
             if (tonumber(rung.skillReq) or 0) == needReq then
-                local rSeed = tonumber(rung.seedUid) or 0
-                local rPlant = tonumber(rung.plantUid) or 0
-                if rSeed > 0 then
-                    seedUid = rSeed
-                end
-                if rPlant > 0 then
-                    plantUid = rPlant
-                end
+                found = true
+                seedUid = tonumber(rung.seedUid) or 0
+                plantUid = tonumber(rung.plantUid) or 0
                 break
             end
         end
+    end
+    if not found then
+        seedUid = tonumber(fallbackSeedUid) or 0
+        plantUid = tonumber(fallbackPlantUid) or 0
     end
     return seedUid, plantUid
 end
@@ -858,26 +861,44 @@ end
 --- opts: climbCap, mainsOnly, familyKey / ladder, ownedSeedReq
 function US.ScanUpgradePlant(opts)
     opts = type(opts) == "table" and opts or {}
+    local snapGen = 0
+    local PS = StockPiler3.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    if type(plan) == "table" then
+        snapGen = tonumber(plan.planGen) or 0
+    end
+    local fam = tostring(opts.familyKey or "")
+    local cacheKey = tostring(snapGen) .. ":" .. tostring(opts.climbCap or 0)
+        .. ":" .. fam .. ":" .. tostring(opts.ownedSeedReq or 0)
+        .. ":" .. tostring(opts.mainsOnly == true)
+    if US._scanPlantKey == cacheKey then
+        return US._scanPlant
+    end
+    local function done(result)
+        US._scanPlantKey = cacheKey
+        US._scanPlant = result
+        return result
+    end
     local SM = StockPiler3.SeedMap
     local climbCap = tonumber(opts.climbCap) or 0
     if climbCap < 1 then
-        return nil
+        return done(nil)
     end
     local ladder = opts.ladder
     if type(ladder) ~= "table" and opts.familyKey and SM and SM.GetFamilyLadder then
         ladder = SM.GetFamilyLadder(opts.familyKey)
     end
     if type(ladder) == "table" and SM and SM.BestUpgradePlantOnLadder then
-        return SM.BestUpgradePlantOnLadder(ladder, climbCap, opts.ownedSeedReq or 0, {
+        return done(SM.BestUpgradePlantOnLadder(ladder, climbCap, opts.ownedSeedReq or 0, {
             mainsOnly = opts.mainsOnly == true,
-        })
+        }))
     end
     -- Opportunistic (SkillUp): any main plant under climbCap above ownedSeedReq.
     local Inv = StockPiler3.Inventory
     local Items = StockPiler3.Items
     local Refine = StockPiler3.Refine
     if not (Inv and Inv.ForEachItem) then
-        return nil
+        return done(nil)
     end
     local ownedSeedReq = tonumber(opts.ownedSeedReq) or 0
     local best = nil
@@ -942,7 +963,7 @@ function US.ScanUpgradePlant(opts)
             }
         end
     end)
-    return best
+    return done(best)
 end
 
 function US.PickBestOwnedSeed(opts)

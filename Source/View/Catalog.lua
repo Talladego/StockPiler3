@@ -399,9 +399,19 @@ local function ItemDataHasCraftBonuses(itemData)
     return false
 end
 
+local _plantRecipeIndex = nil
+local _plantRecipeIndexGen = nil
+
 local function BuildPlantRecipeIndex()
-    local byUid = {}
     local Know = StockPiler3.Knowledge
+    local gen = 0
+    if Know and Know.GetGen then
+        gen = tonumber(Know.GetGen()) or 0
+    end
+    if _plantRecipeIndex ~= nil and _plantRecipeIndexGen == gen then
+        return _plantRecipeIndex
+    end
+    local byUid = {}
     local RS = StockPiler3.RecipeSpec
     local SM = StockPiler3.SeedMap
     local recipes = Know and Know.Recipes and Know.Recipes() or nil
@@ -493,6 +503,8 @@ local function BuildPlantRecipeIndex()
             end
         end
     end
+    _plantRecipeIndex = byUid
+    _plantRecipeIndexGen = gen
     return byUid
 end
 

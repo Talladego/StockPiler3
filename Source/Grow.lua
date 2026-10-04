@@ -1532,6 +1532,14 @@ function Grow.PickPlantCandidate()
         return job
     end
     ClampSeedCommitsToBag()
+    local Sch = StockPiler3.Scheduler
+    if Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true then
+        return done(nil)
+    end
+    local Inv = StockPiler3.Inventory
+    if Inv and Inv.IsReady and Inv.IsReady() ~= true then
+        return done(nil)
+    end
     local RS = StockPiler3.RecipeSpec
     local SM = StockPiler3.SeedMap
     if type(RS) ~= "table" or type(SM) ~= "table"
@@ -1552,7 +1560,18 @@ function Grow.PickPlantCandidate()
         end
     end
 
-    local demand = RS.BuildBalancedSpecDemand and RS.BuildBalancedSpecDemand() or nil
+    -- Never sync WarmHave.miss on Orch frames — cacheOnly + FrameWork prewarm.
+    local demand = RS.BuildBalancedSpecDemand
+        and RS.BuildBalancedSpecDemand({ cacheOnly = true })
+        or nil
+    if type(demand) ~= "table" then
+        local Sch = StockPiler3.Scheduler
+        if Sch and Sch.RequestCachePrewarm then
+            Sch.RequestCachePrewarm("pick-plant-cold")
+        end
+        -- Reuse last probed job until prewarm finishes (nil if never probed).
+        return done(Grow._cachedPlantJob)
+    end
     local watches = CollectPlantWatchOrder(RS)
     local maxGap = 0
     for i = 1, #watches do
@@ -1682,6 +1701,10 @@ function Grow.PickPlantCandidate()
 end
 
 function Grow.GetPlantJob()
+    local Sch = StockPiler3.Scheduler
+    if Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true then
+        return nil
+    end
     -- Cache hits for both a real job and a probed nil (no plantable work).
     -- Without nil-cache, idle AutoGrow ticks re-ran PickPlantCandidate every 5s.
     if Grow._plantQueueDirty ~= true and Grow._plantJobProbed == true then
@@ -2146,8 +2169,7 @@ function Grow.AllPlantedPlotsHarvestReady()
     end
     local planted = 0
     local ready = 0
-    for i = 1, #plots do
-        local row = plots[i]
+    for _, row in pairs(plots) do
         if type(row) == "table" and not IsPlotEmptyRow(row) then
             planted = planted + 1
             if IsPlotGrownStage(row.stage) then
@@ -2274,6 +2296,7 @@ local AUTOGROW_STALL_STATUS = {
     buy_ingredients = true,
     no_recipe = true,
     need_skill = true,
+    craft_bag_full = true,
 }
 
 local function AutoGrowStallBuyInProgress()

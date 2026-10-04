@@ -164,11 +164,20 @@ function Orch.IsFillBlocked()
     return false
 end
 
---- only extend wait if newWait > cur; do not re-arm every idle tick with a smaller/equal wait
+--- only extend until-time if later than current; wait is seconds via NowSec
 function Orch.SetFillBlocked(wait)
     wait = tonumber(wait) or 0
     if wait < 0 then
         wait = 0
+    end
+    local now = 0
+    if StockPiler3.Util and StockPiler3.Util.NowSec then
+        now = tonumber(StockPiler3.Util.NowSec()) or 0
+    end
+    local untilT = now > 0 and (now + wait) or 0
+    local curUntil = tonumber(Orch._fillBlockedUntil) or 0
+    if untilT > curUntil then
+        Orch._fillBlockedUntil = untilT
     end
     local cur = tonumber(Orch._fillBlockedWait) or 0
     if wait > cur then
@@ -184,6 +193,7 @@ end
 function Orch.ClearFillBlocked()
     Orch._fillBlocked = false
     Orch._fillBlockedWait = 0
+    Orch._fillBlockedUntil = 0
     local Grow = StockPiler3.Grow
     if Grow and Grow.ClearFillBlocked then
         Grow.ClearFillBlocked()
@@ -201,6 +211,18 @@ function Orch.DecayFillBlocked()
         end
         return
     end
+    local now = 0
+    if StockPiler3.Util and StockPiler3.Util.NowSec then
+        now = tonumber(StockPiler3.Util.NowSec()) or 0
+    end
+    local untilT = tonumber(Orch._fillBlockedUntil) or 0
+    if now > 0 and untilT > 0 then
+        if now >= untilT then
+            Orch.ClearFillBlocked()
+        end
+        return
+    end
+    -- now==0: keep blocked; tick fallback when until was never stamped.
     local wait = tonumber(Orch._fillBlockedWait) or 0
     if wait <= 0 then
         Orch.ClearFillBlocked()
@@ -318,6 +340,16 @@ function Orch._TickBody()
         return
     end
 
+    local Sch = StockPiler3.Scheduler
+    if Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true then
+        if Sch.SetAutoGrowIdle then
+            Sch.SetAutoGrowIdle(false)
+        end
+        TryBuyTick(Orch.NewOpId())
+        EndTick()
+        return
+    end
+
     -- fillBlocked: allow refine AND plant (FindSeedSlot misses after refine used to
     -- latch fillBlocked and never retry planting while seeds sat in bag).
     if Orch.IsFillBlocked() then
@@ -340,6 +372,10 @@ function Orch._TickBody()
             end
         end
         local canPlant = Grow and Grow.HasEmptyPlot and Grow.HasEmptyPlot() == true
+        -- Remount have/demand for plant/refine probes (before ArmPlantQuiet).
+        if Sch and Sch.ArmOrchDecisionHold then
+            Sch.ArmOrchDecisionHold(2)
+        end
         local hasSeeds = false
         if usRefine then
             -- Cheap probe clear; do not run PickPlantCandidate while refine-first.
@@ -398,11 +434,11 @@ function Orch._TickBody()
         return
     end
 
-    local Sch = StockPiler3.Scheduler
     local plantQuiet = Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true
     local harvestStorm = Sch and Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true
-    -- plant quiet / harvest storm -> fast tick, no grow probes
-    if plantQuiet or harvestStorm then
+    local settling = Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true
+    -- plant quiet / harvest storm / session settle -> fast tick, no grow probes
+    if plantQuiet or harvestStorm or settling then
         if Sch and Sch.SetAutoGrowIdle then
             Sch.SetAutoGrowIdle(false)
         end
@@ -453,6 +489,10 @@ function Orch._TickBody()
 
     local Grow = StockPiler3.Grow
     local canPlant = Grow and Grow.HasEmptyPlot and Grow.HasEmptyPlot() == true
+    -- Remount have/demand for plant/refine probes (before ArmPlantQuiet after IssueOne).
+    if Sch and Sch.ArmOrchDecisionHold then
+        Sch.ArmOrchDecisionHold(2)
+    end
     -- Upgrade Seed refine-first: skip demand pick, clear plant-probe via MarkPlantJobProbed.
     -- Leaving dirty made ShouldAllowRefineNow return plant-probe-pending and block
     -- refine for ~50s after harvest (idle 5s ticks until a dump probed the queue).
@@ -517,8 +557,7 @@ function Orch._TickBody()
                 EndTick()
                 return
             end
-            -- Plant fail / no-seeds: arm fillBlocked (extend only)
-            Orch.SetFillBlocked(5)
+            -- Transient plant miss (plot still occupied / API fail): re-probe next tick.
         end
     elseif canPlant and hasSeeds and holdHarvestBatch then
         if Sch and Sch.SetAutoGrowIdle then

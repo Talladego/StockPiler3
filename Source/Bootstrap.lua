@@ -3,7 +3,7 @@
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
-StockPiler3.Version = L"0.3.256"
+StockPiler3.Version = L"0.3.292"
 
 local function T(key, tokens)
     return StockPiler3.Util.T(key, tokens)
@@ -506,7 +506,9 @@ function StockPiler3.Initialize()
     EmitLog("init v" .. tostring(StockPiler3.Version)
         .. " debug=" .. tostring(StockPiler3.Debug and StockPiler3.Debug.Enabled == true))
     Print(T("boot.loaded", { version = StockPiler3.Version }))
-    if StockPiler3.Scheduler and StockPiler3.Scheduler.BeginSessionSettle then
+    if StockPiler3.Scheduler and StockPiler3.Scheduler.MarkAwaitingSessionLoad then
+        StockPiler3.Scheduler.MarkAwaitingSessionLoad()
+    elseif StockPiler3.Scheduler and StockPiler3.Scheduler.BeginSessionSettle then
         StockPiler3.Scheduler.BeginSessionSettle()
     end
     if StockPiler3.Scheduler and StockPiler3.Scheduler.SkipUiThisFrame then

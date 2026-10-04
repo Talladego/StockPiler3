@@ -21,6 +21,7 @@ Inv._snapPending = false
 Inv._snapPendingReason = nil
 Inv._pendingUidDelta = nil
 Inv._lastNetUidDelta = nil
+Inv._dirtyEngine = false
 
 local function Bus()
     return StockPiler3.EventBus
@@ -166,6 +167,10 @@ function Inv.GetSnapGen()
     return tonumber(Inv._snapGen) or 0
 end
 
+function Inv.IsReady()
+    return Inv._ready == true
+end
+
 function Inv.CountByUid(uid)
     uid = tonumber(uid) or 0
     if uid <= 0 or Inv._ready ~= true then
@@ -289,9 +294,17 @@ function Inv.OnSlotUpdated(bagType, slot, bagTable)
     return true
 end
 
-function Inv.ForceFullRefresh()
+function Inv.ForceFullRefresh(opts)
+    opts = type(opts) == "table" and opts or {}
     Inv._dirtyFull = true
-    Inv.MarkDirty({ full = true, reason = "force" })
+    if opts.forceEngine == true then
+        Inv._dirtyEngine = true
+    end
+    Inv.MarkDirty({
+        full = true,
+        reason = opts.reason or "force",
+        needQueue = opts.needQueue == true,
+    })
 end
 
 function Inv.ApplySlotUpdates(bagType, updatedSlots, reason)
@@ -327,18 +340,42 @@ function Inv.ApplySlotUpdates(bagType, updatedSlots, reason)
         return false
     end
     local BA = StockPiler3.BagAdapter
+    -- Force engine reread: slot events are coalesced to UPDATE_PROCESSED, and a
+    -- stale DataUtils table makes put-back look empty (no L0-slot-set / no snap).
     local bagTable = nil
-    if BA and BA.GetBagTable then
+    if BA and BA.FetchBag then
+        local entry = BA.FetchBag(bagType, true)
+        if type(entry) == "table" then
+            bagTable = entry.data
+        end
+    elseif BA and BA.GetBagTable then
+        if GameData and GameData.Player then
+            if bagType == "craft" then
+                GameData.Player.craftingItemsDirty = true
+            else
+                GameData.Player.itemsDirty = true
+            end
+        end
         bagTable = BA.GetBagTable(bagType)
     end
     if type(bagTable) ~= "table" and Inv._ready == true then
         Inv.MarkDirty({ reason = reason .. "-nobag" })
         return false
     end
+    local pendingBefore = Inv._snapPending == true
     for i = 1, n do
         if Inv.OnSlotUpdated(bagType, slots[i], bagTable) ~= true then
             return false
         end
+    end
+    -- Engine said slots changed but L0 saw no net delta (stale empty read on
+    -- restore). Flatten from engine so Watch craftable can follow.
+    if Inv._ready == true and pendingBefore ~= true and Inv._snapPending ~= true then
+        Inv.ForceFullRefresh({
+            forceEngine = true,
+            needQueue = true,
+            reason = reason .. "-stale",
+        })
     end
     return true
 end
@@ -350,9 +387,11 @@ end
 
 function Inv.Flush(opts)
     opts = type(opts) == "table" and opts or {}
-    local force = opts.force == true or Inv._dirtyFull == true or Inv._ready ~= true
+    local forceEngine = opts.forceEngine == true or Inv._dirtyEngine == true
+    Inv._dirtyEngine = false
+    local force = opts.force == true or Inv._dirtyFull == true or Inv._ready ~= true or forceEngine
     if force then
-        RebuildFromBags(opts.forceEngine == true)
+        RebuildFromBags(forceEngine)
     elseif Inv._dirty == true then
         RebuildFromBags(false)
     end
@@ -442,7 +481,10 @@ function Inv.CanUseCraftingItem(item)
     if type(item) ~= "table" then
         return false
     end
-    if DataUtils and type(DataUtils.PlayerTradeSkillLevelIsEnoughForItem) == "function" then
+    -- DataUtils indexes CultivationWindow / CraftingSystem; skip until those mods exist.
+    if DataUtils and type(DataUtils.PlayerTradeSkillLevelIsEnoughForItem) == "function"
+        and CultivationWindow ~= nil and CraftingSystem ~= nil
+    then
         local ok, enough
         if StockPiler3.Debug and StockPiler3.Debug.TryCallQuiet then
             ok, enough = StockPiler3.Debug.TryCallQuiet(

@@ -11,6 +11,8 @@ local function T(key, tokens)
 end
 
 Ui.WATCH_UI_MIN_INTERVAL_SEC = 5.0
+-- When the Watch tab is visible, react faster to stock/status without a full 5s wait.
+Ui.WATCH_UI_OPEN_INTERVAL_SEC = 0.5
 Ui.BREW_WATCH_CATCHUP_SEC = 1.0
 Ui._watchUiDirty = false
 Ui._watchUiFlushedAt = 0
@@ -19,6 +21,38 @@ Ui._watchUiLastKey = nil
 Ui._watchUiLastKnowledgeGen = 0
 Ui._watchUiLastPlanGen = 0
 Ui._watchUiLastBrewKey = nil
+
+local function IsWatchTabVisible()
+    if not DoesWindowExist("StockPiler3Window") then
+        return false
+    end
+    if WindowGetShowing("StockPiler3Window") ~= true then
+        return false
+    end
+    local selected = StockPiler3Window and StockPiler3Window.SelectedTab
+    local watchTab = StockPiler3Window and StockPiler3Window.TABS_WATCH
+    return selected ~= nil and watchTab ~= nil and selected == watchTab
+end
+
+local function IsCatalogTabVisible()
+    if not DoesWindowExist("StockPiler3Window") then
+        return false
+    end
+    if WindowGetShowing("StockPiler3Window") ~= true then
+        return false
+    end
+    local selected = StockPiler3Window and StockPiler3Window.SelectedTab
+    if selected == nil then
+        return false
+    end
+    local potions = StockPiler3Window.TABS_POTIONS
+    local plants = StockPiler3Window.TABS_PLANTS
+    return selected == potions or selected == plants
+end
+
+local function IsAnyTabVisible()
+    return IsWatchTabVisible() or IsCatalogTabVisible()
+end
 
 function Ui.Print(msg)
     if StockPiler3.Debug and StockPiler3.Debug.Print then
@@ -117,9 +151,17 @@ local function IsWatchPlanStale()
     return tostring(plan.cacheKey or "") ~= tostring(wantKey or "")
 end
 
+local function OpenPaintActive()
+    return StockPiler3Window and StockPiler3Window._openPaintPending == true
+end
+
 --- Hold Watch paint during harvest storm, refine outstanding, buffer refine,
 --- AutoBuy visit, FrameWork prewarm, or session settle.
 local function ShouldDeferWatchFlush()
+    -- First open / re-show: never leave Watch rows PrimeRowChrome-hidden.
+    if OpenPaintActive() then
+        return false
+    end
     local Sch = StockPiler3.Scheduler
     if Sch and Sch.SkipUiThisFrameActive and Sch.SkipUiThisFrameActive() == true then
         return true
@@ -156,13 +198,73 @@ local function ShouldDeferWatchFlush()
         return true
     end
     local Buy = StockPiler3.Buy
-    local VA = StockPiler3.VendorAdapter
-    if Buy and Buy.IsEnabled and Buy.IsEnabled() == true
-        and VA and VA.IsStoreOpen and VA.IsStoreOpen() == true
-    then
+    if Buy and Buy.ShouldDeferWatchPaint and Buy.ShouldDeferWatchPaint() == true then
         return true
     end
     return false
+end
+
+--- Light in-place stock/status paint while Watch is open (no ListBox rebind).
+--- Defined after ShouldDeferWatchFlush (Lua local visibility).
+local function TryWatchLiveCatchup()
+    if not IsWatchTabVisible() then
+        return
+    end
+    if ShouldDeferWatchFlush() then
+        return
+    end
+    local Orch = StockPiler3.Orchestrator
+    local Brew = StockPiler3.Brew
+    if (Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true)
+        or (Brew and Brew.IsWatchUiHold and Brew.IsWatchUiHold() == true)
+    then
+        -- Brew path has its own ~1s catch-up.
+        return
+    end
+    local listData = StockPiler3TabWatch and StockPiler3TabWatch.listData
+    if type(listData) ~= "table" or #listData == 0 then
+        return
+    end
+    if StockPiler3.Planner and StockPiler3.Planner.PatchWatchRowsLiveCounts then
+        StockPiler3.Planner.PatchWatchRowsLiveCounts(listData, {
+            allowWarmHave = false,
+            syncSnapshot = false,
+            recountCraftable = false,
+        })
+    end
+    if StockPiler3TabWatch.UpdateRows then
+        StockPiler3TabWatch.UpdateRows({ keepVisible = true })
+    end
+end
+
+--- Potions/Plants Have from L0 CountByUid — does not need Have-warm or plan rebuild.
+--- Run even while plan/prewarm defers Watch craftable paint.
+local function TryCatalogLiveCatchup()
+    if not IsCatalogTabVisible() then
+        return
+    end
+    local selected = StockPiler3Window and StockPiler3Window.SelectedTab
+    if selected == StockPiler3Window.TABS_POTIONS
+        and StockPiler3TabPotions
+        and StockPiler3TabPotions.PatchLiveHave
+    then
+        if StockPiler3TabPotions.PatchLiveHave() == true
+            and StockPiler3TabPotions.UpdateRows
+        then
+            StockPiler3TabPotions.UpdateRows()
+        end
+        return
+    end
+    if selected == StockPiler3Window.TABS_PLANTS
+        and StockPiler3TabPlants
+        and StockPiler3TabPlants.PatchLiveHave
+    then
+        if StockPiler3TabPlants.PatchLiveHave() == true
+            and StockPiler3TabPlants.UpdateRows
+        then
+            StockPiler3TabPlants.UpdateRows()
+        end
+    end
 end
 
 function Ui.ClearWatchTipCaches()
@@ -179,6 +281,31 @@ end
 function Ui.RequestFooterRefresh()
     if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
         StockPiler3Window.RequestFooterRefresh()
+    end
+end
+
+function Ui.InvalidateSkillGates()
+    if StockPiler3TabWatch then
+        StockPiler3TabWatch._skillGatesKey = nil
+        if StockPiler3TabWatch.RefreshSkillGates then
+            StockPiler3TabWatch.RefreshSkillGates()
+        end
+    end
+end
+
+function Ui.RefreshCatalogRows()
+    -- Patch Have from L0 first; UpdateRows alone left stale stock after bag moves.
+    if StockPiler3TabPotions and StockPiler3TabPotions.PatchLiveHave then
+        StockPiler3TabPotions.PatchLiveHave()
+    end
+    if StockPiler3TabPotions and StockPiler3TabPotions.UpdateRows then
+        StockPiler3TabPotions.UpdateRows()
+    end
+    if StockPiler3TabPlants and StockPiler3TabPlants.PatchLiveHave then
+        StockPiler3TabPlants.PatchLiveHave()
+    end
+    if StockPiler3TabPlants and StockPiler3TabPlants.UpdateRows then
+        StockPiler3TabPlants.UpdateRows()
     end
 end
 
@@ -229,14 +356,33 @@ function Ui.FlushWatchUiIfDirty()
         if StockPiler3TabWatch and StockPiler3TabWatch.PrimeRowChrome then
             StockPiler3TabWatch.PrimeRowChrome()
         end
+        -- Plan coalesce holds RefreshActiveTab, but Load chips must grey as soon as
+        -- bag snap advances past row._craftableSnapGen (ApplyRowBrewButton).
+        local Sch = StockPiler3.Scheduler
+        local planPending = Sch and Sch.IsPlanRebuildPending and Sch.IsPlanRebuildPending() == true
+        local hardHold = (Sch and Sch.SkipUiThisFrameActive and Sch.SkipUiThisFrameActive() == true)
+            or (Sch and Sch._skipUiThisFrame == true)
+            or (Sch and Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true)
+            or (Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true)
+            or (Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true)
+        if planPending and not hardHold and IsWatchTabVisible()
+            and StockPiler3TabWatch and StockPiler3TabWatch.UpdateRows
+        then
+            StockPiler3TabWatch.UpdateRows({ keepVisible = true })
+        end
+        -- Catalog Have is L0-only; do not wait for Have-warm / plan like Watch craftable.
+        TryCatalogLiveCatchup()
         return
     end
 
     local Orch = StockPiler3.Orchestrator
-    local brewSessionActive = Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true
-    -- Mid-brew: hold full RefreshWatch; chrome via ForceBrewUiRefresh; ~1s Stock/Status catch-up.
-    -- Rebind listData only when the ListBox is empty (stuck session / scenario load).
-    -- planGen bumps every brew cycle otherwise caused SkillUp row flicker/disappear.
+    local Brew = StockPiler3.Brew
+    local brewSessionActive = (Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true)
+        or (Brew and Brew.IsWatchUiHold and Brew.IsWatchUiHold() == true)
+    -- Mid-brew / inter-craft hold: hold full RefreshWatch; chrome via ForceBrewUiRefresh;
+    -- ~1s Stock/Status catch-up. Rebind listData only when the ListBox is empty
+    -- (stuck session / scenario load). planGen bumps every brew cycle otherwise
+    -- caused SkillUp / watch row flicker/disappear via ListBoxSetDisplayOrder.
     if brewSessionActive then
         local listData = StockPiler3TabWatch and StockPiler3TabWatch.listData
         local listEmpty = type(listData) ~= "table" or #listData == 0
@@ -244,12 +390,16 @@ function Ui.FlushWatchUiIfDirty()
         local planChanged = planGen ~= (tonumber(Ui._watchUiLastPlanGen) or 0)
         if planChanged then
             Ui._watchUiLastPlanGen = planGen
+            -- Never ListBoxSetDisplayOrder mid-brew (hides all rows). Empty list only.
             if listEmpty and StockPiler3TabWatch and StockPiler3TabWatch.Refresh then
-                StockPiler3TabWatch.Refresh({ forcePlan = false })
+                StockPiler3TabWatch.Refresh({ forcePlan = false, brewHold = true })
             elseif StockPiler3TabWatch and StockPiler3TabWatch.UpdateRows then
-                StockPiler3TabWatch.UpdateRows()
+                StockPiler3TabWatch.UpdateRows({ keepVisible = true })
             end
-            -- Keep dirty so a full flush runs when the session ends.
+            -- Consume dirty during AutoBrew continuum; next plan.updated re-marks.
+            -- Leaving dirty true forced a full RefreshActiveTab the instant hold
+            -- dropped and cleared the Watch list between crafts.
+            Ui._watchUiDirty = false
             return
         end
         local brewKey = BrewChromeKey()
@@ -260,10 +410,13 @@ function Ui.FlushWatchUiIfDirty()
         end
         if brewChanged then
             Ui._watchUiLastBrewKey = brewKey
-            if StockPiler3TabWatch and StockPiler3TabWatch.UpdateRows then
-                StockPiler3TabWatch.UpdateRows()
+            if StockPiler3TabWatch and StockPiler3TabWatch.InvalidateBrewChrome then
+                StockPiler3TabWatch.InvalidateBrewChrome()
             end
-            -- Keep dirty so a full flush runs when the session ends.
+            if StockPiler3TabWatch and StockPiler3TabWatch.UpdateRows then
+                StockPiler3TabWatch.UpdateRows({ keepVisible = true })
+            end
+            Ui._watchUiDirty = false
             return
         end
         local catchupSec = tonumber(Ui.BREW_WATCH_CATCHUP_SEC) or 1.0
@@ -279,10 +432,15 @@ function Ui.FlushWatchUiIfDirty()
         local planRows = type(snap) == "table" and snap.rows or nil
         if type(planRows) == "table" and planRows ~= listData then
             if listEmpty and StockPiler3TabWatch and StockPiler3TabWatch.Refresh then
-                StockPiler3TabWatch.Refresh({ forcePlan = false })
-            elseif StockPiler3TabWatch and StockPiler3TabWatch.UpdateRows then
-                StockPiler3TabWatch.UpdateRows()
+                StockPiler3TabWatch.Refresh({ forcePlan = false, brewHold = true })
+            elseif type(planRows) == "table" and #planRows > 0 and StockPiler3TabWatch then
+                -- Swap listData in place; keepVisible paint (no ListBoxSetDisplayOrder).
+                StockPiler3TabWatch.listData = planRows
+                if StockPiler3TabWatch.UpdateRows then
+                    StockPiler3TabWatch.UpdateRows({ keepVisible = true })
+                end
             end
+            Ui._watchUiDirty = false
             return
         end
         if type(listData) == "table"
@@ -299,14 +457,19 @@ function Ui.FlushWatchUiIfDirty()
                 recountCraftable = false,
             })
             if StockPiler3TabWatch.UpdateRows then
-                StockPiler3TabWatch.UpdateRows()
+                StockPiler3TabWatch.UpdateRows({ keepVisible = true })
             end
             if StockPiler3.Perf and StockPiler3.Perf.End then
                 StockPiler3.Perf.End("UiFlush.BrewCatchup")
             end
         end
-        -- Keep dirty for post-session full Watch refresh.
+        Ui._watchUiDirty = false
         return
+    end
+
+    -- Brew hold just dropped (or never held): one ListBox rebind if indices empty.
+    if StockPiler3TabWatch and StockPiler3TabWatch.FlushPendingListRebind then
+        StockPiler3TabWatch.FlushPendingListRebind()
     end
 
     local knowledgeGen = 0
@@ -317,8 +480,9 @@ function Ui.FlushWatchUiIfDirty()
     local brewKey = BrewChromeKey()
     local contentKey = WatchContentKey()
     local planChanged = planGen ~= (tonumber(Ui._watchUiLastPlanGen) or 0)
+    local openPaint = OpenPaintActive()
     -- Plan status can change without stock/craftable deltas; never skip when planGen moved.
-    if Ui._watchUiLastKey == contentKey and not planChanged then
+    if not openPaint and Ui._watchUiLastKey == contentKey and not planChanged then
         Ui._watchUiDirty = false
         return
     end
@@ -330,10 +494,14 @@ function Ui.FlushWatchUiIfDirty()
     local knowledgeChanged = knowledgeGen ~= (tonumber(Ui._watchUiLastKnowledgeGen) or 0)
     local brewChanged = brewKey ~= tostring(Ui._watchUiLastBrewKey or "")
     local interval = Ui.WATCH_UI_MIN_INTERVAL_SEC
+    if IsAnyTabVisible() then
+        interval = tonumber(Ui.WATCH_UI_OPEN_INTERVAL_SEC) or 0.5
+    end
     if not knowledgeChanged and not planChanged and not brewChanged and IsWatchPlanStale() then
         interval = math.min(interval, 1.0)
     end
-    if not knowledgeChanged
+    if not openPaint
+        and not knowledgeChanged
         and not planChanged
         and not brewChanged
         and last > 0
@@ -354,6 +522,30 @@ function Ui.FlushWatchUiIfDirty()
     Ui._watchUiLastBrewKey = brewKey
     if StockPiler3Window and StockPiler3Window.RefreshActiveTab then
         StockPiler3Window.RefreshActiveTab()
+    end
+    if OpenPaintActive() then
+        local watchVisible = IsWatchTabVisible()
+        local listCount = 0
+        if StockPiler3TabWatch and type(StockPiler3TabWatch.listData) == "table" then
+            listCount = #StockPiler3TabWatch.listData
+        end
+        local populated = false
+        if SP3TabWatchList and type(SP3TabWatchList.PopulatorIndices) == "table"
+            and next(SP3TabWatchList.PopulatorIndices) ~= nil
+        then
+            populated = true
+        end
+        if (not watchVisible) or populated then
+            StockPiler3Window._openPaintPending = false
+        else
+            if listCount > 0 and StockPiler3TabWatch and DoesWindowExist("SP3TabWatchList") then
+                local order = StockPiler3TabWatch.displayOrder
+                if type(order) == "table" and #order > 0 then
+                    ListBoxSetDisplayOrder("SP3TabWatchList", order)
+                end
+            end
+            Ui._watchUiDirty = true
+        end
     end
     if StockPiler3.Perf and StockPiler3.Perf.End then
         StockPiler3.Perf.End("UiFlush")
@@ -389,9 +581,16 @@ function Ui.RegisterEventRefresh()
     track(B.Subscribe(E.PLAN_UPDATED, function()
         Ui.ClearWatchTipCaches()
         Ui.MarkWatchUiDirty()
+        if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
+            StockPiler3Window.RequestFooterRefresh()
+        end
     end))
     track(B.Subscribe(E.PLAN_INVALIDATED, markDirty))
-    track(B.Subscribe(E.INVENTORY_SNAPSHOT, markDirty))
+    track(B.Subscribe(E.INVENTORY_SNAPSHOT, function()
+        Ui.MarkWatchUiDirty()
+        TryWatchLiveCatchup()
+        TryCatalogLiveCatchup()
+    end))
     track(B.Subscribe(E.GARDEN_SNAPSHOT, markDirty))
     if E.KNOWLEDGE_UPDATED then
         track(B.Subscribe(E.KNOWLEDGE_UPDATED, function()

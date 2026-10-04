@@ -32,6 +32,14 @@ local updateEnabledStateHooked = false
 local hotbarEventRegistered = false
 local tooltipHookInstalled = false
 local gameActionBindCache = {}
+local orgSetActionDataFn = nil
+local orgUpdateEnabledStateFn = nil
+local orgOnLButtonUpFn = nil
+local orgCreateMacroTooltipFn = nil
+local hookedSetActionDataFn = nil
+local hookedUpdateEnabledStateFn = nil
+local hookedOnLButtonUpFn = nil
+local hookedCreateMacroTooltipFn = nil
 
 -- ActionButton BASE_ICON window index (ea_actionbars actionbutton.lua).
 local ACTION_BUTTON_BASE_ICON = 0
@@ -244,6 +252,35 @@ function Macro.GetCraftMacroId()
         Macro.CraftMacroId = slot
     end
     return slot
+end
+
+local function RebuildOurMacroIds()
+    local ids = {}
+    local h = Macro.GetMacroId()
+    local b = Macro.GetBrewMacroId()
+    local c = Macro.GetCraftMacroId()
+    if h then
+        ids[h] = true
+    end
+    if b then
+        ids[b] = true
+    end
+    if c then
+        ids[c] = true
+    end
+    Macro._ourIds = ids
+end
+
+local function ButtonIsOurs(button)
+    if not button or not GameData or button.m_ActionType ~= GameData.PlayerActions.DO_MACRO then
+        return false
+    end
+    local ids = Macro._ourIds
+    if type(ids) ~= "table" then
+        RebuildOurMacroIds()
+        ids = Macro._ourIds
+    end
+    return ids[button.m_ActionId] == true
 end
 
 function Macro.GetMacroSlots(macroId)
@@ -532,7 +569,8 @@ local function BrewSessionSticky()
     return true, phase, name
 end
 
---- Latched Craft mode: brew session → soft harvest → CanBrewNow → idle.
+--- Latched Craft mode: brew session → CanBrewNow → soft harvest → idle.
+--- Ready brew beats soft harvest so Craft switches to brew while plots grow.
 --- opts.canHarvest / opts.canBrew: reuse enable-sync values when provided.
 --- opts.readonly: tip path - do not mutate _craftIconMode.
 function Macro.ResolveCraftMode(opts)
@@ -559,10 +597,10 @@ function Macro.ResolveCraftMode(opts)
     local mode = "idle"
     if brewSticky then
         mode = "brew"
-    elseif soft then
-        mode = "harvest"
     elseif canBrew then
         mode = "brew"
+    elseif soft then
+        mode = "harvest"
     end
 
     local iconMode = Macro._craftIconMode or "harvest"
@@ -1061,6 +1099,7 @@ function Macro.RefreshMacroButtonAppearance(opts)
         Macro._refreshCraftCanUse = craftCanUse
         Macro._refreshCraftSnap = craftSnap
 
+        RebuildOurMacroIds()
         local macroId = Macro.GetMacroId()
         local brewId = Macro.GetBrewMacroId()
         local craftId = Macro.GetCraftMacroId()
@@ -1161,6 +1200,19 @@ function Macro.RefreshMacroButtonAppearance(opts)
     end
 end
 
+--- Harvest/brew pair from the last appearance key (footer compares this, not the 5-field craft key).
+function Macro.GetReadinessKey()
+    local key = Macro._lastAppearanceKey
+    if type(key) ~= "string" or key == "" then
+        return nil
+    end
+    local h, b = string.match(key, "^([^:]+):([^:]+)")
+    if h == nil then
+        return key
+    end
+    return h .. ":" .. b
+end
+
 --- Queue hotbar enable sync (coalesced). Prefer RequestEnabledSync from callers.
 function Macro.SyncEnabledState(canHarvest, canBrew)
     Macro.RequestEnabledSync(canHarvest, canBrew)
@@ -1196,21 +1248,20 @@ local function installSetActionDataHook()
     if setActionDataHooked then
         return
     end
-    local orgSetActionData = ActionButton.SetActionData
-    ActionButton.SetActionData = function(self, actionType, actionId)
-        local wasOurs = Macro.IsMacroButton(self)
-            or Macro.IsBrewMacroButton(self)
-            or Macro.IsCraftMacroButton(self)
-        orgSetActionData(self, actionType, actionId)
-        local isOurs = Macro.IsMacroButton(self)
-            or Macro.IsBrewMacroButton(self)
-            or Macro.IsCraftMacroButton(self)
+    orgSetActionDataFn = ActionButton.SetActionData
+    hookedSetActionDataFn = function(self, actionType, actionId)
+        local wasOurs = ButtonIsOurs(self)
+        orgSetActionDataFn(self, actionType, actionId)
+        local isOurs = ButtonIsOurs(self)
         if wasOurs and not isOurs then
             restoreVacatedMacroSlot(self)
             return
         end
-        applySetActionDataAppearance(self, actionType, actionId)
+        if isOurs then
+            applySetActionDataAppearance(self, actionType, actionId)
+        end
     end
+    ActionButton.SetActionData = hookedSetActionDataFn
     setActionDataHooked = true
 end
 
@@ -1225,8 +1276,11 @@ local function installUpdateEnabledStateHook()
     if updateEnabledStateHooked then
         return
     end
-    local orgUpdateEnabledState = ActionButton.UpdateEnabledState
-    ActionButton.UpdateEnabledState = function(self, isSlotEnabled, isTargetValid, isBlocked)
+    orgUpdateEnabledStateFn = ActionButton.UpdateEnabledState
+    hookedUpdateEnabledStateFn = function(self, isSlotEnabled, isTargetValid, isBlocked)
+        if not ButtonIsOurs(self) then
+            return orgUpdateEnabledStateFn(self, isSlotEnabled, isTargetValid, isBlocked)
+        end
         local forced = false
         local want = false
         if Macro.IsCraftMacroButton(self) then
@@ -1257,11 +1311,12 @@ local function installUpdateEnabledStateHook()
             isTargetValid = true
             isBlocked = false
         end
-        orgUpdateEnabledState(self, isSlotEnabled, isTargetValid, isBlocked)
+        orgUpdateEnabledStateFn(self, isSlotEnabled, isTargetValid, isBlocked)
         if forced and want ~= true then
             forceGreyMacroIcon(self)
         end
     end
+    ActionButton.UpdateEnabledState = hookedUpdateEnabledStateFn
     updateEnabledStateHooked = true
 end
 
@@ -1309,7 +1364,14 @@ local function installActionButtonHooks()
     end
 
     local orgOnLButtonUp = ActionButton.OnLButtonUp
-    ActionButton.OnLButtonUp = function(self, flags, x, y)
+    orgOnLButtonUpFn = orgOnLButtonUp
+    hookedOnLButtonUpFn = function(self, flags, x, y)
+        if not ButtonIsOurs(self) then
+            if orgOnLButtonUp then
+                orgOnLButtonUp(self, flags, x, y)
+            end
+            return
+        end
         if Macro.IsCraftMacroButton(self) then
             local snap = Macro.ResolveCraftMode()
             if snap.mode == "harvest" then
@@ -1398,6 +1460,7 @@ local function installActionButtonHooks()
             orgOnLButtonUp(self, flags, x, y)
         end
     end
+    ActionButton.OnLButtonUp = hookedOnLButtonUpFn
 
     actionButtonHooksInstalled = true
 end
@@ -1406,8 +1469,8 @@ local function installMacroTooltipHook()
     if tooltipHookInstalled or not Tooltips or type(Tooltips.CreateMacroTooltip) ~= "function" then
         return
     end
-    local orgCreateMacroTooltip = Tooltips.CreateMacroTooltip
-    Tooltips.CreateMacroTooltip = function(macroData, mouseoverWindow, anchor, extraText)
+    orgCreateMacroTooltipFn = Tooltips.CreateMacroTooltip
+    hookedCreateMacroTooltipFn = function(macroData, mouseoverWindow, anchor, extraText)
         local harvestId = Macro.GetMacroId()
         local brewId = Macro.GetBrewMacroId()
         local craftId = Macro.GetCraftMacroId()
@@ -1451,8 +1514,9 @@ local function installMacroTooltipHook()
             end
             return
         end
-        return orgCreateMacroTooltip(macroData, mouseoverWindow, anchor, extraText)
+        return orgCreateMacroTooltipFn(macroData, mouseoverWindow, anchor, extraText)
     end
+    Tooltips.CreateMacroTooltip = hookedCreateMacroTooltipFn
     tooltipHookInstalled = true
 end
 
@@ -1631,5 +1695,21 @@ end
 
 function Macro.Shutdown()
     Macro.UnregisterHotbarEventHandler()
+    if ActionButton and hookedSetActionDataFn and ActionButton.SetActionData == hookedSetActionDataFn then
+        ActionButton.SetActionData = orgSetActionDataFn
+    end
+    if ActionButton and hookedUpdateEnabledStateFn and ActionButton.UpdateEnabledState == hookedUpdateEnabledStateFn then
+        ActionButton.UpdateEnabledState = orgUpdateEnabledStateFn
+    end
+    if ActionButton and hookedOnLButtonUpFn and ActionButton.OnLButtonUp == hookedOnLButtonUpFn then
+        ActionButton.OnLButtonUp = orgOnLButtonUpFn
+    end
+    if Tooltips and hookedCreateMacroTooltipFn and Tooltips.CreateMacroTooltip == hookedCreateMacroTooltipFn then
+        Tooltips.CreateMacroTooltip = orgCreateMacroTooltipFn
+    end
+    setActionDataHooked = false
+    updateEnabledStateHooked = false
+    actionButtonHooksInstalled = false
+    tooltipHookInstalled = false
     Macro._initialized = false
 end

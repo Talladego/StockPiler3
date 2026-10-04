@@ -366,7 +366,7 @@
                 </Button>
                 <Button name="$parentColPotion" inherits="StockPiler3_StaticHeader">
                     <Size>
-                        <AbsPoint x="256" y="28" />
+                        <AbsPoint x="288" y="28" />
                     </Size>
                     <TextOffset x="30" y="4" />
                     <Anchors>
@@ -377,11 +377,11 @@
                 </Button>
                 <Button name="$parentColStatus" inherits="StockPiler3_StaticHeader">
                     <Size>
-                        <AbsPoint x="248" y="28" />
+                        <AbsPoint x="216" y="28" />
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="312" y="148" />
+                            <AbsPoint x="344" y="148" />
                         </Anchor>
                     </Anchors>
                 </Button>

@@ -82,7 +82,9 @@ function Bus.Fire(eventName, payload)
     eventName = tostring(eventName or "")
     local list = subs[eventName]
     local n = type(list) == "table" and #list or 0
-    if StockPiler3.Debug and StockPiler3.Debug.EventTraceNote then
+    if StockPiler3.Debug and StockPiler3.Debug.EventTrace == true
+        and StockPiler3.Debug.EventTraceNote
+    then
         local summary = ""
         if type(payload) == "table" then
             if payload.snapGen then
