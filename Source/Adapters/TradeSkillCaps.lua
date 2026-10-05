@@ -1,8 +1,8 @@
 ----------------------------------------------------------------
 -- StockPiler3 Adapters/TradeSkillCaps - live cult/apo skill levels
--- Read GameData on each call (SP2 style). Engine often leaves tradeSkills
--- empty until TRADE_SKILL_UPDATED; never treat a mid-session 0 as unlearned
--- after we have seen a real level (combat / scenario / zone blips).
+-- Prefer GetTradeSkillLevel / TradeSkillLevels (stock Abilities + Cultivation).
+-- Player.tradeSkills often empties mid-session; sticky holds through unknown
+-- empties. Explicit 0 from TradeSkillLevels is a real unlearn and clears sticky.
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
@@ -23,33 +23,64 @@ local function SkillId(name, fallback)
     return fallback
 end
 
+--- Returns level, explicit.
+--- explicit=true: stock SoT reported a number (including 0 = unlearned).
+--- explicit=false: sources missing/empty — keep sticky (combat/scenario blip).
 local function ReadLevel(skillId)
     skillId = tonumber(skillId) or 0
     if skillId <= 0 then
-        return 0
+        return 0, false
     end
-    if GameData and GameData.Player and type(GameData.Player.tradeSkills) == "table" then
-        local row = GameData.Player.tradeSkills[skillId]
-        if type(row) == "table" then
-            return tonumber(row.level) or 0
-        end
-        if row ~= nil then
-            return tonumber(row) or 0
+    -- Stock CultivationWindow / AbilitiesWindow / tooltips use these first.
+    if type(GetTradeSkillLevel) == "function" then
+        local ok, level = pcall(GetTradeSkillLevel, skillId)
+        if ok == true and level ~= nil then
+            return tonumber(level) or 0, true
         end
     end
     if GameData and type(GameData.TradeSkillLevels) == "table" then
-        return tonumber(GameData.TradeSkillLevels[skillId]) or 0
+        local level = GameData.TradeSkillLevels[skillId]
+        if level ~= nil then
+            return tonumber(level) or 0, true
+        end
+    end
+    -- Player.tradeSkills is flaky (empty mid-combat). Only trust a positive
+    -- reading; treat missing/0 here as unknown so sticky can cover blips.
+    if GameData and GameData.Player and type(GameData.Player.tradeSkills) == "table" then
+        local row = GameData.Player.tradeSkills[skillId]
+        if type(row) == "table" then
+            local level = tonumber(row.level) or 0
+            if level > 0 then
+                return level, true
+            end
+            return 0, false
+        end
+        if row ~= nil then
+            local level = tonumber(row) or 0
+            if level > 0 then
+                return level, true
+            end
+            return 0, false
+        end
     end
     if GameData and type(GameData.TradeSkillData) == "table" then
         local row = GameData.TradeSkillData[skillId]
         if type(row) == "table" then
-            return tonumber(row.level) or tonumber(row.SkillLevel) or 0
+            local level = tonumber(row.level) or tonumber(row.SkillLevel) or 0
+            if level > 0 then
+                return level, true
+            end
+            if row.level ~= nil or row.SkillLevel ~= nil then
+                return 0, true
+            end
+            return 0, false
         end
         if row ~= nil then
-            return tonumber(row) or 0
+            local level = tonumber(row) or 0
+            return level, true
         end
     end
-    return 0
+    return 0, false
 end
 
 local function CharBucket(create)
@@ -83,24 +114,22 @@ end
 local function PersistSticky()
     local cult = tonumber(Caps._lastCult) or 0
     local apo = tonumber(Caps._lastApo) or 0
-    if cult <= 0 and apo <= 0 then
-        return
-    end
     local row = CharBucket(true)
     if type(row) ~= "table" then
         return
     end
-    if cult > 0 then
-        row.lastCultSkill = cult
-    end
-    if apo > 0 then
-        row.lastApoSkill = apo
-    end
+    -- Always write both so unlearn clears a previous persisted level.
+    row.lastCultSkill = cult
+    row.lastApoSkill = apo
 end
 
-local function StickLevel(live, last)
+--- live + explicit from ReadLevel. Trust explicit 0 (unlearn); keep sticky on unknown.
+local function StickLevel(live, explicit, last)
     live = tonumber(live) or 0
     last = tonumber(last) or 0
+    if explicit == true then
+        return live, live
+    end
     if live > 0 then
         return live, live
     end
@@ -149,31 +178,34 @@ function Caps.GetApothecaryIcon()
 end
 
 function Caps.Level(skillId)
-    return ReadLevel(skillId)
+    local level = ReadLevel(skillId)
+    return level
 end
 
 --- Live engine read (ignores sticky cache). For load/char-switch reconciliation.
 function Caps.ReadCultSkillLive()
-    return ReadLevel(Caps.CultivationId())
+    local level = ReadLevel(Caps.CultivationId())
+    return level
 end
 
 function Caps.ReadApoSkillLive()
-    return ReadLevel(Caps.ApothecaryId())
+    local level = ReadLevel(Caps.ApothecaryId())
+    return level
 end
 
 function Caps.GetCultSkill()
     HydrateStickyFromPersist()
-    local live = ReadLevel(Caps.CultivationId())
+    local live, explicit = ReadLevel(Caps.CultivationId())
     local out
-    out, Caps._lastCult = StickLevel(live, Caps._lastCult)
+    out, Caps._lastCult = StickLevel(live, explicit, Caps._lastCult)
     return out
 end
 
 function Caps.GetApoSkill()
     HydrateStickyFromPersist()
-    local live = ReadLevel(Caps.ApothecaryId())
+    local live, explicit = ReadLevel(Caps.ApothecaryId())
     local out
-    out, Caps._lastApo = StickLevel(live, Caps._lastApo)
+    out, Caps._lastApo = StickLevel(live, explicit, Caps._lastApo)
     return out
 end
 
@@ -184,67 +216,105 @@ function Caps.BeginLoadSkillRefresh()
 end
 
 --- Apply a TRADE_SKILL_UPDATED pulse.
---- Never replace sticky levels with empty post-load blips (combat/scenario).
---- Authoritative update only when any skill reads > 0. Empty pulses never wipe
---- a known sticky level (char-switch zeros wait for a real non-empty snapshot,
---- or player logout clears session state).
+--- Explicit TradeSkillLevels / GetTradeSkillLevel (including 0) update sticky.
+--- Unknown empties never wipe sticky (combat / scenario blips).
 function Caps.OnTradeSkillPulse()
     HydrateStickyFromPersist()
-    local liveCult = ReadLevel(Caps.CultivationId())
-    local liveApo = ReadLevel(Caps.ApothecaryId())
+    local liveCult, cultExplicit = ReadLevel(Caps.CultivationId())
+    local liveApo, apoExplicit = ReadLevel(Caps.ApothecaryId())
+    local prevCult = tonumber(Caps._lastCult) or 0
+    local prevApo = tonumber(Caps._lastApo) or 0
+    local changed = false
+
     if Caps._pendingLoadRefresh == true then
-        if liveCult > 0 or liveApo > 0 then
-            Caps._lastCult = liveCult
-            Caps._lastApo = liveApo
+        if cultExplicit == true or apoExplicit == true
+            or liveCult > 0 or liveApo > 0
+        then
+            local newCult = prevCult
+            local newApo = prevApo
+            if cultExplicit == true then
+                newCult = liveCult
+            elseif liveCult > 0 then
+                newCult = liveCult
+            end
+            if apoExplicit == true then
+                newApo = liveApo
+            elseif liveApo > 0 then
+                newApo = liveApo
+            end
+            Caps._lastCult = newCult
+            Caps._lastApo = newApo
             Caps._pendingLoadRefresh = false
             Caps._loadEmptyPulses = 0
             PersistSticky()
+            changed = newCult ~= prevCult or newApo ~= prevApo
         else
             Caps._loadEmptyPulses = (tonumber(Caps._loadEmptyPulses) or 0) + 1
             -- Never clear sticky on empties: scenario/combat fires many empty
             -- TRADE_SKILL_UPDATED with no follow-up until the next skill-up.
-            -- Untrained chars keep sticky 0; char switch gets a non-empty pulse.
             if Caps._loadEmptyPulses >= 5
-                and (tonumber(Caps._lastCult) or 0) <= 0
-                and (tonumber(Caps._lastApo) or 0) <= 0
+                and prevCult <= 0
+                and prevApo <= 0
             then
                 Caps._pendingLoadRefresh = false
                 Caps._loadEmptyPulses = 0
             elseif Caps._loadEmptyPulses >= 12 then
-                -- Enough empties: stop waiting; keep sticky as-is.
                 Caps._pendingLoadRefresh = false
                 Caps._loadEmptyPulses = 0
                 if StockPiler3.Debug and StockPiler3.Debug.LogOp then
                     StockPiler3.Debug.LogOp("caps", string.format(
                         "load-empty-keep sticky cult=%d apo=%d",
-                        tonumber(Caps._lastCult) or 0,
-                        tonumber(Caps._lastApo) or 0
+                        prevCult, prevApo
                     ))
                 end
             end
         end
     else
-        local changed = false
-        if liveCult > 0 and liveCult ~= (tonumber(Caps._lastCult) or 0) then
-            Caps._lastCult = liveCult
-            changed = true
+        if cultExplicit == true then
+            if liveCult ~= prevCult then
+                Caps._lastCult = liveCult
+                changed = true
+            else
+                Caps._lastCult = liveCult
+            end
         elseif liveCult > 0 then
-            Caps._lastCult = liveCult
+            if liveCult ~= prevCult then
+                Caps._lastCult = liveCult
+                changed = true
+            else
+                Caps._lastCult = liveCult
+            end
         end
-        if liveApo > 0 and liveApo ~= (tonumber(Caps._lastApo) or 0) then
-            Caps._lastApo = liveApo
-            changed = true
+        if apoExplicit == true then
+            if liveApo ~= prevApo then
+                Caps._lastApo = liveApo
+                changed = true
+            else
+                Caps._lastApo = liveApo
+            end
         elseif liveApo > 0 then
-            Caps._lastApo = liveApo
+            if liveApo ~= prevApo then
+                Caps._lastApo = liveApo
+                changed = true
+            else
+                Caps._lastApo = liveApo
+            end
         end
-        if liveCult > 0 or liveApo > 0 then
+        if cultExplicit == true or apoExplicit == true
+            or liveCult > 0 or liveApo > 0
+        then
             PersistSticky()
         end
         if changed and StockPiler3.Debug and StockPiler3.Debug.LogOp then
-            -- quiet; Bridge logs hash changes
+            StockPiler3.Debug.LogOp("caps", string.format(
+                "sticky-update cult=%d->%d apo=%d->%d explicit=%s/%s",
+                prevCult, tonumber(Caps._lastCult) or 0,
+                prevApo, tonumber(Caps._lastApo) or 0,
+                tostring(cultExplicit == true), tostring(apoExplicit == true)
+            ))
         end
     end
-    if Caps._lastCult > 0 or Caps._lastApo > 0 then
+    if (tonumber(Caps._lastCult) or 0) > 0 or (tonumber(Caps._lastApo) or 0) > 0 then
         Caps._skillsReady = true
     end
 end
@@ -270,7 +340,7 @@ end
 
 function Caps.ResetTradeSkillsReady()
     Caps._skillsReady = false
-    -- Keep _lastCult/_lastApo across combat/zone unless a non-empty
+    -- Keep _lastCult/_lastApo across combat/zone unless an explicit
     -- OnTradeSkillPulse replaces them. Avoids SkillUp rows vanishing when the
     -- engine briefly reports tradeSkills empty.
 end
