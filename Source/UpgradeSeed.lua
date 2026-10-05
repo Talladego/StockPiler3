@@ -502,6 +502,7 @@ local function TargetUpgradePlant(t)
     end
     local up = US.ScanUpgradePlant({
         ladder = t.ladder,
+        familyKey = t.familyKey or (t.ladder and t.ladder.key),
         climbCap = refineCap,
         ownedSeedReq = scanOwnedReq,
     })
@@ -861,14 +862,33 @@ end
 --- opts: climbCap, mainsOnly, familyKey / ladder, ownedSeedReq
 function US.ScanUpgradePlant(opts)
     opts = type(opts) == "table" and opts or {}
+    local SM = StockPiler3.SeedMap
+    local climbCap = tonumber(opts.climbCap) or 0
+    local ladder = opts.ladder
+    if type(ladder) ~= "table" and opts.familyKey and SM and SM.GetFamilyLadder then
+        ladder = SM.GetFamilyLadder(opts.familyKey)
+    end
+    local fam = tostring(opts.familyKey or "")
+    if fam == "" and type(ladder) == "table" then
+        fam = tostring(ladder.key or ladder.genus or "")
+        if fam == "" and type(ladder.rungs) == "table" and type(ladder.rungs[1]) == "table" then
+            fam = "r:" .. tostring(ladder.rungs[1].seedUid or 0)
+                .. ":" .. tostring(ladder.rungs[1].plantUid or 0)
+        end
+    end
     local snapGen = 0
     local PS = StockPiler3.PlanSnapshot
     local plan = PS and PS.Get and PS.Get()
     if type(plan) == "table" then
         snapGen = tonumber(plan.planGen) or 0
     end
-    local fam = tostring(opts.familyKey or "")
-    local cacheKey = tostring(snapGen) .. ":" .. tostring(opts.climbCap or 0)
+    local invSnap = 0
+    local Inv = StockPiler3.Inventory
+    if Inv and Inv.GetSnapGen then
+        invSnap = tonumber(Inv.GetSnapGen()) or 0
+    end
+    local cacheKey = tostring(snapGen) .. ":" .. tostring(invSnap)
+        .. ":" .. tostring(climbCap)
         .. ":" .. fam .. ":" .. tostring(opts.ownedSeedReq or 0)
         .. ":" .. tostring(opts.mainsOnly == true)
     if US._scanPlantKey == cacheKey then
@@ -879,14 +899,8 @@ function US.ScanUpgradePlant(opts)
         US._scanPlant = result
         return result
     end
-    local SM = StockPiler3.SeedMap
-    local climbCap = tonumber(opts.climbCap) or 0
     if climbCap < 1 then
         return done(nil)
-    end
-    local ladder = opts.ladder
-    if type(ladder) ~= "table" and opts.familyKey and SM and SM.GetFamilyLadder then
-        ladder = SM.GetFamilyLadder(opts.familyKey)
     end
     if type(ladder) == "table" and SM and SM.BestUpgradePlantOnLadder then
         return done(SM.BestUpgradePlantOnLadder(ladder, climbCap, opts.ownedSeedReq or 0, {
@@ -894,7 +908,6 @@ function US.ScanUpgradePlant(opts)
         }))
     end
     -- Opportunistic (SkillUp): any main plant under climbCap above ownedSeedReq.
-    local Inv = StockPiler3.Inventory
     local Items = StockPiler3.Items
     local Refine = StockPiler3.Refine
     if not (Inv and Inv.ForEachItem) then
@@ -1579,6 +1592,7 @@ function US.AppendRefineIntents(intents, appendFn)
             end
             local up = US.ScanUpgradePlant({
                 ladder = t.ladder,
+                familyKey = t.familyKey or (t.ladder and t.ladder.key),
                 climbCap = refineCap,
                 ownedSeedReq = ownedReq,
             })

@@ -2004,6 +2004,13 @@ local function PlantSeedBufferShort(seedUid, plantUid, spec)
         return false
     end
     seedUid = tonumber(seedUid) or 0
+    plantUid = tonumber(plantUid) or 0
+    if seedUid <= 0 and plantUid > 0 then
+        local SM = StockPiler3.SeedMap
+        if SM and SM.ResolveSeedUidForPlant then
+            seedUid = tonumber(SM.ResolveSeedUidForPlant(plantUid, spec)) or 0
+        end
+    end
     if seedUid <= 0 then
         return false
     end
@@ -3261,6 +3268,13 @@ local function ApplyPlantWatchStatus(row, potionRows)
     row.hideCraftable = true
     row.priorityTierText = L"-"
     row.plantPrioSentinel = true
+    local SM = StockPiler3.SeedMap
+    if SM and SM.ResolveSeedUidForPlant then
+        local resolved = tonumber(SM.ResolveSeedUidForPlant(row.plantUid, row.spec)) or 0
+        if resolved > 0 then
+            row.seedUid = resolved
+        end
+    end
     local bufferShort = PlantSeedBufferShort(row.seedUid, row.plantUid, row.spec)
     local US = StockPiler3.UpgradeSeed
     local function ApplyMissingSeedStatus()
@@ -3401,8 +3415,14 @@ local function BuildPlantWatchRows(potionRows)
             if type(spec) ~= "table" and MS and MS.FromItemData and type(itemData) == "table" then
                 spec = MS.FromItemData(itemData)
             end
+            -- Same-tier refine seed is the cushion. GetSeedUidsForPlant()[1] is
+            -- unordered grows[] (crit-from-lower can win and paint Seed buffer
+            -- while the watched-tier seed is already at 5).
             local seedUid = 0
-            if SM and SM.GetSeedUidsForPlant then
+            if SM and SM.ResolveSeedUidForPlant then
+                seedUid = tonumber(SM.ResolveSeedUidForPlant(plantUid, spec)) or 0
+            end
+            if seedUid <= 0 and SM and SM.GetSeedUidsForPlant then
                 local seeds = SM.GetSeedUidsForPlant(plantUid)
                 if type(seeds) == "table" and #seeds > 0 then
                     seedUid = tonumber(seeds[1]) or 0
@@ -4923,6 +4943,13 @@ local function DumpWatchRows(emit, rows, planMeta)
             ))
             if row.statusText ~= nil then
                 emit("      statusText=" .. ToNarrow(row.statusText))
+            end
+            if row.kind == "plant" or row.isPlantWatch == true then
+                emit(string.format(
+                    "      plantUid=%s seedUid=%s",
+                    tostring(row.plantUid or 0),
+                    tostring(row.seedUid or 0)
+                ))
             end
             local seedUids = row.seedBufferSeedUids
             if type(seedUids) == "table" and #seedUids > 0 then

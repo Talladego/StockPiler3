@@ -358,7 +358,7 @@ function AA.InstallStealthHooks()
         AA._origApoOnHidden = ApothecaryWindow.OnHidden
         ApothecaryWindow.OnHidden = function(...)
             AA._playerWantsApo = false
-            AA._apoParked = false
+            UnparkApoRoot()
             return AA._origApoOnHidden(...)
         end
     end

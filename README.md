@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.292** — Watch bag/craftable catch-up, headless Apo brew, Load/Brew chrome, AutoBuy status after vendor fill.
+**Version 0.3.293** — Plant-watch same-tier seed buffer; Upgrade Seed scan per-family memo; unpark Apo on hide.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 

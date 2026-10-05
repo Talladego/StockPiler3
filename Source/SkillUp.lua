@@ -809,12 +809,17 @@ function SkillUp.PickBestBagSeed()
     if type(plan) == "table" then
         snapGen = tonumber(plan.planGen) or 0
     end
-    local cacheKey = tostring(snapGen) .. ":" .. tostring(cult) .. ":" .. tostring(targetMax)
+    local invSnap = 0
+    local Inv = StockPiler3.Inventory
+    if Inv and Inv.GetSnapGen then
+        invSnap = tonumber(Inv.GetSnapGen()) or 0
+    end
+    local cacheKey = tostring(snapGen) .. ":" .. tostring(invSnap)
+        .. ":" .. tostring(cult) .. ":" .. tostring(targetMax)
     if SkillUp._bestBagSeedKey == cacheKey then
         return SkillUp._bestBagSeed
     end
     local SM = StockPiler3.SeedMap
-    local Inv = StockPiler3.Inventory
     local Refine = StockPiler3.Refine
     local Items = StockPiler3.Items
     if not (SM and Inv and Inv.ForEachItem) then
