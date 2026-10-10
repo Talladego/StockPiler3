@@ -249,10 +249,6 @@ local function CanUseCraftingItem(item)
     return true
 end
 
-function BA.BagTypes()
-    return BAG_MAIN, BAG_CRAFT
-end
-
 function BA.InvalidateCache()
     BA._seedSlotCache = {}
     BA._warmMain = nil
@@ -319,23 +315,6 @@ function BA.GetBagTable(bagType, opts)
         end
     end
     return nil
-end
-
---- Warm both bag tables once (session / storm recover). Does not force dirty unless opts.force.
-function BA.WarmBagTables(opts)
-    opts = type(opts) == "table" and opts or {}
-    local forceOpts = opts.force == true and { force = true } or nil
-    if opts.force == true and GameData and GameData.Player then
-        GameData.Player.itemsDirty = true
-        GameData.Player.craftingItemsDirty = true
-    end
-    local main = BA.GetBagTable(BAG_MAIN, forceOpts)
-    if opts.force == true and GameData and GameData.Player then
-        -- GetItems clears itemsDirty (client quirk); re-stick craft dirty for second read.
-        GameData.Player.craftingItemsDirty = true
-    end
-    local craft = BA.GetBagTable(BAG_CRAFT, forceOpts)
-    return main, craft
 end
 
 local function FetchBags(forceRefresh)

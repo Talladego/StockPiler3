@@ -56,8 +56,6 @@ local function TryBuyTick(opId)
     local ok = false
     if Buy and Buy.IssueOne then
         ok = Buy.IssueOne(opId) == true
-    elseif Buy and Buy.OnTick then
-        ok = Buy.OnTick() == true
     end
     if ok then
         SetPhase("buying", "auto")
@@ -543,12 +541,7 @@ function Orch._TickBody()
                 Sch.SetAutoGrowIdle(false)
             end
         else
-            local planted = false
-            if Grow and Grow.IssuePlantOne then
-                planted = Grow.IssuePlantOne(opId) == true
-            elseif Grow and Grow.TryPlantOne then
-                planted = Grow.TryPlantOne(opId) == true
-            end
+            local planted = Grow and Grow.IssuePlantOne and Grow.IssuePlantOne(opId) == true
             if planted then
                 SetPhase("planting", "auto")
                 if Sch and Sch.WakeAutoGrow then
@@ -630,12 +623,7 @@ function Orch._TickBody()
             end
         end
         if canPlant and hasSeeds and not holdHarvestBatch then
-            local planted = false
-            if Grow and Grow.IssuePlantOne then
-                planted = Grow.IssuePlantOne(opId) == true
-            elseif Grow and Grow.TryPlantOne then
-                planted = Grow.TryPlantOne(opId) == true
-            end
+            local planted = Grow and Grow.IssuePlantOne and Grow.IssuePlantOne(opId) == true
             if planted then
                 SetPhase("planting", "auto")
                 if Sch and Sch.WakeAutoGrow then

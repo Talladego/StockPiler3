@@ -518,10 +518,6 @@ function Inv.IsDirty()
     return Inv._dirty == true or Inv._dirtyFull == true
 end
 
-function Inv.ClearSpecParseCache()
-    Inv._specParseCache = {}
-end
-
 --- CreateItemTooltip assumes bag-shaped fields; pad thin shells (DB/learned) so stock UI does not nil-index.
 function Inv.NormalizeItemDataForTooltip(itemData)
     if type(itemData) ~= "table" then

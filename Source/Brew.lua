@@ -16,19 +16,16 @@ Brew.LOAD_SETTLE_SEC = 1.25
 -- Probe interval for auto-loaded boards that never get another crafting-updated
 -- (settle hold then silence). Stuck loaded blocks AutoGrow + plan rebuild.
 Brew.STUCK_PROBE_SEC = 0.5
--- Open phase: call OpenWindow every N ticks (not every frame). Per-tick
--- SendInitCrafting/ToggleShowing caused audio buzz when apo skill stayed 0.
+-- Open phase: call OpenWindow every OPEN_RETRY_TICKS (not every frame).
+-- Per-tick SendInitCrafting buzzes audio when apo skill stays 0.
 Brew.OPEN_RETRY_TICKS = 20
 -- After open-timeout, latch until zone load / manual Load / apo session up.
--- Timed backoff still re-armed every ~21s and kept CanBrewNow false while Ready.
-Brew.OPEN_FAIL_BACKOFF_SEC = 0
 
 Brew._session = Brew._session or { phase = "idle" }
 Brew._job = nil
 Brew._loadSource = nil -- "auto" | "manual"
 Brew._brewOpLockUntil = 0
 Brew._adoptBlockUntil = 0
-Brew._openFailBlockUntil = 0
 Brew._openFailLatched = false
 Brew._loadSettleUntil = 0
 Brew._stuckProbeAt = 0
@@ -382,44 +379,6 @@ local function PatchPlanRowTargetMet(session, liveHave)
             end
         end
     end
-end
-
-local function RecipeIsStable(recipe)
-    if type(recipe) ~= "table" then
-        return false
-    end
-    local RS = StockPiler3.RecipeSpec
-    if RS and RS.RecipeIsStable then
-        return RS.RecipeIsStable(recipe) == true
-    end
-    if RS and RS.HydrateRecipeSlots then
-        RS.HydrateRecipeSlots(recipe)
-    end
-    if RS and RS.SpecStabilityTotal then
-        return (tonumber(RS.SpecStabilityTotal(recipe.slots)) or 0) > 0
-    end
-    -- Fallback: sum live slot.spec stability (exclude optional modifiers).
-    local slots = recipe.slots
-    if type(slots) ~= "table" then
-        return false
-    end
-    local sum = 0
-    for i = 1, #slots do
-        local s = slots[i]
-        if type(s) == "table" then
-            local role = tostring(s.role or "")
-            if role ~= "extender" and role ~= "multiplier" and role ~= "stimulant" then
-                local spec = s.spec
-                local stab = 0
-                if type(spec) == "table" then
-                    stab = tonumber(spec.stability) or 0
-                end
-                local per = math.max(1, tonumber(s.perCraft) or 1)
-                sum = sum + stab * per
-            end
-        end
-    end
-    return sum > 0
 end
 
 local function RoleLoadRank(role)
@@ -1025,26 +984,16 @@ local function OpenFailBlocked()
         local a = AA()
         if a and a.IsCraftingSessionActive and a.IsCraftingSessionActive() == true then
             Brew._openFailLatched = false
-            Brew._openFailBlockUntil = 0
             return false
         end
         return true
     end
-    local untilT = tonumber(Brew._openFailBlockUntil) or 0
-    if untilT <= 0 then
-        return false
-    end
-    if NowSec() < untilT then
-        return true
-    end
-    Brew._openFailBlockUntil = 0
     return false
 end
 
 local function NoteOpenFail(skillType)
     -- Latch: do not time-retry (that re-failed every ~21s and held CanBrewNow false).
     Brew._openFailLatched = true
-    Brew._openFailBlockUntil = 0
     LogBrew(string.format(
         "open-fail latched skill=%s (manual Load or /reload to retry)",
         tostring(skillType)
@@ -1053,7 +1002,6 @@ end
 
 function Brew.ClearOpenFailBackoff()
     Brew._openFailLatched = false
-    Brew._openFailBlockUntil = 0
 end
 
 local function InLoadSettle()
@@ -1108,10 +1056,6 @@ function Brew.ArmBrewOpLock(seconds)
     end
 end
 
-function Brew.ClearBrewOpLock()
-    Brew._brewOpLockUntil = 0
-end
-
 function Brew.IsBusy()
     if type(Brew._job) == "table" then
         return true
@@ -1142,14 +1086,6 @@ function Brew.BlocksHarvest()
     -- grey Harvest for minutes until a plan rebuild clears the session (watchplan).
     local phase = tostring(GetSession().phase or "idle")
     return phase == "loading"
-end
-
-function Brew.RecipeIsStable(recipe)
-    return RecipeIsStable(recipe)
-end
-
-function Brew.BrewRespectGrowReserve()
-    return BrewRespectGrowReserve()
 end
 
 ----------------------------------------------------------------
@@ -1525,7 +1461,7 @@ local function BeginLoadJob(row, source)
     return true
 end
 
--- Leave room for SkillType to stamp after ToggleShowing (no mid-init HideWindowOnly).
+-- Headless OpenWindow parks Apo; wait for SkillType / session before clear/load.
 local OPEN_WAIT_TICKS = 180
 local CLEAR_WAIT_TICKS = 90
 
@@ -1581,13 +1517,13 @@ local function AdvanceLoadJob()
         return true
     end
     if phase == "open" then
-        -- Headless OpenWindow never shows apo UI; do not gate on IsWindowOpen.
+        -- Gate on IsCraftingSessionActive, then enforce stealth park.
         job.waitTicks = (tonumber(job.waitTicks) or 0) + 1
         local sessionReady = a.IsCraftingSessionActive and a.IsCraftingSessionActive() == true
         if sessionReady then
             -- Session came up - clear any prior open-fail latch.
             Brew.ClearOpenFailBackoff()
-            -- Keep apo UI suppressed (show intercept, not alpha cloak).
+            -- Keep apo UI parked off-screen while SP3 owns the session.
             local session = GetSession()
             if a.EnforceStealthHide then
                 a.EnforceStealthHide(session)
@@ -1600,8 +1536,8 @@ local function AdvanceLoadJob()
             job.waitTicks = 0
             return true
         end
--- Throttle OpenWindow: every-tick SendInitCrafting buzzes audio
--- when CraftingStatus.SkillType stays 0 (scenario / craft blocked).
+        -- Throttle OpenWindow: every-tick SendInitCrafting buzzes audio
+        -- when CraftingStatus.SkillType stays 0 (scenario / craft blocked).
         local retryEvery = tonumber(Brew.OPEN_RETRY_TICKS) or 20
         if retryEvery < 5 then
             retryEvery = 5

@@ -239,11 +239,6 @@ function VA.GetStoreItems()
     return list
 end
 
--- Alias for SP2 callers
-function VA.StoreRows()
-    return VA.GetStoreItems()
-end
-
 function VA.GetPlayerMoneyBrass()
     if type(Player) ~= "table" or type(Player.GetMoney) ~= "function" then
         return 0
@@ -337,10 +332,6 @@ function VA.GetMatchIndex()
         return VA.RefreshMatchIndex()
     end
     return VA._matchIndex
-end
-
-function VA.GetMatchIndexGen()
-    return tonumber(VA._matchIndexGen) or 0
 end
 
 function VA.FindStoreRowsByUid(uid)

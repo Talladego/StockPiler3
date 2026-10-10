@@ -3,7 +3,7 @@
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
-StockPiler3.Version = L"0.3.327"
+StockPiler3.Version = L"0.3.328"
 
 local function T(key, tokens)
     return StockPiler3.Util.T(key, tokens)
@@ -491,8 +491,6 @@ function StockPiler3.Initialize()
     -- After Account exists: fingerprint migrate (must not run inside EnsureAccount).
     if StockPiler3.Knowledge and StockPiler3.Knowledge.MigrateFingerprints then
         StockPiler3.Knowledge.MigrateFingerprints()
-    elseif StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.MigrateRecipeFingerprintsV2 then
-        StockPiler3.RecipeSpec.MigrateRecipeFingerprintsV2()
     end
     if StockPiler3.Watch and StockPiler3.Watch.MigratePriorityTiersIfNeeded then
         StockPiler3.Watch.MigratePriorityTiersIfNeeded()

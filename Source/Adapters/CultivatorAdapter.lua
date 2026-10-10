@@ -85,13 +85,6 @@ function CA.CraftingBackpackType()
     return 4
 end
 
-function CA.InventoryBackpackType()
-    if EA_Window_Backpack and EA_Window_Backpack.TYPE_INVENTORY then
-        return EA_Window_Backpack.TYPE_INVENTORY
-    end
-    return 2
-end
-
 --- Unlocked plot count by Cultivation skill (RoR: +1 plot per 50 skill, max 4 at 150).
 function CA.PlotsForCultivatingSkill(level)
     level = tonumber(level) or 0

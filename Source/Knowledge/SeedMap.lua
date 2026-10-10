@@ -340,59 +340,6 @@ function SM.ResolveSeedEffectId(seedUid)
     return 0
 end
 
---- Craft bonus value from a seed (bag / learned / DB), after CraftItemInfo fill-gap.
---- Cultivation seed bonus lookup (SPECIAL_CHANCE / FAIL_CHANCE on seeds).
---- Not for plant apo Super-Crit — those meanings differ and must not mix.
-function SM.ResolveSeedBonusValue(seedUid, bonusRef)
-    seedUid = tonumber(seedUid) or 0
-    bonusRef = tonumber(bonusRef) or 0
-    if seedUid <= 0 or bonusRef <= 0 then
-        return 0
-    end
-    if SM.IsSeedPacketUid(seedUid) then
-        return 0
-    end
-    local MS = StockPiler3.MaterialSpec
-    local function FromSpec(spec)
-        if type(spec) ~= "table" or type(spec.bonuses) ~= "table" then
-            return 0
-        end
-        local v = spec.bonuses[bonusRef]
-        if type(v) == "table" then
-            return tonumber(v[1] or v.bonusValue) or 0
-        end
-        return tonumber(v) or 0
-    end
-    local sample = BagSample(seedUid)
-    if type(sample) == "table" and MS and MS.FromItemData then
-        local n = FromSpec(MS.FromItemData(sample))
-        if n ~= 0 then
-            return n
-        end
-    end
-    local Items = StockPiler3.Items
-    if Items and Items.GetByUid then
-        local row = Items.GetByUid(seedUid)
-        if type(row) == "table" and type(row.bonuses) == "table" then
-            local v = row.bonuses[bonusRef]
-            local n = type(v) == "table" and (tonumber(v[1]) or 0) or (tonumber(v) or 0)
-            if n ~= 0 then
-                return n
-            end
-        end
-    end
-    if type(GetDatabaseItemData) == "function" and MS and MS.FromItemData then
-        local ok, data = pcall(GetDatabaseItemData, seedUid)
-        if ok and type(data) == "table" then
-            local n = FromSpec(MS.FromItemData(data))
-            if n ~= 0 then
-                return n
-            end
-        end
-    end
-    return 0
-end
-
 local function PlantLooksLikeByproduct(plantUid, plantData)
     plantUid = tonumber(plantUid) or 0
     if type(plantData) == "table" and SM.IsHarvestByproduct(plantData) then
@@ -486,10 +433,6 @@ end
 -- Public: seed tiers / packets / relatedness
 ----------------------------------------------------------------
 
-function SM.IsSeedPacketItem(itemData)
-    return IsSeedPacketItem(itemData)
-end
-
 function SM.IsSeedPacketUid(uid)
     return IsSeedPacketItem(BagSample(uid))
 end
@@ -503,10 +446,6 @@ function SM.IsBagSeedOrSpore(itemOrSpec)
     end
     local uid = tonumber(itemOrSpec.uid) or 0
     return IsBagSeedOrSporeItem(BagSample(uid))
-end
-
-function SM.GrowNamesRelated(plantName, seedName)
-    return GrowNamesRelated(plantName, seedName)
 end
 
 function SM.SeedReplantTier(seedUid, nameHint)
@@ -713,10 +652,6 @@ function SM.PrimaryPlantForSeed(seedUid)
         end
     end
     return bestUid
-end
-
-function SM.GetPlantUidForSeed(seedUid)
-    return SM.PrimaryPlantForSeed(seedUid)
 end
 
 --- Prefer Eternal >> Exceptional >> blue; exclude Seed Packets.
@@ -2390,24 +2325,6 @@ function SM.FamilyKeyFromSpec(spec)
     end
     local effectId = tonumber(spec.effectId) or 0
     return SM.FamilyKeyParts(genus, role, effectId)
-end
-
-function SM.FamilyKeyFromUid(uid)
-    uid = tonumber(uid) or 0
-    if uid <= 0 then
-        return nil
-    end
-    local Items = StockPiler3.Items
-    local spec = Items and Items.ToSpec and Items.ToSpec(uid) or nil
-    if type(spec) == "table" then
-        local key = SM.FamilyKeyFromSpec(spec)
-        if key then
-            return key
-        end
-    end
-    local sample = BagSample(uid)
-    local genus = SM.GenusKeyFromName(sample and sample.name)
-    return SM.FamilyKeyParts(genus, "unknown", 0)
 end
 
 local function EnsureRung(bucket, skillReq)

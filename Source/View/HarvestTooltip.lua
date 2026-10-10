@@ -52,10 +52,6 @@ function HarvestTooltip.Show(mouseoverWindow, anchor)
     )
 end
 
-function HarvestTooltip.ClearLive()
-    StockPiler3.ViewList.LiveTipClear(HarvestTooltip)
-end
-
 function HarvestTooltip.MaybeRefresh()
     StockPiler3.ViewList.LiveTipMaybeRefresh(
         HarvestTooltip,

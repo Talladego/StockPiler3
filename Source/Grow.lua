@@ -312,127 +312,6 @@ local function BufferCredit(seedUid)
     return bag + ground + outstanding
 end
 
-local function PreferJob(job, best, bestScore, bestShare, bestCrafts, bestPlots, bestRole, useFocus)
-    if type(job) ~= "table" then
-        return best, bestScore, bestShare, bestCrafts, bestPlots, bestRole
-    end
-    local crafts = tonumber(job.craftsShort) or 0
-    local role = RoleRank(job.role)
-    local plots = tonumber(job.plotCount) or CountInGroundSeeds(job.seedUid)
-    job.plotCount = plots
-    job.roleRank = role
-    local better = false
-    if useFocus then
-        local score = tonumber(job.bottleneckScore) or 0
-        local share = tonumber(job.focusShare) or 999
-        if best == nil then
-            better = true
-        elseif score > bestScore then
-            better = true
-        elseif score == bestScore then
-            if share < bestShare then
-                better = true
-            elseif share == bestShare then
-                if crafts > bestCrafts then
-                    better = true
-                elseif crafts == bestCrafts then
-                    if role < bestRole then
-                        better = true
-                    elseif role == bestRole
-                        and (tonumber(job.seedUid) or 0) ~= (tonumber(Grow._lastPlantedSeedUid) or 0)
-                        and (tonumber(best.seedUid) or 0) == (tonumber(Grow._lastPlantedSeedUid) or 0)
-                    then
-                        better = true
-                    end
-                end
-            end
-        end
-        if better then
-            return job, score, share, crafts, plots, role
-        end
-        return best, bestScore, bestShare, bestCrafts, bestPlots, bestRole
-    end
-    if best == nil then
-        better = true
-    elseif crafts > bestCrafts then
-        better = true
-    elseif crafts == bestCrafts then
-        if plots < bestPlots then
-            better = true
-        elseif plots == bestPlots and role < bestRole then
-            better = true
-        elseif plots == bestPlots and role == bestRole
-            and (tonumber(job.seedUid) or 0) ~= (tonumber(Grow._lastPlantedSeedUid) or 0)
-            and (tonumber(best.seedUid) or 0) == (tonumber(Grow._lastPlantedSeedUid) or 0)
-        then
-            better = true
-        end
-    end
-    if better then
-        return job, bestScore, bestShare, crafts, plots, role
-    end
-    return best, bestScore, bestShare, bestCrafts, bestPlots, bestRole
-end
-
-local function JobFromDemandRow(row, SM)
-    if type(row) ~= "table" or type(SM) ~= "table" then
-        return nil
-    end
-    local deficit = tonumber(row.deficit) or 0
-    local craftsShort = tonumber(row.craftsShort)
-    if craftsShort == nil then
-        craftsShort = deficit
-    end
-    local spec = row.spec
-    if deficit <= 0 or craftsShort <= 0 or type(spec) ~= "table" then
-        return nil
-    end
-    if SM.IsGrowableSpec and SM.IsGrowableSpec(spec) ~= true then
-        return nil
-    end
-    local seed = SM.ResolveSeedForSpec and SM.ResolveSeedForSpec(spec)
-    if type(seed) ~= "table" then
-        return nil
-    end
-    local seedUid = tonumber(seed.uniqueID) or 0
-    if seedUid <= 0 then
-        return nil
-    end
-    if not CanUseSeedUid(seedUid) then
-        return nil
-    end
-    local bag = OpaqueSeedCredit(seedUid, LiveSeedBag(seedUid))
-    if SM.CountSeedsInBagsForSpec then
-        local n = tonumber(SM.CountSeedsInBagsForSpec(spec)) or 0
-        if n > bag then
-            bag = OpaqueSeedCredit(seedUid, n)
-        end
-    end
-    local committed = tonumber(Grow._seedCommitted[seedUid]) or 0
-    local avail = bag - committed
-    if avail < 1 then
-        return nil
-    end
-    local plantable = math.min(avail, craftsShort)
-    if plantable < 1 then
-        return nil
-    end
-    return {
-        spec = spec,
-        specKey = row.specKey,
-        seed = seed,
-        seedUid = seedUid,
-        plantUid = tonumber(row.plantUid) or tonumber(spec.plantUid) or 0,
-        seedHave = bag,
-        plantable = plantable,
-        deficit = deficit,
-        craftsShort = craftsShort,
-        role = SpecRole(spec),
-        plantReason = "potion_stock",
-        plotCount = CountInGroundSeeds(seedUid),
-    }
-end
-
 local function PotionStockNeedsRefineFirst(demand, SM)
     if type(demand) ~= "table" or type(SM) ~= "table" then
         return false
@@ -875,34 +754,9 @@ local function HasPlotGrowing()
     return false
 end
 
-local function AllPlantedPlotsHarvestReady()
-    local plots = StockPiler3.Garden and StockPiler3.Garden.GetPlots and StockPiler3.Garden.GetPlots()
-    if type(plots) ~= "table" then
-        return false
-    end
-    local anyPlanted = false
-    for plotNum, row in pairs(plots) do
-        if type(row) == "table" and not IsPlotLocked(row, tonumber(plotNum) or 0) then
-            if not IsPlotEmptyRow(row) then
-                anyPlanted = true
-                if not IsPlotGrownStage(row.stage)
-                    and NormalizeStage(row.stage) ~= StageHarvesting()
-                then
-                    return false
-                end
-            end
-        end
-    end
-    return anyPlanted
-end
-
 ----------------------------------------------------------------
 -- Public: buffer / fill / plots
 ----------------------------------------------------------------
-
-function Grow.StageEmpty()
-    return StageEmpty()
-end
 
 function Grow.IsEnabled()
     local Watch = StockPiler3.Watch
@@ -1968,10 +1822,6 @@ function Grow.IssuePlantOne(opId)
     return done(true)
 end
 
-function Grow.TryPlantOne(opId)
-    return Grow.IssuePlantOne(opId)
-end
-
 ----------------------------------------------------------------
 -- Additives
 ----------------------------------------------------------------
@@ -2090,10 +1940,6 @@ function Grow.TryAdditive(opId)
         Perf.End("Grow.TryAdditive")
     end
     return ok
-end
-
-function Grow.MarkAdditiveDue()
-    Grow._additiveDirty = true
 end
 
 ----------------------------------------------------------------

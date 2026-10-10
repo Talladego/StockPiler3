@@ -56,7 +56,9 @@ end
 
 function AA.IsWindowOpen()
     local name = AA.WindowName()
-    return DoesWindowExist(name) and WindowGetShowing(name) == true
+    return type(DoesWindowExist) == "function"
+        and DoesWindowExist(name)
+        and WindowGetShowing(name) == true
 end
 
 function AA.GetCraftingStatus()
@@ -90,15 +92,6 @@ function AA.WillDefinitelyFail()
         return false
     end
     return AA.SuccessChance() == CSC.LOW
-end
-
---- Engine reports no usable chance (incomplete / cleared mats). Distinct from LOW.
-function AA.SuccessChanceInvalid()
-    local CSC = GameData and GameData.CraftingSuccessChance
-    if type(CSC) ~= "table" or CSC.INVALID == nil then
-        return false
-    end
-    return AA.SuccessChance() == CSC.INVALID
 end
 
 --- HIGH or MEDIUM only. LOW = definite fail; INVALID = incomplete / stale after mat change.
@@ -139,22 +132,6 @@ end
 --- Stealth brew keeps the apo window hidden; readiness is skill session, not WindowGetShowing.
 function AA.IsCraftingSessionActive()
     return AA.CraftingSkillType() == AA.TradeSkill()
-end
-
---- Board empty and engine wants a container (SP2 SessionReadyToFill).
-function AA.SessionReadyToFill()
-    if AA.ServerHasItems() then
-        return false
-    end
-    local containerSlot = (ApothecaryWindow and ApothecaryWindow.SLOT_CONTAINER) or 0
-    if AA.GetSlottedItem(containerSlot) ~= nil then
-        return false
-    end
-    local cs = GameData and GameData.CraftingStates
-    if cs == nil then
-        return AA.IsCraftingSessionActive()
-    end
-    return AA.CraftingState() == cs.ADDCONTAINER
 end
 
 function AA.IsPerforming()
@@ -350,7 +327,10 @@ function AA.InstallStealthHooks()
                 AA._playerWantsApo = true
                 PlaceApoOnScreen()
                 local name = ApoRootName()
-                if DoesWindowExist(name) and WindowGetShowing(name) == true then
+                if type(DoesWindowExist) == "function"
+                    and DoesWindowExist(name)
+                    and WindowGetShowing(name) == true
+                then
                     return
                 end
             end
@@ -369,11 +349,6 @@ end
 
 function AA.BeginOwnedSession()
     AA.InstallStealthHooks()
-end
-
-function AA.BeginStealthUi()
-    AA.BeginOwnedSession()
-    AA.ParkApoRoot()
 end
 
 function AA.EndStealthUi()
@@ -421,19 +396,7 @@ function AA.InitHeadlessSession()
     end
 end
 
-function AA.RestoreWindowChrome()
-    UnparkApoRoot()
-end
-
 function AA.HideWindowOnly()
-    return AA.ParkApoRoot()
-end
-
-function AA.CloakWindowOnly()
-    return AA.ParkApoRoot()
-end
-
-function AA.HideApoUi()
     return AA.ParkApoRoot()
 end
 
@@ -521,7 +484,7 @@ function AA.CloseWindow(session)
     AA.ReleaseBackpackLocks()
 
     local name = AA.WindowName()
-    if DoesWindowExist(name) then
+    if type(DoesWindowExist) == "function" and DoesWindowExist(name) then
         TryCall("WindowSetShowing", WindowSetShowing, name, false)
         if type(WindowUtils) == "table" and type(WindowUtils.RemoveFromOpenList) == "function" then
             TryQuiet("RemoveFromOpenList", WindowUtils.RemoveFromOpenList, name)
@@ -557,10 +520,6 @@ function AA.AddItemToCrafting(craftSlot, bagSlot, bagType)
         bagSlot,
         bagType or AA.CraftingBackpackType()
     ) == true
-end
-
-function AA.AddContainer(bagSlot, bagType)
-    return AA.AddItemToCrafting(0, bagSlot, bagType)
 end
 
 function AA.PerformCrafting()

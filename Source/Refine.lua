@@ -11,6 +11,7 @@ Refine.MAX_OUTSTANDING_PER_SEED = 6
 Refine.MAX_PENDING_PER_PLANT = 6
 Refine.SEED_BUFFER_FAIL_COOLDOWN_SEC = 45
 Refine.OUTSTANDING_TTL_SEC = 30
+Refine.MAX_USES_PER_ISSUE = 1
 
 Refine._refineDirty = false
 Refine._refineDirtyReason = nil
@@ -711,10 +712,6 @@ function Refine.EnsureBufferFlagsNow()
     return PeekBufferFlagsSticky()
 end
 
-function Refine.HasBufferFlagsCache()
-    return type(Refine._bufferFlags) == "table" or type(Refine._bufferFlagsSticky) == "table"
-end
-
 --- Last cached pending flag without rebuilding (snap wake path).
 --- Returns false when cache is missing (wake must not suppress work via true-only checks).
 function Refine.PeekCachedBufferPending()
@@ -740,13 +737,6 @@ function Refine.PeekFreshBufferPending()
     return flags.pending == true
 end
 
---- O(1) urgent snap invalidate - do not rebuild BufferFlags / HasAnyBufferShort here.
-function Refine.OnUrgentInventorySnap()
-    Refine.InvalidateIntentCache()
-    Refine._refineWaitTicks = 0
-    Refine._bagIndexGen = -1
-end
-
 function Refine.PeekCachedIntents()
     local key = IntentCacheKey()
     if Refine._intentCacheKey == key and type(Refine._intentCache) == "table" then
@@ -763,11 +753,6 @@ function Refine.MarkRefineDue(reason)
     elseif Refine._refineDirtyReason ~= "harvest" then
         Refine._refineDirtyReason = (reason ~= "" and reason) or "generic"
     end
-end
-
-function Refine.ClearPostHarvestState()
-    Refine._refineDirty = false
-    Refine._refineDirtyReason = nil
 end
 
 function Refine.RefineCheckDue()
@@ -1367,8 +1352,12 @@ function Refine.IssueOne(intent, opId)
     local reason = tostring(intent.reason or "refine")
     local pending = tonumber(Refine._pendingByPlant[plantUid]) or 0
     local stack = tonumber(item.stackCount) or tonumber(item.StackCount) or 1
-        local maxUses = 1
-    uses = math.min(uses, stack, (Refine.MAX_PENDING_PER_PLANT or 6) - pending, maxUses)
+    uses = math.min(
+        uses,
+        stack,
+        (Refine.MAX_PENDING_PER_PLANT or 6) - pending,
+        Refine.MAX_USES_PER_ISSUE or 1
+    )
 
     -- Clamp to live headroom (not resin-need).
     local bufferOn = StockPiler3.Watch and StockPiler3.Watch.IsSeedBufferEnabled
@@ -1501,10 +1490,6 @@ function Refine.TryTick(opId)
     return false
 end
 
-function Refine.OnTick(opId)
-    return Refine.TryTick(opId)
-end
-
 ----------------------------------------------------------------
 -- Reconcile / OnUpdate
 ----------------------------------------------------------------
@@ -1538,13 +1523,7 @@ function Refine.ExpireStuckOutstanding()
     end
     local changed = RP.ExpireStuck() == true
     if changed then
-        -- After soft+force expire: arm 45s seed-buffer fail cooldown for cleared seeds.
-        for seedUid, untilT in pairs(Refine._seedBufferCooldownUntil) do
-            -- keep existing
-        end
-        local snap = RP.Snapshot and RP.Snapshot() or {}
-        -- Cooldown on seeds that still look stuck after expire pass is handled in pipeline;
-        -- arm cooldown when pending cleared with no delivery.
+        -- Arm cooldown when pending cleared with no delivery.
         for plantUid, seedUid in pairs(Refine._pendingSeedByPlant) do
             seedUid = tonumber(seedUid) or 0
             local outstanding = RP.GetOutstanding and RP.GetOutstanding(seedUid) or 0
@@ -1579,10 +1558,6 @@ end
 
 function Refine.OnUpdate(timeElapsed)
     Refine.OnUpdateProcessed(timeElapsed)
-end
-
-function Refine.OnInventoryUpdated()
-    Refine._bagIndexGen = -1
 end
 
 function Refine.DumpDiagnostics(emit)

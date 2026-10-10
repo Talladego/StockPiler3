@@ -2,6 +2,7 @@
 -- StockPiler3 Core/EventBus - internal pub/sub
 ----------------------------------------------------------------
 
+StockPiler3 = StockPiler3 or {}
 StockPiler3.EventBus = StockPiler3.EventBus or {}
 
 local Bus = StockPiler3.EventBus
@@ -70,14 +71,6 @@ function Bus.Unsubscribe(token)
     return false
 end
 
-function Bus.UnsubscribeAll(eventName)
-    if eventName == nil then
-        subs = {}
-        return
-    end
-    subs[tostring(eventName)] = nil
-end
-
 function Bus.Fire(eventName, payload)
     eventName = tostring(eventName or "")
     local list = subs[eventName]
@@ -111,6 +104,10 @@ function Bus.Fire(eventName, payload)
         end
     end
     for i = 1, #handlers do
-        StockPiler3.Debug.TryCallQuiet("EventBus." .. eventName, handlers[i], payload)
+        if StockPiler3.Debug and StockPiler3.Debug.TryCallQuiet then
+            StockPiler3.Debug.TryCallQuiet("EventBus." .. eventName, handlers[i], payload)
+        else
+            pcall(handlers[i], payload)
+        end
     end
 end

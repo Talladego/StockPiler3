@@ -164,10 +164,6 @@ local function EffectCycle()
     return StockPiler3.ViewList.EffectFilterCycle()
 end
 
-local function SyncEffectComboSelection()
-    StockPiler3.ViewList.SyncEffectCombo("SP3TabPlantsEffectCombo", (GetSettings().plantEffectFilter) or "")
-end
-
 local function InitEffectCombo()
     StockPiler3.ViewList.InitEffectCombo(
         "SP3TabPlantsEffectCombo",
@@ -319,12 +315,6 @@ function StockPiler3TabPlants.Initialize()
     if DoesWindowExist("SP3TabPlantsEffectLabel") then
         LabelSetText("SP3TabPlantsEffectLabel", T("potions.effect"))
     end
-    if DoesWindowExist("SP3TabPlantsFilterUnused") then
-        WindowSetShowing("SP3TabPlantsFilterUnused", false)
-    end
-    if DoesWindowExist("SP3TabPlantsFilterUnusedLabel") then
-        WindowSetShowing("SP3TabPlantsFilterUnusedLabel", false)
-    end
     local s = GetSettings()
     if DoesWindowExist("SP3TabPlantsSearchBox") then
         TextEditBoxSetText("SP3TabPlantsSearchBox", towstring(s.plantNameFilter or ""))
@@ -427,7 +417,11 @@ end
 local function RowDataFromSender()
     local rowIndex = WindowGetId(WindowGetParent(SystemData.ActiveWindow.name))
     local dataIndex = ListBoxGetDataIndex("SP3TabPlantsList", rowIndex)
-    return StockPiler3TabPlants.listData[dataIndex]
+    local listData = StockPiler3TabPlants.listData
+    if type(listData) ~= "table" or dataIndex == nil then
+        return nil
+    end
+    return listData[dataIndex]
 end
 
 function StockPiler3TabPlants.OnToggleWatch()

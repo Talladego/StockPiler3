@@ -175,21 +175,6 @@ function AD.LearnFromPlotRow(row)
     return n
 end
 
-function AD.StageForCultType(cultType)
-    cultType = tonumber(cultType) or 0
-    local types = CultTypes()
-    if cultType == (tonumber(types.SOIL) or 2) then
-        return 1
-    end
-    if cultType == (tonumber(types.WATERCAN) or 3) then
-        return 2
-    end
-    if cultType == (tonumber(types.NUTRIENT) or 4) then
-        return 3
-    end
-    return 0
-end
-
 function AD.CultTypeForStage(stageNum)
     stageNum = tonumber(stageNum) or 0
     local types = CultTypes()
@@ -253,16 +238,6 @@ function AD.Score(info, skillReq, _iLevel)
         - (tonumber(info.growTime) or 0)
         - skillReq
     return score
-end
-
---- Prefer best matching additive for a cultivation stage from bags.
---- @return bestSlot, bestItem, backpackType
-function AD.FindBestForStage(stageNum)
-    local cultType = AD.CultTypeForStage(stageNum)
-    if cultType <= 0 then
-        return 0, nil, nil
-    end
-    return AD.FindBestInCraftBag(cultType)
 end
 
 --- Best usable additive of this cultType in the crafting bag.
@@ -420,17 +395,6 @@ function AD.PickNext(opts)
         end
     end
     return nil
-end
-
-function AD.CountKnown()
-    local store = AdditivesTable()
-    local n = 0
-    if type(store) == "table" then
-        for _ in pairs(store) do
-            n = n + 1
-        end
-    end
-    return n
 end
 
 function AD.IsEnabled()

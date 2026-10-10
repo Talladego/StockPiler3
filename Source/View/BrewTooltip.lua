@@ -184,10 +184,6 @@ function BrewTooltip.ShowRow(mouseoverWindow, row, anchor)
     Tooltips.AnchorTooltip(anchor or Tooltips.ANCHOR_WINDOW_RIGHT)
 end
 
-function BrewTooltip.ClearLive()
-    StockPiler3.ViewList.LiveTipClear(BrewTooltip)
-end
-
 function BrewTooltip.MaybeRefresh()
     StockPiler3.ViewList.LiveTipMaybeRefresh(
         BrewTooltip,

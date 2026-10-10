@@ -375,21 +375,6 @@ function Ui.RefreshCatalogRows()
     end
 end
 
-function Ui.RefreshIfOpen(opts)
-    opts = type(opts) == "table" and opts or {}
-    if opts.force ~= true then
-        Ui.MarkWatchUiDirty()
-        return
-    end
-    if DoesWindowExist("StockPiler3Window")
-        and WindowGetShowing("StockPiler3Window") == true
-        and StockPiler3Window
-        and StockPiler3Window.RefreshActiveTab
-    then
-        StockPiler3Window.RefreshActiveTab()
-    end
-end
-
 function Ui.FlushWatchUiIfDirty()
     if Ui._watchUiDirty ~= true then
         return

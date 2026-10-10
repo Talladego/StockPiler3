@@ -322,45 +322,6 @@ function D.UninstallChatLinkHook()
     _chatLinkHooked = false
 end
 
-local _notifyOnce = {}
-
---- Print once per key until ClearNotifyOnce; safe to call from polled paths.
---- Returns true when the message was printed (first time for this key).
-function D.NotifyOnce(key, msg)
-    key = tostring(key or "")
-    if key == "" then
-        D.Notify(msg)
-        return true
-    end
-    if _notifyOnce[key] == true then
-        return false
-    end
-    _notifyOnce[key] = true
-    D.Notify(msg)
-    return true
-end
-
-function D.ClearNotifyOnce(key)
-    key = tostring(key or "")
-    if key == "" then
-        return
-    end
-    _notifyOnce[key] = nil
-end
-
-function D.ClearNotifyOncePrefix(prefix)
-    prefix = tostring(prefix or "")
-    if prefix == "" then
-        return
-    end
-    local n = string.len(prefix)
-    for k, _ in pairs(_notifyOnce) do
-        if type(k) == "string" and string.sub(k, 1, n) == prefix then
-            _notifyOnce[k] = nil
-        end
-    end
-end
-
 function D.SafeKeyCount(t, depth, seen)
     depth = tonumber(depth) or 0
     if depth > 2 or type(t) ~= "table" then

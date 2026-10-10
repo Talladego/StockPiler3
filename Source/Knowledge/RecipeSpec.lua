@@ -577,24 +577,6 @@ local function NameLooksLiniment(name)
     return string.find(n, "liniment", 1, true) ~= nil
 end
 
-local function NameLooksOneWayHarvest(name)
-    local n = string.lower(ToNarrow(name))
-    if n == "" then
-        return false
-    end
-    if NameLooksLiniment(name) then
-        return true
-    end
-    -- Non-refinable harvest products (powder/extract/oil/pulp/dust/blood).
-    -- powder/extract: bare substring (align with SeedMap); others keep word boundary.
-    return string.find(n, "powder", 1, true)
-        or string.find(n, "extract", 1, true)
-        or string.find(n, " oil", 1, true)
-        or string.find(n, " pulp", 1, true)
-        or string.find(n, " dust", 1, true)
-        or string.match(n, "%sblood$") ~= nil
-end
-
 local function CountItemsMatchingSpec(spec)
     if type(spec) ~= "table" then
         return 0
@@ -898,11 +880,6 @@ function RS.ParsePotionRecipeKey(key)
     return nil
 end
 
-function RS.IsPotionRecipeKey(key)
-    local parsed = RS.ParsePotionRecipeKey(key)
-    return type(parsed) == "table" and parsed.isComposite == true
-end
-
 --- RecipeSpecKey from main/container/extras (+ optional output uid ignored for identity).
 function RS.BuildRecipeSpecKey(slots, _outputUid)
     return SlotsFingerprint(slots)
@@ -1182,10 +1159,6 @@ function RS.RecipeSkillRequirements(recipe)
     return { apothecary = need, apo = need }
 end
 
-function RS.FingerprintStats(recipe, potionUid)
-    return RS.RecipeFingerprintStats(recipe, potionUid)
-end
-
 function RS.RecipeFingerprintStats(recipe, potionUid)
     local stats = {
         power = 0,
@@ -1273,21 +1246,6 @@ function RS.IsLinimentClass(specOrItem)
         end
     end
     return false
-end
-
---- One-way mains: delegate to SeedMap (liniment / special / non-refinable harvest).
-function RS.IsOneWayMain(specOrItem)
-    if type(specOrItem) ~= "table" then
-        return false
-    end
-    local SM = StockPiler3.SeedMap
-    if SM and SM.IsOneWayHarvestSpec then
-        return SM.IsOneWayHarvestSpec(specOrItem) == true
-    end
-    if RS.IsLinimentClass(specOrItem) then
-        return true
-    end
-    return NameLooksOneWayHarvest(specOrItem.name)
 end
 
 local function CountFromPlannerWarmCache(spec)
@@ -2661,10 +2619,6 @@ function RS.SlotsFingerprint(slots)
     return SlotsFingerprint(slots)
 end
 
-function RS.OutputQuality(out)
-    return OutputQuality(out)
-end
-
 ----------------------------------------------------------------
 -- Planner shims - Grow/Refine call RecipeSpec; demand lives on Planner
 ----------------------------------------------------------------
@@ -2681,54 +2635,12 @@ function RS.BuildBalancedSpecDemand(opts)
     return {}
 end
 
-function RS.CollectAutoGrowFocus()
-    local P = PlannerMod()
-    if P and P.CollectAutoGrowFocus then
-        return P.CollectAutoGrowFocus()
-    end
-    return { maxBottleGap = nil, minCraftable = nil, watches = {} }
-end
-
-function RS.CollectAutoBuyFocus()
-    local P = PlannerMod()
-    if P and P.CollectAutoBuyFocus then
-        return P.CollectAutoBuyFocus()
-    end
-    return { maxBottleGap = nil, minCraftable = nil, watches = {} }
-end
-
 function RS.WatchStillNeedsGrow(potion, recipe, target, watchKey)
     local P = PlannerMod()
     if P and P.WatchStillNeedsGrow then
         return P.WatchStillNeedsGrow(potion, recipe, target, watchKey) == true
     end
-    -- Lean fallback: uncovered deficit.
-    target = tonumber(target) or 0
-    if target <= 0 or type(potion) ~= "table" then
-        return false
-    end
-    local uid = tonumber(potion.outputUid) or 0
-    local have = 0
-    if StockPiler3.Inventory and StockPiler3.Inventory.CountByUid and uid > 0 then
-        have = tonumber(StockPiler3.Inventory.CountByUid(uid)) or 0
-    end
-    return have < target
-end
-
-function RS.FocusSpecKeys(focus)
-    local P = PlannerMod()
-    if P and P.FocusSpecKeys then
-        return P.FocusSpecKeys(focus)
-    end
-    return {}
-end
-
-function RS.FocusBottleneckForSpec(specKey, focus, demand)
-    local P = PlannerMod()
-    if P and P.FocusBottleneckForSpec then
-        return P.FocusBottleneckForSpec(specKey, focus, demand)
-    end
-    return 0, 0
+    return false
 end
 
 function RS.CollectAutoGrowSeedLines()

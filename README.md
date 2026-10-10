@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.296** — Paint SkillUp Watch rows after logon/reload without dumpall.
+**Version 0.3.328** — Code-quality cleanup on top of 0.3.327 feature work.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -20,6 +20,8 @@ Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macr
 | `/sp3 potions` / `watch` / `plants` | Open tab |
 | `/sp3 help` | Command list |
 | `/sp3 debug` / `on` / `off` | Structured uilog |
+| `/sp3 chat` / `on` / `quiet` / `off` | Chat noise: all lines, changes + harvest/brew, or none |
+| `/sp3 fingerprint` `<uidA>` `[uidB]` | Dump ProductKey / ProductMatches compare |
 | `/sp3 dumpall` | Bags + every plan/diagnostic dump (one shot) |
 | `/sp3 plan` / `watchplan` / `state` / `growplan` / `brewplan` / `buyplan` / `skillplan` / `families` / `upgradeplan` | Dumps |
 | `/sp3 stats` / `bags` / `events` / `mem` / `audit` / `harvest` | Diagnostics |
@@ -36,7 +38,7 @@ Learned recipe catalog (one row per fingerprint). Watch / Forget / recipe tips. 
 
 Master **AutoGrow**, additives, **Combat pause**, seed buffer, **Upgrade seeds**, **AutoBuy** (reserve + hard lifetime gold allowance + Reset). Per-watch Prio / Target / AutoGrow / Brew.
 
-**Level up Cultivating / Apothecary** (when under 200 and watches are done): ephemeral status rows (not saved watches). Cult row mirrors master AutoGrow; Apo keeps Brew when a stable board is ready.
+**Level up skills** (when under 200 and watches are done): one Watch checkbox for Cultivating + Apothecary Skill up. Ephemeral status rows (not saved watches). Cult row mirrors master AutoGrow; Apo keeps Brew when a stable board is ready.
 
 ### Plants
 
@@ -68,17 +70,19 @@ Diagnose: `/sp3 families`, `/sp3 upgradeplan`, `/sp3 dumpall`.
 
 Ideal path from Cult 1 + Apo 1: one level-1 main seed → plant → harvest → refine (1 seed + 1 same-level **Arboreal Resin**) → crit/upgrade the same family. Diagnose with `/sp3 skillplan`.
 
-### Cultivating
+### Level up skills
 
-- Toggle **Level up Cultivating** while Cult is under 200 (needs master AutoGrow + watches done).
-- Plant main-ingredient seeds at `TargetMaxSkill` (Apo floor when Level up Apo is on); fall back to lower rungs when climbing; refine to replant.
+Toggle **Level up skills** on Watch while Cult or Apo is under 200 (Cult path needs master AutoGrow + watches done).
+
+**Cultivating**
+
+- Plant main-ingredient seeds at `TargetMaxSkill` (Apo floor when Apo Skill up is on); fall back to lower rungs when climbing; refine to replant.
 - Prefer a bag line already at seed buffer, or with enough plants to refine into it; otherwise AutoBuy tops up `SeedDeficit`.
 - Fill **every unlocked plot** (skill 1→1, 50→2, 100→3, 150→4).
 - Crit upgrades refine up to Cult floor even when Apo-paced planting is lower.
 
-### Apothecary
+**Apothecary**
 
-- Toggle **Level up Apothecary** while Apo is under 200.
 - Brew **only at `FloorApoTier`**. After a tier-up, wait for Cult to supply that tier’s main.
 - Stabilizer: **Arboreal Resin only**. Board must be engine HIGH (stability sum > 0).
 - Resin short → refine leftover lower-tier mains first, then surplus of the exact-floor brew main.
@@ -132,6 +136,9 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.328 | Cleanup: dead Adapter/Core/Planner/Brew/Grow/View code, stale comments, nil guards, unused locale keys |
+| 0.3.327 | Headless Apo open (no cascade/backpack); defer refine while vendor open; AutoBuy resume after idle-no-jobs; Craft harvest timer + stay icon; chat item icons; combined buy status; live Craft tooltip times |
+| 0.3.296 | Paint SkillUp Watch rows after logon/reload without dumpall |
 | 0.3.262 | Watch: Craft bag full status + AutoGrow stall chat (not Restocking when bag has no free slots) |
 | 0.3.261 | LibPerf: Orch decision hold remounts have/demand; Pick/Collect cacheOnly Demand; defer BufferFlags + WarmHave bag off BagFlush |
 | 0.3.260 | Watch: cloak Apo mid-open; keepVisible rows; scrub never drops watch recipes; heal Learn recipe |

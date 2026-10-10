@@ -15,7 +15,6 @@ FW.DEFAULT_FRAME_BUDGET = 1
 FW._jobs = FW._jobs or {}
 FW._order = FW._order or {}
 FW._didWork = false
-FW._lastComplete = FW._lastComplete or {}
 FW._frameBudget = FW.DEFAULT_FRAME_BUDGET
 
 local function TryCall(context, fn, ...)
@@ -37,10 +36,6 @@ local function FinishJob(id, job)
     if type(job.done) == "function" then
         TryCall("FrameWork.done:" .. id, job.done)
     end
-    FW._lastComplete[id] = {
-        gen = job.gen,
-        at = (GetGameTime and GetGameTime()) or 0,
-    }
 end
 
 local function RunOneStep(job)
@@ -91,24 +86,8 @@ local function ShouldSkipPump()
     return false
 end
 
-function FW.SetFrameBudget(n)
-    n = tonumber(n) or FW.DEFAULT_FRAME_BUDGET
-    if n < 1 then
-        n = 1
-    end
-    FW._frameBudget = n
-end
-
 function FW.GetFrameBudget()
     return tonumber(FW._frameBudget) or FW.DEFAULT_FRAME_BUDGET
-end
-
-function FW.DidWork()
-    return FW._didWork == true
-end
-
-function FW.ClearDidWork()
-    FW._didWork = false
 end
 
 function FW.IsActive(id)
@@ -118,11 +97,6 @@ end
 
 function FW.Busy()
     return #(FW._order) > 0
-end
-
-function FW.GetLastComplete(id)
-    id = tostring(id or "")
-    return FW._lastComplete[id]
 end
 
 function FW.Cancel(id)

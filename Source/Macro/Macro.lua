@@ -279,8 +279,13 @@ local function RebuildOurMacroIds()
     Macro._ourIds = ids
 end
 
+local function IsDoMacroAction(actionType)
+    local pa = GameData and GameData.PlayerActions
+    return pa ~= nil and actionType == pa.DO_MACRO
+end
+
 local function ButtonIsOurs(button)
-    if not button or not GameData or button.m_ActionType ~= GameData.PlayerActions.DO_MACRO then
+    if not button or not IsDoMacroAction(button.m_ActionType) then
         return false
     end
     local ids = Macro._ourIds
@@ -317,9 +322,7 @@ function Macro.GetMacroSlots(macroId)
         return slots
     end
     ForEachActionButton(function(button)
-        if button.m_ActionType == GameData.PlayerActions.DO_MACRO
-            and button.m_ActionId == macroId
-        then
+        if IsDoMacroAction(button.m_ActionType) and button.m_ActionId == macroId then
             local slot = tonumber(button.m_HotBarSlot)
             if slot ~= nil then
                 slots[#slots + 1] = slot
@@ -394,21 +397,6 @@ end
 
 local function RememberSlotFingerprint()
     Macro._lastSlotFingerprint = SlotFingerprint()
-end
-
-local function CachedSlotsForMacro(macroId)
-    macroId = tonumber(macroId) or 0
-    SlotFingerprint()
-    if macroId > 0 and macroId == Macro._cachedHarvestId then
-        return Macro._cachedHarvestSlots or {}
-    end
-    if macroId > 0 and macroId == Macro._cachedBrewId then
-        return Macro._cachedBrewSlots or {}
-    end
-    if macroId > 0 and macroId == Macro._cachedCraftId then
-        return Macro._cachedCraftSlots or {}
-    end
-    return Macro.GetMacroSlots(macroId)
 end
 
 local function SetMacroSlot(slot, name, text, iconId, kind)
@@ -834,7 +822,7 @@ local function bindBrewGameActionForButton(button, opts)
 end
 
 function Macro.IsMacroButton(button)
-    if not button or button.m_ActionType ~= GameData.PlayerActions.DO_MACRO then
+    if not button or not IsDoMacroAction(button.m_ActionType) then
         return false
     end
     local macroId = Macro.GetMacroId()
@@ -842,7 +830,7 @@ function Macro.IsMacroButton(button)
 end
 
 function Macro.IsBrewMacroButton(button)
-    if not button or button.m_ActionType ~= GameData.PlayerActions.DO_MACRO then
+    if not button or not IsDoMacroAction(button.m_ActionType) then
         return false
     end
     local macroId = Macro.GetBrewMacroId()
@@ -850,7 +838,7 @@ function Macro.IsBrewMacroButton(button)
 end
 
 function Macro.IsCraftMacroButton(button)
-    if not button or button.m_ActionType ~= GameData.PlayerActions.DO_MACRO then
+    if not button or not IsDoMacroAction(button.m_ActionType) then
         return false
     end
     local macroId = Macro.GetCraftMacroId()
@@ -1410,7 +1398,7 @@ local function applySetActionDataAppearance(button, actionType, actionId)
     if not button then
         return
     end
-    if actionType ~= GameData.PlayerActions.DO_MACRO then
+    if not IsDoMacroAction(actionType) then
         return
     end
     local harvestId = Macro.GetMacroId()
@@ -1885,7 +1873,7 @@ function Macro.HarvestClick()
     if Macro.FireHarvestGameAction() then
         return
     end
-    -- Fallback when no bar slot / Action bind failed (Grow.FireHarvestAction never existed).
+    -- Fallback when no bar slot / Action bind failed (footer WindowGameAction fallback).
     if StockPiler3.HarvestChrome and StockPiler3.HarvestChrome.FireHarvestAction then
         StockPiler3.HarvestChrome.FireHarvestAction()
         return

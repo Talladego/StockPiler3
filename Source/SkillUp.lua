@@ -96,14 +96,6 @@ function SkillUp.GetApoSkill()
     return C and C.GetApoSkill and tonumber(C.GetApoSkill()) or 0
 end
 
-function SkillUp.IsCultTrained()
-    return SkillUp.GetCultSkill() > 0
-end
-
-function SkillUp.IsApoTrained()
-    return SkillUp.GetApoSkill() > 0
-end
-
 function SkillUp.IsCultVisible()
     local cult = SkillUp.GetCultSkill()
     return cult > 0 and cult < (SkillUp.CULT_MAX or 200)
@@ -2188,21 +2180,6 @@ function SkillUp.ResolveLevelRate(kind, level, opts)
         end
     end
     return defaultRate, 0, 0, level, "default"
-end
-
--- Back-compat aliases (argument is skill level, not tier band).
-function SkillUp.BandRate(kind, level)
-    return SkillUp.LevelRate(kind, level)
-end
-
-function SkillUp.CultSkillUpRate(level)
-    level = tonumber(level) or math.floor(SkillUp.GetCultSkill())
-    return SkillUp.LevelRate("cult", level)
-end
-
-function SkillUp.ApoSkillUpRate(level)
-    level = tonumber(level) or math.floor(SkillUp.GetApoSkill())
-    return SkillUp.LevelRate("apo", level)
 end
 
 --- Expected crafts to climb from `fromLevel` (inclusive) to `toLevel` (exclusive).

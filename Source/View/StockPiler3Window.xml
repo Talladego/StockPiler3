@@ -141,7 +141,7 @@
                         <EventHandler event="OnMouseOver" function="StockPiler3Window.OnMouseOverHarvest" />
                     </EventHandlers>
                 </Button>
-                <!-- Unused fallback; native harvest uses visible $parentHarvest gameactionbutton. -->
+                <!-- Hidden bind fallback; HarvestChrome may bind/fire this Action window. -->
                 <Button name="$parentHarvestAction" inherits="EA_Button_DefaultResizeable" gameactionbutton="left" showing="false">
                     <Size>
                         <AbsPoint x="1" y="1" />

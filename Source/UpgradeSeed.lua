@@ -632,14 +632,6 @@ HaveTargetRung = function(ladder, needReq, plantUid, seedUid, opts)
     return rungArrived(seedUid, plantUid)
 end
 
-function US.HaveTargetRung(ladder, needReq, plantUid, seedUid, opts)
-    return HaveTargetRung(ladder, needReq, plantUid, seedUid, opts)
-end
-
-function US.CultMaxTierBufferFull(ladder, needReq, fallbackPlantUid, fallbackSeedUid)
-    return CultMaxTierBufferFull(ladder, needReq, fallbackPlantUid, fallbackSeedUid)
-end
-
 --- Plant-watch climb descriptor (stock N vs Cult-max existence).
 --- pending = climb not finished; eligible = stocked, mid-climb, or arrive needed.
 --- arriveNeeded: plant stock short and watched-tier seed/plant missing — climb to

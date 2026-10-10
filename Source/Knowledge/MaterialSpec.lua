@@ -189,13 +189,6 @@ function MS.EffectKeyFromEffectId(effectId)
     return EFFECT_ID_TO_KEY[effectId]
 end
 
-function MS.EffectIdFromKey(key)
-    if type(key) ~= "string" or key == "" then
-        return nil
-    end
-    return EFFECT_KEY_TO_ID[key]
-end
-
 local function SlotTypeConstants()
     if GameData and GameData.CraftingItemType then
         return GameData.CraftingItemType
@@ -481,13 +474,6 @@ local function ResolveMainEffectId(itemData, bonuses)
         return EffectIdFromDescription(desc)
     end
     return nil
-end
-
-function MS.ClearParseCache()
-    local I = Inv()
-    if I then
-        I._specParseCache = {}
-    end
 end
 
 function MS.CraftBonusRefs()
@@ -993,17 +979,6 @@ function MS.ProductMatches(itemData, spec)
         return false
     end
     return MS.Matches(product, target)
-end
-
-function MS.Stability(spec)
-    if type(spec) ~= "table" then
-        return 0
-    end
-    local B = CraftBonusRefs()
-    if type(spec.bonuses) == "table" then
-        return tonumber(NormalizeBonusKeys(spec.bonuses)[B.STABILITY]) or 0
-    end
-    return tonumber(spec.stability) or 0
 end
 
 function MS.Label(spec)

@@ -754,6 +754,7 @@ function StockPiler3Window.OnHarvestPrepare()
     end
 end
 
+-- Empty: XML requires OnLButtonUp; harvest fires via gameactionbutton after OnHarvestPrepare.
 function StockPiler3Window.OnHarvest()
 end
 

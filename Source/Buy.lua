@@ -930,11 +930,6 @@ function Buy.CollectBuyJobs()
     if Planner and Planner.CollectVendorBuyJobs then
         jobs = Planner.CollectVendorBuyJobs({
             allowPlantBuys = Buy._allowPlantBuys == true,
-            fairFocus = true,
-        }) or {}
-    elseif StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.CollectVendorBuyJobs then
-        jobs = StockPiler3.RecipeSpec.CollectVendorBuyJobs({
-            allowPlantBuys = Buy._allowPlantBuys == true,
         }) or {}
     end
 
@@ -1168,7 +1163,7 @@ function Buy.IssueOne(opId)
 
     -- Confirm or wait on in-flight broadcast before starting another buy.
     -- Waiting must return true so Orch keeps the buy tick (refine must not steal
-    -- and SendUseItem a "plant" that closes the vendor).
+    -- and refine SendUseItem that closes the vendor).
     local pendingState = ResolvePendingBuy()
     if pendingState == "waiting" then
         if StockPiler3.Scheduler and StockPiler3.Scheduler.WakeAutoBuy then
@@ -1208,9 +1203,8 @@ function Buy.IssueOne(opId)
             local meta = StockPiler3.Planner and StockPiler3.Planner._vendorBuyJobsMeta
             if type(meta) == "table" then
                 LogBuy(string.format(
-                    "idle-no-jobs source=%s skippedContainers=%s maxBottleGap=%s focusWatches=%s",
+                    "idle-no-jobs source=%s maxBottleGap=%s focusWatches=%s",
                     tostring(meta.source),
-                    tostring(meta.skippedContainers),
                     tostring(meta.maxBottleGap),
                     tostring(meta.focusWatchCount)
                 ))
@@ -1381,17 +1375,6 @@ function Buy.IssueOne(opId)
     return done(false)
 end
 
-function Buy.TryBuyNext()
-    return Buy.IssueOne(nil)
-end
-
-function Buy.OnTick()
-    if not BeginVisitIfNeeded() then
-        return false
-    end
-    return Buy.IssueOne(nil)
-end
-
 function Buy.NeedsTick()
     if not Buy.IsEnabled() then
         return false
@@ -1532,11 +1515,10 @@ function Buy.DumpBuyPlan(opts)
     local meta = StockPiler3.Planner and StockPiler3.Planner._vendorBuyJobsMeta
     if type(meta) == "table" then
         Emit(string.format(
-            "jobsMeta source=%s focusWatches=%s maxBottleGap=%s skippedContainers=%s",
+            "jobsMeta source=%s focusWatches=%s maxBottleGap=%s",
             tostring(meta.source),
             tostring(meta.focusWatchCount),
-            tostring(meta.maxBottleGap),
-            tostring(meta.skippedContainers == true)
+            tostring(meta.maxBottleGap)
         ), force)
     end
     for i = 1, math.min(#jobs, 40) do

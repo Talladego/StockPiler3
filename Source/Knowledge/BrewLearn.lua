@@ -701,10 +701,6 @@ function BL.DrainInventoryCraftPoll()
     return BL.CompletePendingCraftLearn() == true
 end
 
-function BL.MaybeCompletePendingCraftFromInventory()
-    return BL.DrainInventoryCraftPoll()
-end
-
 --- Crafting chat "You created ..." when SUCCESS state was skipped (instant brew).
 --- Complete only if bag already gained; otherwise arm inventory poll.
 function BL.OnCreatedChat(createdName)

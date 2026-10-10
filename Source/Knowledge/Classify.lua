@@ -116,25 +116,6 @@ function Classify.EffectFilterKeys()
     return keys
 end
 
-function Classify.IsPotionItem(itemData)
-    if type(itemData) ~= "table" then
-        return false
-    end
-    if GameData and GameData.ItemTypes and GameData.ItemTypes.POTION then
-        local t = itemData.type or itemData.itemType
-        if t == GameData.ItemTypes.POTION then
-            return true
-        end
-    end
-    local n = string.lower(ToNarrow(itemData.name))
-    return string.find(n, "potion", 1, true)
-        or string.find(n, "draught", 1, true)
-        or string.find(n, "elixir", 1, true)
-        or string.find(n, "unguent", 1, true)
-        or string.find(n, "liniment", 1, true)
-        or string.find(n, "liquid", 1, true)
-end
-
 local function ClassifyFromDescription(description)
     if type(description) ~= "string" or description == "" then
         return nil
@@ -375,20 +356,6 @@ function Classify.GetRarity(itemData)
         return 0
     end
     return tonumber(itemData.rarity) or 0
-end
-
-function Classify.GetRarityColor(itemData)
-    local r, g, b = 255, 255, 255
-    if type(itemData) ~= "table" then
-        return r, g, b
-    end
-    if DataUtils and DataUtils.GetItemRarityColor then
-        local ok, color = pcall(DataUtils.GetItemRarityColor, itemData)
-        if ok and type(color) == "table" then
-            return tonumber(color.r) or r, tonumber(color.g) or g, tonumber(color.b) or b
-        end
-    end
-    return r, g, b
 end
 
 function Classify.GetPotionStats(itemData)

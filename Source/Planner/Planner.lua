@@ -246,17 +246,6 @@ local function RecipeStructuralKey(g)
     )
 end
 
-local function NonSnapGensKey(g)
-    return string.format(
-        "g%d|r%d|w%d|k%d|h%d",
-        tonumber(g.gardenGen) or 0,
-        tonumber(g.refineGen) or 0,
-        tonumber(g.watchGen) or 0,
-        tonumber(g.knowledgeGen) or 0,
-        tonumber(g.settingsHash) or 0
-    )
-end
-
 ----------------------------------------------------------------
 -- Spec-have cache (one-pass WarmSpecHaveCache)
 ----------------------------------------------------------------
@@ -653,22 +642,10 @@ local function CountCraftsPossibleMemo(recipe)
 end
 
 local function RecipeYield(recipe)
-    local RS = RecipeSpec()
-    if RS and RS.RecipeOutputYield then
-        local y = tonumber(RS.RecipeOutputYield(recipe)) or 1
-        if y < 1 then
-            y = 1
-        end
-        return y
-    end
     return math.max(1, tonumber(recipe and recipe.recipeYield) or 1)
 end
 
 local function CraftsNeededForDeficit(deficit, recipe)
-    local RS = RecipeSpec()
-    if RS and RS.CraftsNeededForDeficit then
-        return tonumber(RS.CraftsNeededForDeficit(deficit, recipe)) or 0
-    end
     local yield = RecipeYield(recipe)
     deficit = tonumber(deficit) or 0
     if deficit <= 0 then
@@ -678,10 +655,6 @@ local function CraftsNeededForDeficit(deficit, recipe)
 end
 
 local function CountPotionsCraftable(recipe)
-    local RS = RecipeSpec()
-    if RS and RS.CountPotionsCraftable then
-        return math.max(0, math.floor((tonumber(RS.CountPotionsCraftable(recipe)) or 0) + 0.5))
-    end
     local crafts = CountCraftsPossibleMemo(recipe)
     return math.max(0, math.floor((crafts * RecipeYield(recipe)) + 0.5))
 end
@@ -917,10 +890,6 @@ local function ResolveWatchPotion(watchKey)
 end
 
 local function PotionHave(resolved, potion, outputUid)
-    local RS = RecipeSpec()
-    if RS and RS.PotionHaveCombined and type(potion) == "table" then
-        return tonumber(RS.PotionHaveCombined(potion)) or 0
-    end
     local uid = tonumber(outputUid)
         or (resolved and tonumber(resolved.outputUid))
         or (type(potion) == "table" and tonumber(potion.outputUid))
@@ -1399,10 +1368,6 @@ local function CollectFocus(mode)
     return focus
 end
 
-----------------------------------------------------------------
--- Grow focus helpers (unique bottleneck + seed-buffer lines)
-----------------------------------------------------------------
-
 --- Deficit remains and craftable does not yet cover target (or craftable is contested).
 --- Prefer polished plan-row fields (SoT); fall back to live craftable when no plan.
 local function WatchStillNeedsGrow(potion, recipe, target, watchKey)
@@ -1448,80 +1413,6 @@ local function WatchStillNeedsGrow(potion, recipe, target, watchKey)
     end
     local craftable = CountPotionsCraftable(recipe)
     return have + craftable < target
-end
-
-local function FocusSpecKeys(focus)
-    local keys = {}
-    if type(focus) ~= "table" or type(focus.watches) ~= "table" then
-        return keys
-    end
-    local RS = RecipeSpec()
-    for i = 1, #focus.watches do
-        local recipe = focus.watches[i] and focus.watches[i].recipe
-        if type(recipe) == "table" then
-            if RS and RS.HydrateRecipeSlots then
-                RS.HydrateRecipeSlots(recipe)
-            end
-            local slots = recipe.slots
-            if type(slots) == "table" then
-                for j = 1, #slots do
-                    local spec = ResolveSlotSpec(slots[j])
-                    local k = SpecKey(spec)
-                    if k ~= nil then
-                        keys[k] = true
-                    end
-                end
-            end
-        end
-    end
-    return keys
-end
-
---- Max bottleGap among focus watches where this spec is a limiting growable slot;
---- focusShare = how many focus watches list the spec.
-local function FocusBottleneckForSpec(specKey, focus, demand)
-    specKey = tostring(specKey or "")
-    if specKey == "" or type(focus) ~= "table" or type(focus.watches) ~= "table" then
-        return 0, 0
-    end
-    local bestGap = 0
-    local shareCount = 0
-    local demandHave = nil
-    if type(demand) == "table" and type(demand[specKey]) == "table" then
-        demandHave = tonumber(demand[specKey].have)
-    end
-    local RS = RecipeSpec()
-    for i = 1, #focus.watches do
-        local fw = focus.watches[i]
-        local recipe = fw and fw.recipe
-        local slots = recipe and recipe.slots
-        if type(slots) == "table" then
-            local craftsPossible = CountCraftsPossibleMemo(recipe)
-            for j = 1, #slots do
-                local slot = slots[j]
-                local spec = ResolveSlotSpec(slot)
-                if type(spec) == "table" and SpecKey(spec) == specKey then
-                    shareCount = shareCount + 1
-                    local perCraft = EffectivePerCraft(slot, slots)
-                    local have = demandHave
-                    if have == nil then
-                        have = CountItemsMatchingSpec(spec)
-                    end
-                    have = tonumber(have) or 0
-                    local craftsHave = math.floor(have / perCraft)
-                    -- Limiting: this slot caps craftsPossible (or is short of need).
-                    if craftsHave <= craftsPossible then
-                        local gap = tonumber(fw.bottleGap) or 0
-                        if gap > bestGap then
-                            bestGap = gap
-                        end
-                    end
-                    break
-                end
-            end
-        end
-    end
-    return bestGap, shareCount
 end
 
 local function CollectAutoGrowSeedLines()
@@ -1683,19 +1574,6 @@ end
 
 local function ApplyDeficitCraftableShared(rows)
     local RS = RecipeSpec()
-    if RS and RS.ApplyDeficitCraftableShared then
-        RS.ApplyDeficitCraftableShared(rows)
-        if type(rows) == "table" then
-            for i = 1, #rows do
-                local row = rows[i]
-                if type(row) == "table" and (row.kind == "plant" or row.isPlantWatch == true) then
-                    row.craftableShared = false
-                    row.contestedSpecKeys = nil
-                end
-            end
-        end
-        return
-    end
     if type(rows) ~= "table" then
         return
     end
@@ -2591,14 +2469,8 @@ local function ApplySpecPlanStatus(row, target, recipe, demand)
     row.craftsNeeded = craftsNeeded
     row.recipeYield = RecipeYield(recipe)
 
-    local covered = false
-    local RS = RecipeSpec()
-    if RS and RS.WatchCoveredByBagsAndCraftable then
-        covered = RS.WatchCoveredByBagsAndCraftable(target.entry, recipe, target.min) == true
-    else
-        local craftable = CountPotionsCraftable(recipe)
-        covered = (tonumber(target.have) or 0) + craftable >= (tonumber(target.min) or 0)
-    end
+    local craftable = CountPotionsCraftable(recipe)
+    local covered = (tonumber(target.have) or 0) + craftable >= (tonumber(target.min) or 0)
     if covered then
         if SeedBufferShort(recipe, target.potionKey, row) then
             ApplySeedBufferStatus(row)
@@ -4518,34 +4390,12 @@ end
 -- Public API
 ----------------------------------------------------------------
 
-function Planner.SettingsHash()
-    return SettingsHash()
-end
-
-function Planner.DecideStatus(row, target, recipe, demand)
-    DecideStatus(row, target, recipe, demand)
-end
-
 function Planner.CacheKeyFromGens()
     return FormatCacheKey(ReadGens())
 end
 
-function Planner.NonSnapGensKey()
-    return NonSnapGensKey(ReadGens())
-end
-
-function Planner.BuildContext()
-    local ctx = ReadGens()
-    ctx.watches = StockPiler3.Watch and StockPiler3.Watch.GetWatches and StockPiler3.Watch.GetWatches() or {}
-    return ctx
-end
-
 function Planner.IsHaveCacheWarmForSnap()
     return IsHaveCacheWarmForSnap()
-end
-
-function Planner.WarmSpecHaveCache(specs)
-    return WarmSpecHaveCache(specs)
 end
 
 function Planner.WarmSpecHaveCacheForWatches()
@@ -4607,24 +4457,8 @@ function Planner.BottleGap(target, stock, craftable)
     return BottleGap(target, stock, craftable)
 end
 
-function Planner.CollectAutoGrowFocus()
-    return CollectFocus("grow")
-end
-
-function Planner.CollectAutoBuyFocus()
-    return CollectFocus("buy")
-end
-
 function Planner.WatchStillNeedsGrow(potion, recipe, target, watchKey)
     return WatchStillNeedsGrow(potion, recipe, target, watchKey)
-end
-
-function Planner.FocusSpecKeys(focus)
-    return FocusSpecKeys(focus)
-end
-
-function Planner.FocusBottleneckForSpec(specKey, focus, demand)
-    return FocusBottleneckForSpec(specKey, focus, demand)
 end
 
 function Planner.CollectAutoGrowSeedLines()
@@ -4639,7 +4473,6 @@ function Planner.CollectVendorBuyJobs(opts)
         source = "none",
         maxBottleGap = nil,
         focusWatchCount = 0,
-        skippedContainers = false,
     }
     local Inv = StockPiler3.Inventory
     if Inv and Inv._ready ~= true then
@@ -4785,7 +4618,6 @@ function Planner.CollectVendorBuyJobs(opts)
     local watchCount = type(watches) == "table" and #watches or 0
     Planner._vendorBuyJobsMeta.maxBottleGap = focus.maxBottleGap
     Planner._vendorBuyJobsMeta.focusWatchCount = watchCount
-    Planner._vendorBuyJobsMeta.skippedContainers = false
     local pool = {}
     FillPoolFromWatches(pool, watches)
     jobs = JobsFromPool(pool)
@@ -4897,33 +4729,6 @@ function Planner.SyncLiveStatusClosedWindow()
     return flipped
 end
 
-function Planner.CanCheapOrGardenPatch()
-    local PS = StockPiler3.PlanSnapshot
-    local stale = PS and PS.Get and PS.Get()
-    if type(stale) ~= "table" or type(stale.rows) ~= "table" or #stale.rows == 0 then
-        return false
-    end
-    if type(stale.ctx) ~= "table" then
-        return false
-    end
-    local cur = ReadGens()
-    if StructuralNonRefineKey(stale.ctx) == StructuralNonRefineKey(cur) then
-        return true
-    end
-    if RecipeStructuralKey(stale.ctx) == RecipeStructuralKey(cur) then
-        return true
-    end
-    return false
-end
-
-function Planner.TryCheapRebuild()
-    return TryCheapRebuild()
-end
-
-function Planner.TryGardenPatch()
-    return TryGardenPatch()
-end
-
 function Planner.Build(opts)
     opts = type(opts) == "table" and opts or {}
     local PS = StockPiler3.PlanSnapshot
@@ -4969,12 +4774,6 @@ function Planner.GetOrBuild(opts)
         return PS and PS.Get and PS.Get() or nil
     end
     return Planner.Build(opts)
-end
-
-function Planner.InvalidatePlanCache()
-    if StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Invalidate then
-        StockPiler3.PlanSnapshot.Invalidate()
-    end
 end
 
 ----------------------------------------------------------------

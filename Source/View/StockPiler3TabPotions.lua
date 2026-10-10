@@ -498,7 +498,11 @@ local function RowDataFromActiveChild()
     local rowWindow = WindowGetParent(SystemData.ActiveWindow.name)
     local rowIndex = WindowGetId(rowWindow)
     local dataIndex = ListBoxGetDataIndex("SP3TabPotionsList", rowIndex)
-    return StockPiler3TabPotions.listData[dataIndex]
+    local listData = StockPiler3TabPotions.listData
+    if type(listData) ~= "table" or dataIndex == nil then
+        return nil
+    end
+    return listData[dataIndex]
 end
 
 local function AfterWatchToggle(opts)

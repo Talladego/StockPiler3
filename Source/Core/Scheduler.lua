@@ -53,7 +53,6 @@ Sch._brewLightAt = 0
 Sch._skipPlanThisFrame = false
 Sch._skipUiThisFrame = false
 Sch._skipUiHoldFooter = false
-Sch._skipOrchThisFrame = false
 Sch._awaitingSessionLoad = false
 Sch._orchDecisionHoldTicks = 0
 Sch._heavyWorkFrame = -1
@@ -670,23 +669,6 @@ function Sch.Hold(reason, seconds)
     end
 end
 
-function Sch.IsHeld(reason)
-    reason = tostring(reason or "")
-    local untilT = tonumber(Sch._holds and Sch._holds[reason]) or 0
-    if untilT <= 0 then
-        return false
-    end
-    local now = Now()
-    if now <= 0 then
-        return true
-    end
-    if now < untilT then
-        return true
-    end
-    Sch._holds[reason] = nil
-    return false
-end
-
 --- Expire named holds and storm/quiet windows once per frame.
 function Sch.Advance(now)
     now = tonumber(now) or Now()
@@ -778,10 +760,6 @@ function Sch.IsPlantQuiet()
     return false
 end
 
--- Aliases used by other modules / SP2-shaped call sites.
-Sch.IsHarvestStormActive = Sch.IsHarvestStorm
-Sch.BeginHarvestStorm = Sch.ArmHarvestStorm
-
 function Sch.ArmPlantQuiet(seconds)
     seconds = tonumber(seconds) or Sch.PLANT_QUIET_BASE_SEC or 0.75
     local minSec = tonumber(Sch.HARVEST_STORM_MIN_SEC) or 1.5
@@ -803,10 +781,6 @@ end
 function Sch.SkipUiThisFrame()
     Sch._skipUiThisFrame = true
     Sch._skipUiHoldFooter = true
-end
-
-function Sch.SkipOrchThisFrame()
-    Sch._skipOrchThisFrame = true
 end
 
 function Sch.SkipPlanThisFrameActive()
@@ -1163,21 +1137,16 @@ function Sch.OnUpdate(timeElapsed)
         if StockPiler3.Orchestrator and StockPiler3.Orchestrator.DecayFillBlocked then
             StockPiler3.Orchestrator.DecayFillBlocked()
         end
-        local skipOrch = Sch._skipOrchThisFrame == true
-        Sch._skipOrchThisFrame = false
         -- Skip Orch while brew load job runs (AddItem path). Keep Orch when
         -- phase=loaded with no job so ProbeStuckAutoLoaded still ticks.
-        local Brew = StockPiler3.Brew
-        if Brew and Brew.IsLoadJobActive and Brew.IsLoadJobActive() then
-            skipOrch = true
-        end
+        local skipOrch = StockPiler3.Brew
+            and StockPiler3.Brew.IsLoadJobActive
+            and StockPiler3.Brew.IsLoadJobActive() == true
         if not didHeavy and not skipOrch
             and StockPiler3.Orchestrator and StockPiler3.Orchestrator.Tick
         then
             StockPiler3.Orchestrator.Tick()
         end
-    else
-        Sch._skipOrchThisFrame = false
     end
 end
 
