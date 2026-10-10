@@ -94,12 +94,47 @@ function CC.ItemLink(uid, fallbackName)
     return text
 end
 
-function CC.Print(msg)
+local function IconMarkup(iconNum)
+    iconNum = tonumber(iconNum) or 0
+    if iconNum <= 0 then
+        return L""
+    end
+    return towstring(string.format("<icon%05d> ", iconNum))
+end
+
+--- Item icon markup for chat, placed beside a name. Empty when unknown.
+function CC.ItemIconMarkup(uid, fallbackIcon)
+    uid = tonumber(uid) or 0
+    local icon = 0
+    if uid > 0 then
+        local itemData = ResolveItemData(uid)
+        if type(itemData) == "table" then
+            icon = tonumber(itemData.iconNum) or 0
+        end
+        if icon <= 0 and StockPiler3.Items and StockPiler3.Items.GetByUid then
+            local row = StockPiler3.Items.GetByUid(uid)
+            if type(row) == "table" then
+                icon = tonumber(row.iconNum) or 0
+            end
+        end
+    end
+    if icon <= 0 then
+        icon = tonumber(fallbackIcon) or 0
+    end
+    return IconMarkup(icon)
+end
+
+--- Item icon, then the clickable name. Leading harvest/brew icons stay in the phrase.
+function CC.NamedItem(uid, fallbackName, fallbackIcon)
+    return CC.ItemIconMarkup(uid, fallbackIcon) .. CC.ItemLink(uid, fallbackName)
+end
+
+function CC.Print(msg, kind)
     if msg == nil then
         return
     end
     if StockPiler3.Debug and StockPiler3.Debug.Print then
-        StockPiler3.Debug.Print(msg)
+        StockPiler3.Debug.Print(msg, kind)
         return
     end
     if type(EA_ChatWindow) == "table" and type(EA_ChatWindow.Print) == "function" then
@@ -208,7 +243,7 @@ local function EmitPlantedChat(plotNum, meta)
     local seedUid = tonumber(meta.seedUid) or 0
     local namePart = meta.name
     if seedUid > 0 then
-        namePart = CC.ItemLink(seedUid, meta.name)
+        namePart = CC.NamedItem(seedUid, meta.name, meta.seedIconNum)
     else
         namePart = ToWString(meta.name or "seed")
     end
@@ -251,15 +286,19 @@ function CC.OnSoilConfirmed(plotNum, plotInfo)
     if type(plotInfo) == "table" then
         local plotSeed = tonumber(plotInfo.seedUid) or 0
         local metaSeed = tonumber(meta.seedUid) or 0
+        local seedIcon = tonumber(plotInfo.seedIconNum) or 0
         if plotSeed > 0 and metaSeed > 0 and plotSeed ~= metaSeed then
             -- Prefer what actually grew; still announce instead of silent drop.
             meta = {
                 reason = tostring(meta.reason or "potion_stock"),
                 name = meta.name,
                 seedUid = plotSeed,
+                seedIconNum = seedIcon,
                 at = meta.at,
                 chatted = false,
             }
+        elseif seedIcon > 0 then
+            meta.seedIconNum = seedIcon
         end
     end
     EmitPlantedChat(plotNum, meta)

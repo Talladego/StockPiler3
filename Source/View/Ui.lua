@@ -55,8 +55,10 @@ local function IsAnyTabVisible()
 end
 
 function Ui.Print(msg)
-    if StockPiler3.Debug and StockPiler3.Debug.Print then
-        StockPiler3.Debug.Print(msg)
+    if StockPiler3.Debug and StockPiler3.Debug.Reply then
+        StockPiler3.Debug.Reply(msg)
+    elseif StockPiler3.Debug and StockPiler3.Debug.Print then
+        StockPiler3.Debug.Print(msg, "user")
     end
 end
 
@@ -126,11 +128,28 @@ local function WatchContentKey()
     if StockPiler3.Watch and StockPiler3.Watch.IsAutoGrowEnabled then
         autoGrowOn = StockPiler3.Watch.IsAutoGrowEnabled() == true
     end
+    local skillKey = "0"
+    local Caps = StockPiler3.TradeSkillCaps
+    if Caps and Caps.LevelsHash then
+        skillKey = tostring(Caps.LevelsHash())
+    end
+    local SkillUp = StockPiler3.SkillUp
+    local skillShow = SkillUp and SkillUp.ShouldShowWatchStatus
+        and SkillUp.ShouldShowWatchStatus() == true
+    -- Plant/empty/lock (not stage-timer GetGen) so garden dirty actually paints.
+    local gardenPlanGen = 0
+    local Garden = StockPiler3.Garden
+    if Garden and Garden.GetPlanGen then
+        gardenPlanGen = tonumber(Garden.GetPlanGen()) or 0
+    end
     return tostring(snapGen)
         .. ":" .. tostring(planGen)
         .. ":" .. tostring(knowledgeGen)
         .. ":" .. tostring(watchGen)
         .. ":" .. tostring(autoGrowOn)
+        .. ":" .. tostring(skillKey)
+        .. ":" .. tostring(skillShow)
+        .. ":" .. tostring(gardenPlanGen)
         .. ":" .. BrewChromeKey()
 end
 
@@ -155,11 +174,56 @@ local function OpenPaintActive()
     return StockPiler3Window and StockPiler3Window._openPaintPending == true
 end
 
+local function WatchMissingSkillUpRows()
+    local SkillUp = StockPiler3.SkillUp
+    if not (SkillUp and SkillUp.ShouldShowWatchStatus and SkillUp.ShouldShowWatchStatus() == true) then
+        local US = StockPiler3.UpgradeSeed
+        if not (US and US.ShouldShowWatchStatus and US.ShouldShowWatchStatus() == true) then
+            return false
+        end
+    end
+    local list = StockPiler3TabWatch and StockPiler3TabWatch.listData
+    if type(list) ~= "table" or #list == 0 then
+        return true
+    end
+    for i = 1, #list do
+        local row = list[i]
+        if type(row) == "table" and (row.skillUp == true or row.upgradeWatch == true
+            or row.addonOwned == true)
+        then
+            return false
+        end
+    end
+    return true
+end
+
+function Ui.WatchNeedsSkillUpPaint()
+    return WatchMissingSkillUpRows()
+end
+
 --- Hold Watch paint during harvest storm, refine outstanding, buffer refine,
 --- AutoBuy visit, FrameWork prewarm, or session settle.
 local function ShouldDeferWatchFlush()
     -- First open / re-show: never leave Watch rows PrimeRowChrome-hidden.
     if OpenPaintActive() then
+        return false
+    end
+    -- SkillUp-only Watch (no potion watches): do not wait on plan/prewarm/settle
+    -- or rows stay missing until /sp3 dumpall or an AutoGrow toggle.
+    if WatchMissingSkillUpRows() then
+        local SchFast = StockPiler3.Scheduler
+        if SchFast and SchFast.SkipUiThisFrameActive and SchFast.SkipUiThisFrameActive() == true then
+            return true
+        end
+        if SchFast and SchFast._skipUiThisFrame == true then
+            return true
+        end
+        if SchFast and SchFast.IsHarvestStorm and SchFast.IsHarvestStorm() == true then
+            return true
+        end
+        if SchFast and SchFast.IsPlantQuiet and SchFast.IsPlantQuiet() == true then
+            return true
+        end
         return false
     end
     local Sch = StockPiler3.Scheduler
@@ -206,11 +270,13 @@ end
 
 --- Light in-place stock/status paint while Watch is open (no ListBox rebind).
 --- Defined after ShouldDeferWatchFlush (Lua local visibility).
-local function TryWatchLiveCatchup()
+--- opts.ignoreDefer: plant quiet / harvest storm still need status recount.
+local function TryWatchLiveCatchup(opts)
+    opts = type(opts) == "table" and opts or {}
     if not IsWatchTabVisible() then
         return
     end
-    if ShouldDeferWatchFlush() then
+    if opts.ignoreDefer ~= true and ShouldDeferWatchFlush() then
         return
     end
     local Orch = StockPiler3.Orchestrator
@@ -372,6 +438,13 @@ function Ui.FlushWatchUiIfDirty()
         end
         -- Catalog Have is L0-only; do not wait for Have-warm / plan like Watch craftable.
         TryCatalogLiveCatchup()
+        -- Plant quiet / harvest storm skip full RefreshWatch; still patch stock/status.
+        if hardHold
+            and ((Sch and Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true)
+                or (Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true))
+        then
+            TryWatchLiveCatchup({ ignoreDefer = true })
+        end
         return
     end
 
@@ -483,8 +556,12 @@ function Ui.FlushWatchUiIfDirty()
     local openPaint = OpenPaintActive()
     -- Plan status can change without stock/craftable deltas; never skip when planGen moved.
     if not openPaint and Ui._watchUiLastKey == contentKey and not planChanged then
-        Ui._watchUiDirty = false
-        return
+        if WatchMissingSkillUpRows() then
+            -- SkillUp rows never made it into listData; Flatten again.
+        else
+            Ui._watchUiDirty = false
+            return
+        end
     end
     local now = 0
     if type(GetGameTime) == "function" then

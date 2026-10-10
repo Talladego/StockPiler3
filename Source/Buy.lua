@@ -52,9 +52,6 @@ local function Emit(msg, force)
     elseif StockPiler3.Debug and StockPiler3.Debug.LogOp then
         StockPiler3.Debug.LogOp("buy", line)
     end
-    if force == true and StockPiler3.Debug and StockPiler3.Debug.Print then
-        StockPiler3.Debug.Print(line)
-    end
 end
 
 local function PlayerMoneyBrass()
@@ -732,6 +729,13 @@ local function BeginVisitIfNeeded()
             WakeBrewAfterBuyFill("store-close")
         end
         Buy.InvalidateJobsCache()
+        -- Refine was deferred while the store was open (SendUseItem closes vendor).
+        if StockPiler3.Refine and StockPiler3.Refine.MarkRefineDue then
+            StockPiler3.Refine.MarkRefineDue("store-close")
+        end
+        if StockPiler3.Scheduler and StockPiler3.Scheduler.WakeAutoGrow then
+            StockPiler3.Scheduler.WakeAutoGrow()
+        end
     end
     Buy._storeWasOpen = open == true
     return open == true
@@ -1211,6 +1215,8 @@ function Buy.IssueOne(opId)
                     tostring(meta.focusWatchCount)
                 ))
             end
+            -- Stop tick spam while store stays open; OnPlanUpdated resumes
+            -- when brew/potent results create fresh flask/mat deficits.
             ChatVisitStop("idle-no-jobs")
             ArmPlanAfterBuyFill("idle-no-jobs")
         end
@@ -1416,6 +1422,41 @@ function Buy.OnStoreUpdated(opts)
     end
 end
 
+--- After idle-no-jobs, resume the same open store when plan shows new deficits
+--- (e.g. Potent brew missed stock target and flasks are short again).
+local function TryResumeIdleStop(via)
+    if Buy._visitStopReason ~= "idle-no-jobs" then
+        return false
+    end
+    if not Buy.IsEnabled() then
+        return false
+    end
+    local VA = StockPiler3.VendorAdapter
+    if not VA or not VA.IsStoreOpen or VA.IsStoreOpen() ~= true then
+        return false
+    end
+    Buy.InvalidateJobsCache()
+    local jobs = Buy.CollectBuyJobs()
+    if type(jobs) ~= "table" or #jobs == 0 then
+        return false
+    end
+    local was = Buy._visitStopReason
+    Buy._visitStopReason = nil
+    -- Allow the next fill to re-arm plan/brew wake for this open visit.
+    Buy._planArmedAfterFill = false
+    Buy._pendingBuy = nil
+    LogBuy(string.format(
+        "resume clear-stop was=%s via=%s jobs=%d",
+        tostring(was),
+        tostring(via or "?"),
+        #jobs
+    ))
+    if StockPiler3.Scheduler and StockPiler3.Scheduler.WakeAutoBuy then
+        StockPiler3.Scheduler.WakeAutoBuy()
+    end
+    return true
+end
+
 function Buy.OnPlanUpdated()
     local VA = StockPiler3.VendorAdapter
     if not VA or not VA.IsStoreOpen or VA.IsStoreOpen() ~= true then
@@ -1425,6 +1466,9 @@ function Buy.OnPlanUpdated()
         return
     end
     Buy.InvalidateJobsCache()
+    if TryResumeIdleStop("plan-updated") then
+        return
+    end
     if Buy._visitStopReason == nil and StockPiler3.Scheduler and StockPiler3.Scheduler.WakeAutoBuy then
         StockPiler3.Scheduler.WakeAutoBuy()
     end

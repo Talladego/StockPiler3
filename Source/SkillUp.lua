@@ -159,6 +159,14 @@ function SkillUp.SetCultEnabled(enabled)
     if Watch and Watch.BumpGen then
         Watch.BumpGen()
     end
+    local Grow = StockPiler3.Grow
+    if Grow and Grow.InvalidatePlantQueue then
+        Grow.InvalidatePlantQueue({ reason = "skillup-cult" })
+    end
+    local Sch = StockPiler3.Scheduler
+    if Sch and Sch.WakeAutoGrow then
+        Sch.WakeAutoGrow()
+    end
     return true
 end
 
@@ -172,6 +180,14 @@ function SkillUp.SetApoEnabled(enabled)
     local Watch = StockPiler3.Watch
     if Watch and Watch.BumpGen then
         Watch.BumpGen()
+    end
+    local Grow = StockPiler3.Grow
+    if Grow and Grow.InvalidatePlantQueue then
+        Grow.InvalidatePlantQueue({ reason = "skillup-apo" })
+    end
+    local Sch = StockPiler3.Scheduler
+    if Sch and Sch.WakeAutoGrow then
+        Sch.WakeAutoGrow()
     end
     return true
 end
@@ -339,6 +355,51 @@ local function PotionWatchWantsAutoGrow(key, watch)
     return watch.autoGrow == true
 end
 
+--- Plan row still matches a short live watch. Missing/stocked watches are stale.
+local function PlanRowLiveStillShort(row)
+    local Watch = StockPiler3.Watch
+    if not Watch or type(row) ~= "table" then
+        return true
+    end
+    if row.isPlantWatch == true or tostring(row.kind or "") == "plant" then
+        local plantKey = row.plantKey or row.potionKey
+        local watches = Watch.GetPlantWatches and Watch.GetPlantWatches() or {}
+        local watch = type(watches) == "table" and watches[plantKey] or nil
+        if type(watch) ~= "table" then
+            return true
+        end
+        if watch.enabled ~= true then
+            return false
+        end
+        local target = tonumber(watch.targetStock) or 0
+        local plantUid = tonumber(row.plantUid) or 0
+        if plantUid <= 0 and Watch.ParsePlantKey then
+            plantUid = tonumber(Watch.ParsePlantKey(plantKey)) or 0
+        end
+        local have = 0
+        local Inv = StockPiler3.Inventory
+        if plantUid > 0 and Inv and Inv.CountByUid then
+            have = tonumber(Inv.CountByUid(plantUid)) or 0
+        end
+        return target > 0 and have < target
+    end
+    local key = tostring(row.potionKey or row.potionRecipeKey or row.id or "")
+    if key == "" or key == "seed_buffer" then
+        return true
+    end
+    local watches = Watch.GetWatches and Watch.GetWatches() or {}
+    local watch = type(watches) == "table" and watches[key] or nil
+    if type(watch) ~= "table" then
+        return true
+    end
+    if watch.enabled ~= true then
+        return false
+    end
+    local target = tonumber(watch.targetStock) or 0
+    local have = PotionWatchHave(key, watch)
+    return target > 0 and have < target
+end
+
 --- True when every short enabled potion/plant watch is progress-blocked
 --- (AG off, vendor stall, need_skill, no recipe, etc.). No short watches -> true.
 function SkillUp.AllShortWatchesProgressBlocked()
@@ -365,6 +426,10 @@ function SkillUp.AllShortWatchesProgressBlocked()
                             short = true
                         end
                     end
+                    if short and PlanRowLiveStillShort(row) ~= true then
+                        -- Stale plan status; live watch is stocked or gone.
+                        short = false
+                    end
                     if short then
                         shortCount = shortCount + 1
                         if ShortStatusIsWorking(key) then
@@ -378,7 +443,10 @@ function SkillUp.AllShortWatchesProgressBlocked()
                 end
             end
         end
-        return true
+        -- SkillUp-only (or fully stocked) snapshots must not skip the live watch list.
+        if shortCount > 0 then
+            return true
+        end
     end
 
     -- No plan snapshot: classify from Watch store + AG / skill gates.
@@ -794,9 +862,15 @@ end
 function SkillUp.PickBestBagSeed()
     local cult = SkillUp.GetCultSkill()
     if cult <= 0 then
+        SkillUp._bagMainList = nil
+        SkillUp._bestBagSeed = nil
+        SkillUp._bestBagSeedKey = nil
         return nil
     end
     if cult >= (SkillUp.CULT_MAX or 200) and SkillUp.IsApoEnabled() ~= true then
+        SkillUp._bagMainList = nil
+        SkillUp._bestBagSeed = nil
+        SkillUp._bestBagSeedKey = nil
         return nil
     end
     local targetMax = SkillUp.TargetMaxSkill()
@@ -814,8 +888,10 @@ function SkillUp.PickBestBagSeed()
     if Inv and Inv.GetSnapGen then
         invSnap = tonumber(Inv.GetSnapGen()) or 0
     end
+    local emptyPlots = SkillUp.CountEmptyPlots and SkillUp.CountEmptyPlots() or 0
     local cacheKey = tostring(snapGen) .. ":" .. tostring(invSnap)
         .. ":" .. tostring(cult) .. ":" .. tostring(targetMax)
+        .. ":" .. tostring(emptyPlots)
     if SkillUp._bestBagSeedKey == cacheKey then
         return SkillUp._bestBagSeed
     end
@@ -823,10 +899,12 @@ function SkillUp.PickBestBagSeed()
     local Refine = StockPiler3.Refine
     local Items = StockPiler3.Items
     if not (SM and Inv and Inv.ForEachItem) then
+        SkillUp._bagMainList = nil
+        SkillUp._bestBagSeed = nil
+        SkillUp._bestBagSeedKey = nil
         return nil
     end
-    local best = nil
-    local bestScore = -1
+    local ranked = {}
     Inv.ForEachItem(function(item)
         if type(item) ~= "table" then
             return
@@ -882,20 +960,81 @@ function SkillUp.PickBestBagSeed()
         end
         -- Highest skillReq <= targetMax first; settle / Eternal / count tie-break.
         local score = (req * 1000000) + settleBonus + (tier * 10000) + count
-        if score > bestScore then
-            bestScore = score
-            best = {
-                seedUid = uid,
-                skillReq = req,
-                plantUid = plantUid,
-                count = count,
-                item = item,
-            }
-        end
+        ranked[#ranked + 1] = {
+            seedUid = uid,
+            skillReq = req,
+            plantUid = plantUid,
+            count = count,
+            item = item,
+            score = score,
+        }
     end)
+    table.sort(ranked, function(a, b)
+        return (tonumber(a.score) or 0) > (tonumber(b.score) or 0)
+    end)
+    SkillUp._bagMainList = ranked
     SkillUp._bestBagSeedKey = cacheKey
-    SkillUp._bestBagSeed = best
-    return best
+    SkillUp._bestBagSeed = ranked[1]
+    return ranked[1]
+end
+
+--- Bag seeds left after short-watch claims (seed and linked plant).
+function SkillUp.FreeBagSeeds(pick)
+    if type(pick) ~= "table" then
+        return 0
+    end
+    local bag = tonumber(pick.count) or 0
+    local seedUid = tonumber(pick.seedUid) or 0
+    local plantUid = tonumber(pick.plantUid) or 0
+    local need = 0
+    if SkillUp.WatchDemandReserve then
+        need = tonumber(SkillUp.WatchDemandReserve(seedUid)) or 0
+        if plantUid > 0 then
+            local plantNeed = tonumber(SkillUp.WatchDemandReserve(plantUid)) or 0
+            if plantNeed > need then
+                need = plantNeed
+            end
+        end
+    end
+    local free = bag - need
+    if free < 0 then
+        return 0
+    end
+    return free
+end
+
+--- Highest-scoring bag main that still has seeds SkillUp may use.
+function SkillUp.PickMovableBagSeed()
+    SkillUp.PickBestBagSeed()
+    local list = SkillUp._bagMainList
+    if type(list) ~= "table" then
+        return nil
+    end
+    for i = 1, #list do
+        if SkillUp.FreeBagSeeds(list[i]) >= 1 then
+            return list[i]
+        end
+    end
+    return nil
+end
+
+--- First movable bag main that still needs seeds (buffer or empty plots).
+function SkillUp.PickCultSupplySeed()
+    SkillUp.PickBestBagSeed()
+    local list = SkillUp._bagMainList
+    if type(list) ~= "table" then
+        return nil
+    end
+    for i = 1, #list do
+        local pick = list[i]
+        if SkillUp.FreeBagSeeds(pick) >= 1 then
+            local deficit = tonumber(SkillUp.SeedDeficit(pick.seedUid)) or 0
+            if deficit >= 1 then
+                return pick
+            end
+        end
+    end
+    return nil
 end
 
 --- Seed budget - SeedEconomy / UpgradeSeed facade over Refine.GetSeedBudget.
@@ -970,7 +1109,7 @@ function SkillUp.PickPlantJob()
             end
         end
         if StockPiler3.Debug and StockPiler3.Debug.LogOp then
-            local pick = SkillUp.PickBestBagSeed()
+            local pick = SkillUp.PickMovableBagSeed()
             local seedUid = type(pick) == "table" and (tonumber(pick.seedUid) or 0) or 0
             local budget = SeedBudget(seedUid)
             StockPiler3.Debug.LogOp("skillup", string.format(
@@ -982,7 +1121,7 @@ function SkillUp.PickPlantJob()
         end
         return nil
     end
-    local pick = SkillUp.PickBestBagSeed()
+    local pick = SkillUp.PickMovableBagSeed()
     if type(pick) ~= "table" or (tonumber(pick.seedUid) or 0) <= 0 then
         return nil
     end
@@ -1176,7 +1315,7 @@ function SkillUp.PickRefineTarget()
         end
     end
 
-    local pick = SkillUp.PickBestBagSeed()
+    local pick = SkillUp.PickMovableBagSeed()
     if type(pick) == "table" and (tonumber(pick.seedUid) or 0) > 0 then
         local plantUid = tonumber(pick.plantUid) or 0
         if plantUid <= 0 then
@@ -1297,9 +1436,11 @@ function SkillUp.RefineUsesForTarget(target)
     if isUpgrade and usesCap < 1 then
         usesCap = 5
     end
-    if headroom > 0 and headroom < usesCap then
+    -- Headroom caps same-tier buffer fills. Graduation keeps its own cap
+    -- (full buffer used to refine 5, a 1-seed gap refined only 1).
+    if not isUpgrade and headroom > 0 and headroom < usesCap then
         usesCap = headroom
-    elseif headroom <= 0 and deficit > 0 and not isUpgrade then
+    elseif not isUpgrade and headroom <= 0 and deficit > 0 then
         usesCap = deficit
     end
     if isUpgrade and usesCap < 1 then
@@ -1377,8 +1518,9 @@ end
 
 --- Preferred vendor seed for AutoBuy: same line as bag pick / refine plants when possible.
 function SkillUp.ResolveBuySeedTarget()
-    -- Top up the SkillUp line already chosen from bags.
-    local pick = SkillUp.PickBestBagSeed and SkillUp.PickBestBagSeed() or nil
+    -- Top up a movable SkillUp line that still needs seeds. Skip a bag line
+    -- whose copies are all claimed by short watches.
+    local pick = SkillUp.PickCultSupplySeed and SkillUp.PickCultSupplySeed() or nil
     if type(pick) == "table" and (tonumber(pick.seedUid) or 0) > 0 then
         return {
             seedUid = tonumber(pick.seedUid) or 0,
@@ -1417,6 +1559,21 @@ function SkillUp.ResolveBuySeedTarget()
         end
         if not IsMainIngredientSeed(uid, item) then
             return
+        end
+        local Inv = StockPiler3.Inventory
+        local bag = Inv and Inv.CountByUid and tonumber(Inv.CountByUid(uid)) or 0
+        if bag >= 1 then
+            local plantUid = 0
+            if SM and SM.PrimaryPlantForSeed then
+                plantUid = tonumber(SM.PrimaryPlantForSeed(uid)) or 0
+            end
+            if SkillUp.FreeBagSeeds({
+                seedUid = uid,
+                plantUid = plantUid,
+                count = bag,
+            }) < 1 then
+                return
+            end
         end
         local tier = SM and SM.SeedReplantTier and tonumber(SM.SeedReplantTier(uid)) or 1
         local exactBonus = (req == targetMax) and 100000000 or 0
@@ -1483,14 +1640,17 @@ function SkillUp.ShouldCultBuy()
         return false
     end
 
-    local pick = SkillUp.PickBestBagSeed()
+    local pick = SkillUp.PickCultSupplySeed()
     local seedUid = 0
     local plantUid = 0
     if type(pick) == "table" then
         seedUid = tonumber(pick.seedUid) or 0
         plantUid = tonumber(pick.plantUid) or 0
+    elseif SkillUp.PickMovableBagSeed() ~= nil then
+        -- Movable seeds are already at buffer and plots; do not buy the reserved line.
+        return false
     else
-        -- Empty bags: refine leftover plants before opening the vendor.
+        -- Empty or fully reserved bags: refine leftover plants before opening the vendor.
         if SkillUp.HasRefinablePlants() == true or SkillUp.HasUpgradePlant() == true then
             return false
         end
@@ -1569,16 +1729,18 @@ function SkillUp.CollectBuyJobs()
     return jobs
 end
 
---- Notify once per Cult stall reason; clear latch when condition lifts.
-function SkillUp.MaybeNotifyStall()
+--- Live Cult stall for the watch row. Nil when planting, refining, or the
+--- buffer is already met. Same checks as the chat latch, without waiting for
+--- the grow tick (that tick runs after the reload paint).
+function SkillUp.CultStallReason()
     if SkillUp.ShouldCultPlant() ~= true then
-        SkillUp._stallLatch = nil
-        return
+        return nil
     end
-    -- Waiting on refine (harvested plants -> seeds) or tier upgrade, not a stall.
     if SkillUp.HasRefinablePlants() == true or SkillUp.HasUpgradePlant() == true then
-        SkillUp._stallLatch = nil
-        return
+        return nil
+    end
+    if SkillUp.CountEmptyPlots() <= 0 then
+        return nil
     end
     local pick = SkillUp.PickBestBagSeed()
     local seedUid = 0
@@ -1590,34 +1752,81 @@ function SkillUp.MaybeNotifyStall()
             seedUid = tonumber(target.seedUid) or 0
         end
     end
-    -- Plots + buffer settled for the chosen line - not a stall.
     if seedUid > 0 and (tonumber(SkillUp.SeedDeficit(seedUid)) or 0) < 1 then
-        SkillUp._stallLatch = nil
-        return
+        return nil
     end
     local canBuy = SkillUp.ShouldCultBuy() == true
     local VA = StockPiler3.VendorAdapter
     local storeOpen = VA and VA.IsStoreOpen and VA.IsStoreOpen() == true
-    -- AutoBuy is actively purchasing - not a stall.
     if canBuy and storeOpen then
-        SkillUp._stallLatch = nil
-        return
+        return nil
     end
-    local reason = "no_seeds"
     if canBuy and not storeOpen then
-        reason = "need_vendor"
-    elseif not canBuy then
+        return "need_vendor"
+    end
+    if not canBuy then
         local Watch = StockPiler3.Watch
         if not (Watch and Watch.IsAutoBuyEnabled and Watch.IsAutoBuyEnabled() == true) then
-            reason = "autobuy_off"
-        else
-            reason = "no_vendor_seed"
+            return "autobuy_off"
         end
+        return "no_vendor_seed"
+    end
+    return "no_seeds"
+end
+
+local function RepaintSkillUpWatch()
+    local Ui = StockPiler3.Ui
+    if not Ui then
+        return
+    end
+    -- Content key ignores the stall latch, so an already-open window would
+    -- keep the reload paint until /sp3 dumpall bumped snapGen.
+    Ui._watchUiLastKey = nil
+    Ui._watchUiFlushedAt = 0
+    if Ui.MarkWatchUiDirty then
+        Ui.MarkWatchUiDirty()
+    end
+end
+
+--- Attention sound only when the player must act (open a vendor, buy seeds
+--- or vials). Plant, harvest, and refine waits stay quiet while AutoGrow runs.
+local function AutoGrowWillProgress()
+    local Watch = StockPiler3.Watch
+    return Watch and Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() == true
+end
+
+local function ApoStallNeedsUser(why)
+    if why == "need_container_vendor" or why == "no_vendor_container" then
+        return true
+    end
+    return AutoGrowWillProgress() ~= true
+end
+
+local function PlayUserActionSound()
+    if type(PlaySound) == "function" and GameData and GameData.Sound
+        and GameData.Sound.RESPAWN ~= nil
+    then
+        pcall(PlaySound, GameData.Sound.RESPAWN)
+    elseif type(PlaySound) == "function" then
+        pcall(PlaySound, 216)
+    end
+end
+
+--- Notify once per Cult stall reason; clear latch when condition lifts.
+function SkillUp.MaybeNotifyStall()
+    local reason = SkillUp.CultStallReason()
+    if reason == nil then
+        if SkillUp._stallLatch ~= nil then
+            SkillUp._stallLatch = nil
+            RepaintSkillUpWatch()
+        end
+        return
     end
     if SkillUp._stallLatch == reason then
         return
     end
     SkillUp._stallLatch = reason
+    RepaintSkillUpWatch()
     local msg
     if StockPiler3.T then
         msg = StockPiler3.T("skillup.stall." .. reason)
@@ -1627,13 +1836,8 @@ function SkillUp.MaybeNotifyStall()
     if StockPiler3.Debug and StockPiler3.Debug.Print then
         StockPiler3.Debug.Print(msg)
     end
-    if type(PlaySound) == "function" and GameData and GameData.Sound
-        and GameData.Sound.RESPAWN ~= nil
-    then
-        pcall(PlaySound, GameData.Sound.RESPAWN)
-    elseif type(PlaySound) == "function" then
-        pcall(PlaySound, 216)
-    end
+    -- Cult stall reasons that reach here are vendor / buy blocks.
+    PlayUserActionSound()
 end
 
 ----------------------------------------------------------------
@@ -1828,7 +2032,8 @@ end
 
 function SkillUp.OnCultSkillDelta(delta)
     delta = tonumber(delta) or 0
-    if delta <= 0 or delta > 3 then
+    if delta < 1 or delta > 3 then
+        SkillUp._pendingCult = nil
         return false
     end
     local pending = SkillUp._pendingCult
@@ -1862,7 +2067,8 @@ end
 
 function SkillUp.OnApoSkillDelta(delta)
     delta = tonumber(delta) or 0
-    if delta <= 0 or delta > 3 then
+    if delta < 1 or delta > 3 then
+        SkillUp._pendingApo = nil
         return false
     end
     local pending = SkillUp._pendingApo
@@ -2748,27 +2954,16 @@ function SkillUp.WatchDemandReserve(specOrUid)
 end
 
 --- Plants to hold before Apo SkillUp may brew - same rule as watch GrowReserve:
---- seed-buffer headroom only (plus short-watch demand). When the seed buffer is
---- full (headroom=0 / satisfied), plants are brewable surplus.
+--- this seed's buffer headroom only (plus short-watch demand). When THIS seed's
+--- buffer is full (headroom=0), plants are brewable surplus.
 --- Max headroom across: resolved same-tier seed and the genus-ladder seed at the
 --- plant's skillReq. Do not max over every grow/refine-linked leftover.
+--- Refine.IsSeedBufferSatisfied is watched AutoGrow lines only. It is true when
+--- there are no watches, which previously zeroed this reserve and let brew eat
+--- the SkillUp harvest before the seed buffer was filled.
 function SkillUp.PlantFeedstockReserve(seedUid, plantUid)
     seedUid = tonumber(seedUid) or 0
     plantUid = tonumber(plantUid) or 0
-    local RefineMod = StockPiler3.Refine
-    if RefineMod and RefineMod.IsSeedBufferSatisfied and RefineMod.IsSeedBufferSatisfied() == true then
-        local watchNeed = 0
-        if plantUid > 0 then
-            watchNeed = SkillUp.WatchDemandReserve(plantUid)
-        end
-        if seedUid > 0 then
-            local seedNeed = SkillUp.WatchDemandReserve(seedUid)
-            if seedNeed > watchNeed then
-                watchNeed = seedNeed
-            end
-        end
-        return watchNeed
-    end
     local reserve = 0
     local plantReq = 0
     local function seedSkillReq(uid)
@@ -3870,12 +4065,8 @@ function SkillUp.MaybeNotifyApoStall(why)
     if StockPiler3.Debug and StockPiler3.Debug.Print then
         StockPiler3.Debug.Print(msg)
     end
-    if type(PlaySound) == "function" and GameData and GameData.Sound
-        and GameData.Sound.RESPAWN ~= nil
-    then
-        pcall(PlaySound, GameData.Sound.RESPAWN)
-    elseif type(PlaySound) == "function" then
-        pcall(PlaySound, 216)
+    if ApoStallNeedsUser(why) then
+        PlayUserActionSound()
     end
 end
 
@@ -3991,16 +4182,24 @@ local function CultStatusKeyAndText()
         end
         return "planting", TOr("skillup.watch.cult_planting", L"Planting Skill up seeds")
     end
-    local latch = tostring(SkillUp._stallLatch or "")
-    if latch ~= "" then
-        local short = TOr("skillup.watch.cult_" .. latch, nil)
-        if short ~= nil then
-            return latch, short
-        end
-        return latch, TOr("skillup.stall." .. latch, L"Skill up Culti stalled")
-    end
+    -- Prefer live garden over stall latch: buffer AutoBuy while plots are full
+    -- must not paint "Open seed vendor" over "Plots full - waiting harvest".
     if SkillUp.CountEmptyPlots() <= 0 then
         return "growing", TOr("skillup.watch.cult_growing", L"Plots full - waiting harvest")
+    end
+    local reason = SkillUp.CultStallReason and SkillUp.CultStallReason() or nil
+    if reason == nil then
+        reason = tostring(SkillUp._stallLatch or "")
+        if reason == "" then
+            reason = nil
+        end
+    end
+    if reason ~= nil then
+        local short = TOr("skillup.watch.cult_" .. reason, nil)
+        if short ~= nil then
+            return reason, short
+        end
+        return reason, TOr("skillup.stall." .. reason, L"Skill up Culti stalled")
     end
     return "idle", TOr("skillup.watch.cult_idle", L"Skill up Culti idle")
 end

@@ -8,6 +8,38 @@ StockPiler3.Debug = StockPiler3.Debug or {}
 local D = StockPiler3.Debug
 D.Enabled = false
 D.EventTrace = false
+-- on: every chat line. quiet: setting changes, harvest/brew results, and
+-- ready alerts (the moment Harvest or Brew becomes usable).
+-- off: no chat. Ready sounds still play. The chat-mode confirmation uses kind "force".
+D.ChatMode = "on"
+
+function D.NormalizeChatMode(mode)
+    mode = string.lower(tostring(mode or ""))
+    if mode == "quiet" then
+        return "quiet"
+    end
+    if mode == "off" or mode == "silent" or mode == "none" then
+        return "off"
+    end
+    return "on"
+end
+
+--- kind: "status" (automatic), "user" (slash / setting change), "action"
+--- (harvest or brew result), "force" (always, including chat off).
+function D.AllowsChat(kind)
+    kind = tostring(kind or "status")
+    if kind == "force" then
+        return true
+    end
+    local mode = D.ChatMode or "on"
+    if mode == "off" then
+        return false
+    end
+    if mode == "quiet" then
+        return kind == "user" or kind == "action"
+    end
+    return true
+end
 
 local RING_MAX = 200
 local ring = {}
@@ -81,7 +113,7 @@ function D.ReportProtectedCallFailure(context, err, quiet)
             end
             if first and _chatErrOnce ~= true then
                 _chatErrOnce = true
-                D.Print(L"An error was logged once. /sp3 debug for details.")
+                D.Reply(L"An error was logged once. /sp3 debug for details.")
             end
             return
         end
@@ -91,7 +123,7 @@ function D.ReportProtectedCallFailure(context, err, quiet)
         end
         if first and _chatErrOnce ~= true then
             _chatErrOnce = true
-            D.Print(L"An error was logged once. /sp3 debug for details.")
+            D.Reply(L"An error was logged once. /sp3 debug for details.")
         end
     end)
     _reporting = false
@@ -198,7 +230,10 @@ local function ChatPrefix(includeSpace)
     return prefix
 end
 
-function D.Print(msg)
+function D.Print(msg, kind)
+    if D.AllowsChat(kind) ~= true then
+        return
+    end
     local body = msg
     if type(body) == "string" then
         body = towstring(body)
@@ -217,9 +252,23 @@ function D.Print(msg)
     end
 end
 
---- User-facing ops chat (alias of Print).
+--- Slash replies and setting changes. Shown in on and quiet.
+function D.Reply(msg)
+    D.Print(msg, "user")
+end
+
+--- Harvest / brew results. Shown in on and quiet.
 function D.Notify(msg)
-    D.Print(msg)
+    D.Print(msg, "action")
+end
+
+--- Ready alert when Harvest or Brew becomes usable. Chat follows action
+--- (on and quiet; hidden when chat is off). Sound always plays.
+function D.AnnounceReady(msg, soundId)
+    D.Notify(msg)
+    if soundId ~= nil and Sound and Sound.Play then
+        Sound.Play(soundId)
+    end
 end
 
 local _prevOnHyperLinkLButtonUp = nil

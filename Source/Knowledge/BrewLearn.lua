@@ -521,7 +521,9 @@ function BL.CompletePendingCraftLearn(opts)
                 name = T("brew.potion_fallback")
             end
             local uid = tonumber(out.uniqueID) or 0
-            if CC and CC.ItemLink and uid > 0 then
+            if CC and CC.NamedItem and uid > 0 then
+                name = CC.NamedItem(uid, name, out.iconNum)
+            elseif CC and CC.ItemLink and uid > 0 then
                 name = CC.ItemLink(uid, name)
             end
             NotifyBrewOutcome(T("brew.outcome_ok", {

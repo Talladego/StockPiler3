@@ -1520,6 +1520,26 @@ local function LogPlantPick(job)
     ))
 end
 
+--- Idle SkillUp plant job. Independent of watch-demand cache (no-watch skill-up).
+local function TrySkillUpPlantJob()
+    local SkillUp = StockPiler3.SkillUp
+    if not (SkillUp and SkillUp.ShouldCultPlant and SkillUp.ShouldCultPlant() == true) then
+        return nil
+    end
+    local job = SkillUp.PickPlantJob and SkillUp.PickPlantJob()
+    if type(job) == "table" and (tonumber(job.seedUid) or 0) > 0 then
+        LogPlantPick(job)
+        return job
+    end
+    if StockPiler3.Refine and StockPiler3.Refine.MarkRefineDue then
+        StockPiler3.Refine.MarkRefineDue("skill-up")
+    end
+    if SkillUp.MaybeNotifyStall then
+        SkillUp.MaybeNotifyStall()
+    end
+    return nil
+end
+
 function Grow.PickPlantCandidate()
     local Perf = StockPiler3.Perf
     if Perf and Perf.Begin then
@@ -1565,9 +1585,15 @@ function Grow.PickPlantCandidate()
         and RS.BuildBalancedSpecDemand({ cacheOnly = true })
         or nil
     if type(demand) ~= "table" then
-        local Sch = StockPiler3.Scheduler
-        if Sch and Sch.RequestCachePrewarm then
-            Sch.RequestCachePrewarm("pick-plant-cold")
+        local SchHold = StockPiler3.Scheduler
+        if SchHold and SchHold.RequestCachePrewarm then
+            SchHold.RequestCachePrewarm("pick-plant-cold")
+        end
+        -- Watch demand is cold (no potion watches / prewarm not finished).
+        -- SkillUp idle planting must not wait on that cache.
+        local skillJob = TrySkillUpPlantJob()
+        if type(skillJob) == "table" then
+            return done(skillJob)
         end
         -- Reuse last probed job until prewarm finishes (nil if never probed).
         return done(Grow._cachedPlantJob)
@@ -1683,19 +1709,9 @@ function Grow.PickPlantCandidate()
     end
 
     -- Idle SkillUp Cult: only after watches are done (SkillUp.ShouldCultPlant gates).
-    local SkillUp = StockPiler3.SkillUp
-    if SkillUp and SkillUp.ShouldCultPlant and SkillUp.ShouldCultPlant() == true then
-        local job = SkillUp.PickPlantJob and SkillUp.PickPlantJob()
-        if type(job) == "table" and (tonumber(job.seedUid) or 0) > 0 then
-            LogPlantPick(job)
-            return done(job)
-        end
-        if StockPiler3.Refine and StockPiler3.Refine.MarkRefineDue then
-            StockPiler3.Refine.MarkRefineDue("skill-up")
-        end
-        if SkillUp.MaybeNotifyStall then
-            SkillUp.MaybeNotifyStall()
-        end
+    local skillJob = TrySkillUpPlantJob()
+    if type(skillJob) == "table" then
+        return done(skillJob)
     end
     return done(nil)
 end
@@ -1708,8 +1724,20 @@ function Grow.GetPlantJob()
     -- Cache hits for both a real job and a probed nil (no plantable work).
     -- Without nil-cache, idle AutoGrow ticks re-ran PickPlantCandidate every 5s.
     if Grow._plantQueueDirty ~= true and Grow._plantJobProbed == true then
-        return Grow._cachedPlantJob
+        local cached = Grow._cachedPlantJob
+        if type(cached) == "table" and (tonumber(cached.seedUid) or 0) > 0 then
+            return cached
+        end
+        -- Nil-cache must not hide SkillUp when plots are empty (no watch demand).
+        local SkillUp = StockPiler3.SkillUp
+        if not (SkillUp and SkillUp.ShouldCultPlant and SkillUp.ShouldCultPlant() == true
+            and Grow.HasEmptyPlot and Grow.HasEmptyPlot() == true)
+        then
+            return cached
+        end
     end
+    -- PickPlantCandidate already ends on SkillUp. Do not replay it here:
+    -- refine-first and Upgrade Seed holds return nil on purpose.
     local job = Grow.PickPlantCandidate()
     Grow.MarkPlantJobProbed(job)
     Grow._plantPickFrame = tonumber(StockPiler3.FrameCounter) or 0
@@ -2087,13 +2115,16 @@ function Grow.ShouldHoldPlantForReadyHarvest()
     return true
 end
 
-local function NudgeHarvestReadiness()
+--- forceImmediate=true: always SyncActionReadiness now (greying must not wait out
+--- plant quiet / harvest storm — that left Harvest/Craft lit while clicks no-op).
+local function NudgeHarvestReadiness(forceImmediate)
+    forceImmediate = forceImmediate == true
     local Sch = StockPiler3.Scheduler
     local hold = (Sch and Sch.SkipUiThisFrameActive and Sch.SkipUiThisFrameActive() == true)
         or (Sch and Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true)
         or (Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true)
         or (Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true)
-    if hold then
+    if hold and not forceImmediate then
         if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
             StockPiler3Window.RequestFooterRefresh()
         end
@@ -2116,7 +2147,7 @@ function Grow.ArmHarvestOpLock(seconds)
     end
     -- Grey Harvest macro while op-lock is active (CanHarvestNow -> false).
     if not wasActive then
-        NudgeHarvestReadiness()
+        NudgeHarvestReadiness(true)
     end
 end
 
@@ -2205,7 +2236,9 @@ function Grow.NotifyHarvestOutcome(plotNum, opts)
     end
     local uid = tonumber(opts.uniqueID) or 0
     local CC = StockPiler3.CraftChatAdapter
-    if CC and CC.ItemLink and uid > 0 then
+    if CC and CC.NamedItem and uid > 0 then
+        name = CC.NamedItem(uid, name)
+    elseif CC and CC.ItemLink and uid > 0 then
         name = CC.ItemLink(uid, name)
     elseif type(name) == "string" then
         name = towstring(name)
@@ -2223,9 +2256,57 @@ function Grow.NotifyHarvestOutcome(plotNum, opts)
     end
 end
 
---- One-shot harvest-ready chat + HELP_TIPS_NEW; clear latch when not ready.
+--- Chat + sound on the rising edge of Harvest becoming usable (same boolean
+--- as the footer and macros). Op-lock and brew-block greys do not clear the
+--- latch, so a mid-harvest flicker does not chime again.
+function Grow.AnnounceHarvestEnabled(canHarvest)
+    local Sch = StockPiler3.Scheduler
+    if Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true then
+        return
+    end
+    if Grow.IsHarvestOpActive() then
+        return
+    end
+    if StockPiler3.Brew and StockPiler3.Brew.BlocksHarvest
+        and StockPiler3.Brew.BlocksHarvest() == true
+    then
+        return
+    end
+    if canHarvest ~= true then
+        Grow._harvestEnableAnnounced = false
+        return
+    end
+    if Grow._harvestEnableAnnounced == true then
+        return
+    end
+    Grow._harvestEnableAnnounced = true
+    local ready = GetReadyHarvestPlots()
+    local readyN = type(ready) == "table" and #ready or 0
+    if readyN < 1 then
+        readyN = 1
+    end
+    local msg = L"<icon02486> Ready - " .. towstring(tostring(readyN)) .. L" plot(s)."
+    if StockPiler3.T then
+        msg = StockPiler3.T("grow.harvest_ready", { count = tostring(readyN) })
+    end
+    if StockPiler3.Debug and StockPiler3.Debug.LogOp then
+        StockPiler3.Debug.LogOp("grow", "harvest-ready announce plots=" .. tostring(readyN))
+    end
+    local soundId = GameData and GameData.Sound and GameData.Sound.HELP_TIPS_NEW
+    if StockPiler3.Debug and StockPiler3.Debug.AnnounceReady then
+        StockPiler3.Debug.AnnounceReady(msg, soundId)
+    elseif StockPiler3.Debug and StockPiler3.Debug.Notify then
+        StockPiler3.Debug.Notify(msg)
+        if soundId and Sound and Sound.Play then
+            Sound.Play(soundId)
+        end
+    end
+end
+
+--- Footer nudge when any plot is harvestable. The ready chime lives in
+--- AnnounceHarvestEnabled so it follows the button, not "every plot grown".
 function Grow.MaybeNotifyHarvestReady()
-    local allReady, readyN = Grow.AllPlantedPlotsHarvestReady()
+    local allReady = Grow.AllPlantedPlotsHarvestReady()
     local canHarvest = Grow.CanHarvestNow() == true
     local ready = allReady == true and canHarvest == true
     local wasReady = Grow._harvestReadyLatched == true
@@ -2237,7 +2318,9 @@ function Grow.MaybeNotifyHarvestReady()
         or (Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true)
         or (Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true)
     local function NudgeFooter(forceImmediate)
-        if holdFooter or forceImmediate ~= true then
+        -- forceImmediate bypasses cult storm holds so enable/grey is not deferred
+        -- while clicks already honor CanHarvestNow (lit-but-dead macros).
+        if holdFooter and forceImmediate ~= true then
             if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
                 StockPiler3Window.RequestFooterRefresh()
             end
@@ -2259,7 +2342,8 @@ function Grow.MaybeNotifyHarvestReady()
         end
     elseif Grow._canHarvestLatched == true then
         Grow._canHarvestLatched = false
-        NudgeFooter(false)
+        -- Must grey immediately; deferred flush during plant quiet left Harvest lit.
+        NudgeFooter(true)
     end
     if ready then
         if not wasReady then
@@ -2268,26 +2352,11 @@ function Grow.MaybeNotifyHarvestReady()
             NudgeFooter(false)
         end
         Grow._harvestReadyLatched = true
-        if Grow._harvestReadyChatSent ~= true then
-            Grow._harvestReadyChatSent = true
-            local msg = L"<icon02486> Ready - " .. towstring(tostring(readyN)) .. L" plot(s)."
-            if StockPiler3.T then
-                msg = StockPiler3.T("grow.harvest_ready", { count = tostring(readyN) })
-            end
-            if StockPiler3.Debug and StockPiler3.Debug.Print then
-                StockPiler3.Debug.Print(msg)
-            end
-            local soundId = GameData and GameData.Sound and GameData.Sound.HELP_TIPS_NEW
-            if soundId and Sound and Sound.Play then
-                Sound.Play(soundId)
-            end
-        end
     else
         if wasReady then
-            NudgeFooter(false)
+            NudgeFooter(true)
         end
         Grow._harvestReadyLatched = false
-        Grow._harvestReadyChatSent = false
     end
 end
 

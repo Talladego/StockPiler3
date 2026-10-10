@@ -637,9 +637,11 @@ local function CountItemsMatchingSpec(spec)
     return total
 end
 
---- Plants/seeds still needed for AutoGrow seed-buffer (0 when buffer is satisfied).
---- Watch brew and SkillUp Apo: reserve headroom only (seeds already at buffer =>
---- plants brewable). skillUpActive only keeps reserve armed when AutoGrow is off.
+--- Plants/seeds still needed for AutoGrow seed-buffer (0 when that seed's buffer
+--- is full). Watch brew and SkillUp Apo both reserve headroom of the seed this
+--- spec grows. skillUpActive keeps that reserve armed when AutoGrow is off.
+--- Watched-line "buffer satisfied" does not cover SkillUp seeds (they are not
+--- watch lines); those still reserve their own headroom.
 local function GrowReserveForSpec(spec)
     local Caps = StockPiler3.TradeSkillCaps
     -- Apo/Butcher-only: no Cultivation -> never reserve plants for grow/refine.
@@ -681,12 +683,16 @@ local function GrowReserveForSpec(spec)
         end
     end
 
-    -- Watched seed buffer already met: plants are brewable surplus. Holding for
-    -- lower-tier bag leftovers (unwatched qty 1–4) left craftable=0 with
-    -- plantJob=nil no-demand-short and empty plots idle.
+    -- Watched lines full: do not reserve unwatched lower-tier leftovers (that
+    -- left craftable=0 with plantJob=nil and empty plots idle). SkillUp seeds
+    -- are not watch lines, so a vacuous "satisfied" must not skip their headroom.
+    local watchedBufferFull = false
     local RefineMod = StockPiler3.Refine
     if RefineMod and RefineMod.IsSeedBufferSatisfied and RefineMod.IsSeedBufferSatisfied() == true then
-        return 0
+        watchedBufferFull = true
+        if not skillUpActive then
+            return 0
+        end
     end
 
     local SM = StockPiler3.SeedMap
@@ -773,6 +779,35 @@ local function GrowReserveForSpec(spec)
                     plantReq = tonumber(sample.bonuses[9]) or 0
                 end
             end
+        end
+    end
+    if watchedBufferFull then
+        -- Same planting tier as SkillUp's current seed (and same-tier siblings).
+        -- Lower leftovers stay at reserve 0 once watched lines are full.
+        local skillUpTier = 0
+        if SkillUpMod and SkillUpMod.PickBestBagSeed then
+            local best = SkillUpMod.PickBestBagSeed()
+            if type(best) == "table" then
+                skillUpTier = tonumber(best.skillReq) or 0
+            end
+        end
+        if skillUpTier < 1 and SkillUpMod then
+            skillUpTier = seedSkillReq(SkillUpMod._lastSeedUid)
+        end
+        if skillUpTier < 1 and SkillUpMod and SkillUpMod.TargetMaxSkill then
+            skillUpTier = tonumber(SkillUpMod.TargetMaxSkill()) or 0
+        end
+        local owns = false
+        if SkillUpMod and (tonumber(SkillUpMod._lastSeedUid) or 0) == seedUid and seedUid > 0 then
+            owns = true
+        elseif skillUpTier > 0 then
+            local sReq = seedSkillReq(seedUid)
+            if plantReq == skillUpTier or sReq == skillUpTier then
+                owns = true
+            end
+        end
+        if not owns then
+            return 0
         end
     end
     -- Hold only the resolved seed (when same-tier / unknown) plus the genus
@@ -2705,7 +2740,8 @@ function RS.CollectAutoGrowSeedLines()
 end
 
 --- True when Seed Buffer is on and any growable refinable recipe line for this watch
---- is below the buffer (bag + in-ground + outstanding). Memoized per bag snapGen.
+--- is below the buffer (bag + in-ground + outstanding). Memoized per bag snap +
+--- garden planGen + refine outstanding (planting must invalidate without a bag move).
 --- opts.seedUids: known seed uniqueIDs from plan tip / statusTipSlots - prefer these and
 --- skip SeedMap.ResolveSeedForSpec / FindPlantUidForSpec (live Watch hitch path).
 function RS.WatchHasSeedBufferShort(recipe, opts)
@@ -2720,12 +2756,32 @@ function RS.WatchHasSeedBufferShort(recipe, opts)
     opts = type(opts) == "table" and opts or {}
     local Inv = StockPiler3.Inventory
     local snapGen = Inv and Inv.GetSnapGen and tonumber(Inv.GetSnapGen()) or 0
+    local gardenGen = 0
+    local Garden = StockPiler3.Garden
+    if Garden then
+        gardenGen = tonumber(Garden.GetPlanGen and Garden.GetPlanGen()
+            or Garden.GetGen and Garden.GetGen()) or 0
+    end
+    local outstanding = 0
+    local RP = StockPiler3.RefinePipeline
+    if RP and RP.GetOutstandingSum then
+        outstanding = tonumber(RP.GetOutstandingSum()) or 0
+    end
     local recipeId = tostring(
         recipe.specKey or recipe.recipeSpecKey or recipe.key or recipe
     )
     local memo = RS._seedBufferShortMemo
-    if type(memo) ~= "table" or tonumber(memo.snapGen) ~= snapGen then
-        memo = { snapGen = snapGen, byRecipe = {} }
+    if type(memo) ~= "table"
+        or tonumber(memo.snapGen) ~= snapGen
+        or tonumber(memo.gardenGen) ~= gardenGen
+        or tonumber(memo.outstanding) ~= outstanding
+    then
+        memo = {
+            snapGen = snapGen,
+            gardenGen = gardenGen,
+            outstanding = outstanding,
+            byRecipe = {},
+        }
         RS._seedBufferShortMemo = memo
     end
     if memo.byRecipe[recipeId] ~= nil then

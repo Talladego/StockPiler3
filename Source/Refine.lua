@@ -984,6 +984,12 @@ function Refine.ShouldAllowRefineNow()
     if Refine.IsEnabled() ~= true then
         return false, "disabled"
     end
+    -- SendUseItem ends the merchant interaction (store listens to INTERACT_DONE).
+    -- Keep the vendor open for AutoBuy while the player shops; refine after close.
+    local VA = StockPiler3.VendorAdapter
+    if VA and VA.IsStoreOpen and VA.IsStoreOpen() == true then
+        return false, "vendor-open"
+    end
     local Orch = StockPiler3.Orchestrator
     if Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() then
         return false, "brew-session"
@@ -1328,6 +1334,10 @@ end
 
 function Refine.IssueOne(intent, opId)
     if Refine.CanIssue(intent) ~= true then
+        return false
+    end
+    local VA = StockPiler3.VendorAdapter
+    if VA and VA.IsStoreOpen and VA.IsStoreOpen() == true then
         return false
     end
     if type(SendUseItem) ~= "function"

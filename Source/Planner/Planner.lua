@@ -1799,7 +1799,47 @@ local function ApplyDeficitCraftableShared(rows)
     end
 end
 
---- Contested specs that are all non-growable -> "flasks" | "materials" | nil (growable contest).
+--- Join distinct buy notes (Buy flasks / Buy materials / Buy seeds).
+local function ComposeBuyStatusText(opts)
+    opts = type(opts) == "table" and opts or {}
+    local parts = {}
+    if opts.flasks == true then
+        parts[#parts + 1] = T("watch.note.buy_flasks")
+    end
+    if opts.seeds == true then
+        parts[#parts + 1] = T("watch.note.buy_seeds")
+    end
+    if opts.materials == true then
+        parts[#parts + 1] = T("watch.note.buy_materials")
+    end
+    if #parts == 0 then
+        return T("plan.status.buy_ingredients")
+    end
+    if #parts == 1 then
+        return parts[1]
+    end
+    local join = T("watch.note.buy_join")
+    local out = parts[1]
+    for i = 2, #parts do
+        out = out .. join .. parts[i]
+    end
+    return out
+end
+
+local function BuyNoteFlagsFromEntry(entry)
+    if type(entry) ~= "table" then
+        return false, false, false
+    end
+    if tostring(entry.role or "") == "container" then
+        return true, false, false
+    end
+    if entry.buySeedOrMat == true and (tonumber(entry.seedUid) or 0) > 0 then
+        return false, true, false
+    end
+    return false, false, true
+end
+
+--- Contested specs that are all non-growable -> "flasks" | "materials" | "both" | nil.
 local function ContestedBuyOnlyKind(row)
     if type(row) ~= "table" or row.craftableShared ~= true then
         return nil
@@ -1815,6 +1855,7 @@ local function ContestedBuyOnlyKind(row)
     local anyContested = false
     local anyGrowable = false
     local anyContainer = false
+    local anyMaterials = false
     for i = 1, #slots do
         local slot = slots[i]
         local spec = ResolveSlotSpec(slot)
@@ -1826,11 +1867,16 @@ local function ContestedBuyOnlyKind(row)
                 anyGrowable = true
             elseif tostring(role or "") == "container" then
                 anyContainer = true
+            else
+                anyMaterials = true
             end
         end
     end
     if not anyContested or anyGrowable then
         return nil
+    end
+    if anyContainer and anyMaterials then
+        return "both"
     end
     if anyContainer then
         return "flasks"
@@ -1843,6 +1889,9 @@ local function PaintBuyOnlySharedStatus(row, kind)
     if kind == "flasks" then
         row.statusText = T("watch.note.buy_flasks")
         row.statusLines = { T("watch.note.shared_buy_flasks") }
+    elseif kind == "both" then
+        row.statusText = ComposeBuyStatusText({ flasks = true, materials = true })
+        row.statusLines = { T("watch.note.shared_buy_both") }
     else
         row.statusText = T("plan.status.buy_ingredients")
         row.statusLines = { T("watch.note.shared_buy") }
@@ -2636,16 +2685,25 @@ local function ApplySpecPlanStatus(row, target, recipe, demand)
         ApplySeedBufferStatus(row)
         return
     end
-    -- Container-only short (craftable==0) -> Buy flasks, not Restocking.
-    if containerShort ~= nil then
-        row.statusKey = "buy_ingredients"
-        row.statusText = T("watch.note.buy_flasks")
-        row.specDeficit = containerShort
-        return
+    -- Vendor / flask buy shorts (craftable==0): list every distinct buy note.
+    -- Container alone used to paint Buy flasks and skip materials that were also short.
+    local wantFlasks = containerShort ~= nil
+    local wantSeeds = false
+    local wantMats = false
+    for i = 1, #buyShort do
+        local flasks, seeds, mats = BuyNoteFlagsFromEntry(buyShort[i])
+        wantFlasks = wantFlasks or flasks
+        wantSeeds = wantSeeds or seeds
+        wantMats = wantMats or mats
     end
-    if vendorShort ~= nil or #buyShort > 0 then
+    if wantFlasks or wantSeeds or wantMats then
         row.statusKey = "buy_ingredients"
-        row.statusText = T("plan.status.buy_ingredients")
+        row.statusText = ComposeBuyStatusText({
+            flasks = wantFlasks,
+            seeds = wantSeeds,
+            materials = wantMats,
+        })
+        row.specDeficit = containerShort or vendorShort or buyShort[1]
         return
     end
     -- Tip slots look covered (raw Have) but craftable may still be 0 under grow reserve,
@@ -2748,16 +2806,12 @@ local function ApplyLiveWatchStatus(row, recipe, deficit, have, craftable, targe
             row.craftableShared = false
             return
         end
-        if containerShort then
+        if containerShort or buyShort then
             row.statusKey = "buy_ingredients"
-            row.statusText = T("watch.note.buy_flasks")
-            row.statusLines = nil
-            row.craftableShared = false
-            return
-        end
-        if buyShort then
-            row.statusKey = "buy_ingredients"
-            row.statusText = T("plan.status.buy_ingredients")
+            row.statusText = ComposeBuyStatusText({
+                flasks = containerShort == true,
+                materials = buyShort == true,
+            })
             row.statusLines = nil
             row.craftableShared = false
             return
@@ -3882,17 +3936,8 @@ local function PatchWatchRowsLiveCounts(rows, opts)
     opts = type(opts) == "table" and opts or {}
     local syncSnapshot = opts.syncSnapshot ~= false
     local allowWarmHave = opts.allowWarmHave ~= false
-    if type(rows) ~= "table" or #rows == 0 then
+    if type(rows) ~= "table" then
         return
-    end
-    local Inv = StockPiler3.Inventory
-    if not Inv or not Inv.CountByUid then
-        return
-    end
-    -- Skip WarmHave while refine outstanding / brew session / closed-window.
-    local RP = StockPiler3.RefinePipeline
-    if RP and RP.HasOutstanding and RP.HasOutstanding() == true then
-        allowWarmHave = false
     end
     local Brew = StockPiler3.Brew
     local brewSessionActive = false
@@ -3904,6 +3949,23 @@ local function PatchWatchRowsLiveCounts(rows, opts)
             allowWarmHave = false
             brewSessionActive = true
         end
+    end
+    -- Empty plan after reload/logon: still mount SkillUp / Upgrade rows.
+    -- Skipping here left Watch blank until /sp3 dumpall or an AutoGrow toggle.
+    if #rows == 0 then
+        if brewSessionActive ~= true then
+            RefreshSkillUpWatchRows(rows, { syncSnapshot = syncSnapshot })
+        end
+        return
+    end
+    local Inv = StockPiler3.Inventory
+    if not Inv or not Inv.CountByUid then
+        return
+    end
+    -- Skip WarmHave while refine outstanding / brew session / closed-window.
+    local RP = StockPiler3.RefinePipeline
+    if RP and RP.HasOutstanding and RP.HasOutstanding() == true then
+        allowWarmHave = false
     end
     local snapGen = CurrentSnapGen()
     local needCraftable = false
@@ -3964,6 +4026,17 @@ local function PatchWatchRowsLiveCounts(rows, opts)
             -- Refreshed after the plant/potion loop (see RefreshSkillUpWatchRows).
         elseif type(row) == "table" and (row.kind == "plant" or row.isPlantWatch == true) then
             local uid = tonumber(row.uniqueID) or tonumber(row.plantUid) or 0
+            if uid <= 0 then
+                local Watch = StockPiler3.Watch
+                local plantKey = row.plantKey or row.id or row.potionKey
+                if Watch and Watch.ParsePlantKey then
+                    uid = tonumber(Watch.ParsePlantKey(plantKey)) or 0
+                end
+                if uid > 0 then
+                    row.plantUid = uid
+                    row.uniqueID = uid
+                end
+            end
             if uid > 0 then
                 local have = tonumber(Inv.CountByUid(uid)) or 0
                 local prevKey = tostring(row.statusKey or "")
@@ -5229,7 +5302,27 @@ function Planner.DumpGrowPlan(emit)
                     nilReason = "picker-nil-with-buy-short"
                 end
             end
-            emit("  plantJob=nil reason=" .. tostring(nilReason))
+            local SkillUp = StockPiler3.SkillUp
+            local suNote = ""
+            if SkillUp and SkillUp.PickPlantJob then
+                local su = SkillUp.PickPlantJob()
+                if type(su) == "table" and (tonumber(su.seedUid) or 0) > 0 then
+                    suNote = string.format(
+                        " skillupJob seedUid=%s (Grow cache missed SkillUp)",
+                        tostring(su.seedUid)
+                    )
+                end
+            end
+            local Sch = StockPiler3.Scheduler
+            local settleNote = ""
+            if Sch then
+                settleNote = string.format(
+                    " settling=%s awaiting=%s",
+                    tostring(Sch.IsSessionSettling and Sch.IsSessionSettling() == true),
+                    tostring(Sch._awaitingSessionLoad == true)
+                )
+            end
+            emit("  plantJob=nil reason=" .. tostring(nilReason) .. suNote .. settleNote)
         end
     end
     local tip = nil

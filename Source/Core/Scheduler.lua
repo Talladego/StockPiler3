@@ -18,6 +18,9 @@ Sch.PLAN_WARM_HOLD_MAX_SEC = 3.0
 Sch.SESSION_SETTLE_SEC = 2.5
 -- 75 frames ended settle in ~1.2s at 60fps — AutoGrow planted before LOADING_END.
 Sch.SESSION_SETTLE_MIN_FRAMES = 90
+-- LOADING_END is often already gone by addon init; never latch AutoGrow forever.
+Sch.SESSION_SETTLE_AWAIT_MAX_SEC = 8
+Sch.SESSION_SETTLE_AWAIT_MAX_FRAMES = 480
 Sch.AUTO_TICK_SEC = 1.0
 Sch.AUTO_TICK_IDLE_SEC = 5.0
 Sch.HARVEST_STORM_MIN_SEC = 1.5
@@ -366,7 +369,9 @@ local function FlushWatchUiIfDue(didHeavy)
         return false
     end
     local openPaint = StockPiler3Window and StockPiler3Window._openPaintPending == true
-    if not openPaint then
+    local Ui = StockPiler3.Ui
+    local missingSkillUp = Ui and Ui.WatchNeedsSkillUpPaint and Ui.WatchNeedsSkillUpPaint() == true
+    if not openPaint and missingSkillUp ~= true then
         if Sch.IsSessionSettling and Sch.IsSessionSettling() == true then
             return false
         end
@@ -378,7 +383,6 @@ local function FlushWatchUiIfDue(didHeavy)
             return false
         end
     end
-    local Ui = StockPiler3.Ui
     if Ui and Ui.FlushWatchUiIfDirty then
         return Ui.FlushWatchUiIfDirty() == true
     end
@@ -831,17 +835,67 @@ function Sch.BeginSessionSettle(seconds)
     if untilFrame > curFrame then
         Sch._sessionSettleUntilFrame = untilFrame
     end
+    Sch._sessionSettleArmed = true
+end
+
+--- After reload settle: force Watch SkillUp rows even if the window was already open.
+local function MaybeFinishSessionSettle()
+    if Sch._sessionSettleArmed ~= true then
+        return
+    end
+    if Sch.IsSessionSettling and Sch.IsSessionSettling() == true then
+        return
+    end
+    Sch._sessionSettleArmed = false
+    local Ui = StockPiler3.Ui
+    if Ui then
+        if Ui.InvalidateSkillGates then
+            Ui.InvalidateSkillGates()
+        end
+        Ui._watchUiLastKey = nil
+        Ui._watchUiFlushedAt = 0
+        if Ui.MarkWatchUiDirty then
+            Ui.MarkWatchUiDirty()
+        end
+    end
+    Sch.EnqueuePlanRebuild({ urgent = true })
+    if DoesWindowExist("StockPiler3Window")
+        and WindowGetShowing("StockPiler3Window") == true
+        and StockPiler3Window and StockPiler3Window.BeginOpenPaint
+    then
+        StockPiler3Window.BeginOpenPaint()
+    end
+    -- One readiness pass after settle so a Harvest/Brew button that is already
+    -- lit gets its ready chime (announce is suppressed during the settle window).
+    if StockPiler3Window and StockPiler3Window.SyncActionReadiness then
+        StockPiler3Window._footerSyncFrame = nil
+        StockPiler3Window.SyncActionReadiness({ immediate = true })
+    end
 end
 
 function Sch.MarkAwaitingSessionLoad()
     Sch._awaitingSessionLoad = true
+    Sch._awaitingSessionLoadFrame = tonumber(StockPiler3.FrameCounter) or 0
+    Sch._awaitingSessionLoadAt = Now()
     Sch.BeginSessionSettle()
 end
 
 function Sch.IsSessionSettling()
-    -- Addon init /reload fires orch ticks before LOADING_END; bags still empty.
+    -- Hold AutoGrow until LOADING_END, but expire if that event never arrives
+    -- (common on /reload: LOADING_END fires before EngineEventBridge.Register).
     if Sch._awaitingSessionLoad == true then
-        return true
+        local fc = tonumber(StockPiler3.FrameCounter) or 0
+        local now = Now()
+        local startF = tonumber(Sch._awaitingSessionLoadFrame) or 0
+        local startT = tonumber(Sch._awaitingSessionLoadAt) or 0
+        local maxF = tonumber(Sch.SESSION_SETTLE_AWAIT_MAX_FRAMES) or 480
+        local maxT = tonumber(Sch.SESSION_SETTLE_AWAIT_MAX_SEC) or 8
+        local withinFrames = fc < (startF + maxF)
+        local withinTime = now <= 0 or startT <= 0 or now < (startT + maxT)
+        if withinFrames and withinTime then
+            return true
+        end
+        Sch._awaitingSessionLoad = false
     end
     local fc = tonumber(StockPiler3.FrameCounter) or 0
     local untilFrame = tonumber(Sch._sessionSettleUntilFrame) or 0
@@ -1058,6 +1112,7 @@ function Sch.OnUpdate(timeElapsed)
     DecaySuppressInventorySideEffects()
     DecayOrchDecisionHold()
     Sch.Advance(now)
+    MaybeFinishSessionSettle()
 
     local didHeavy = false
     if FlushBagIfDue() then

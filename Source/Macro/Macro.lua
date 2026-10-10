@@ -2,7 +2,7 @@
 -- StockPiler3 Macro - ActionBar Harvest / Brew / Craft macros
 -- (WarTriage / GatherButton / SP1 pattern). Macros only; does
 -- not hijack stock Cultivating / Apothecary craft skills.
--- Craft: latched dual Harvest/Brew (soft harvest / brew session).
+-- Craft: brew when the Brew footer is lit, else harvest when Harvest is lit, else grey.
 ----------------------------------------------------------------
 
 StockPiler3.Macro = StockPiler3.Macro or {}
@@ -34,6 +34,7 @@ local tooltipHookInstalled = false
 local gameActionBindCache = {}
 local orgSetActionDataFn = nil
 local orgUpdateEnabledStateFn = nil
+local orgUpdateIconFn = nil
 local orgOnLButtonUpFn = nil
 local orgCreateMacroTooltipFn = nil
 local hookedSetActionDataFn = nil
@@ -60,8 +61,10 @@ local function D(msg)
 end
 
 local function Print(msg)
-    if StockPiler3.Debug and StockPiler3.Debug.Print then
-        StockPiler3.Debug.Print(msg)
+    if StockPiler3.Debug and StockPiler3.Debug.Reply then
+        StockPiler3.Debug.Reply(msg)
+    elseif StockPiler3.Debug and StockPiler3.Debug.Print then
+        StockPiler3.Debug.Print(msg, "user")
     end
 end
 
@@ -143,6 +146,11 @@ end
 local function setButtonEnabledVisual(button, canUse)
     canUse = canUse == true
     if type(button.UpdateEnabledState) == "function" then
+        -- Stock UpdateIcon re-applies whatever m_IsEnabled already is. Set it
+        -- before the call so a nested icon refresh cannot put the grey texture back.
+        button.m_IsEnabled = canUse
+        button.m_IsTargetValid = true
+        button.m_IsBlocked = false
         button:UpdateEnabledState(canUse, true, false)
         if canUse then
             resetMacroIconTint(button)
@@ -283,26 +291,41 @@ local function ButtonIsOurs(button)
     return ids[button.m_ActionId] == true
 end
 
-function Macro.GetMacroSlots(macroId)
-    macroId = tonumber(macroId) or 0
-    local slots = {}
-    if macroId <= 0 or not ActionBars or not ActionBars.m_Bars then
-        return slots
+--- m_Bars is keyed by page id or by window name once the id is past the
+--- swappable pages. A numeric loop misses those bars, so Craft (or Harvest)
+--- never gets the enable paint while the other still does.
+local function ForEachActionButton(fn)
+    if not ActionBars or not ActionBars.m_Bars or type(fn) ~= "function" then
+        return
     end
-    for i = 1, #ActionBars.m_Bars do
-        local bar = ActionBars.m_Bars[i]
-        if bar and bar.m_Buttons then
-            for j = 1, #bar.m_Buttons do
-                local button = bar.m_Buttons[j]
-                if button
-                    and button.m_ActionType == GameData.PlayerActions.DO_MACRO
-                    and button.m_ActionId == macroId
-                then
-                    slots[#slots + 1] = button.m_HotBarSlot
+    for _, bar in pairs(ActionBars.m_Bars) do
+        local buttons = bar and bar.m_Buttons
+        if type(buttons) == "table" then
+            for _, button in pairs(buttons) do
+                if type(button) == "table" then
+                    fn(button)
                 end
             end
         end
     end
+end
+
+function Macro.GetMacroSlots(macroId)
+    macroId = tonumber(macroId) or 0
+    local slots = {}
+    if macroId <= 0 or not GameData then
+        return slots
+    end
+    ForEachActionButton(function(button)
+        if button.m_ActionType == GameData.PlayerActions.DO_MACRO
+            and button.m_ActionId == macroId
+        then
+            local slot = tonumber(button.m_HotBarSlot)
+            if slot ~= nil then
+                slots[#slots + 1] = slot
+            end
+        end
+    end)
     return slots
 end
 
@@ -569,8 +592,11 @@ local function BrewSessionSticky()
     return true, phase, name
 end
 
---- Latched Craft mode: brew session → CanBrewNow → soft harvest → idle.
---- Ready brew beats soft harvest so Craft switches to brew while plots grow.
+--- Craft enable matches the footer buttons: brew when CanBrewNow, else harvest
+--- when CanHarvestNow, else dark. Icon is the brew icon only while brew is
+--- ready; every other state uses the harvest icon (plants in the ground, or
+--- nothing planted). A loading session must not force brew while Brew is dark.
+--- Sticky phase and ready-plot count stay on the snap for the tooltip only.
 --- opts.canHarvest / opts.canBrew: reuse enable-sync values when provided.
 --- opts.readonly: tip path - do not mutate _craftIconMode.
 function Macro.ResolveCraftMode(opts)
@@ -594,33 +620,21 @@ function Macro.ResolveCraftMode(opts)
         brewPhase = "idle"
     end
 
+    -- Same booleans as footer Harvest / Brew. Prefer brew when both are lit.
     local mode = "idle"
-    if brewSticky then
+    if canBrew then
         mode = "brew"
-    elseif canBrew then
-        mode = "brew"
-    elseif soft then
+    elseif canHarvest then
         mode = "harvest"
     end
 
-    local iconMode = Macro._craftIconMode or "harvest"
+    -- Harvest icon unless a brew is ready. Idle does not keep the brew icon.
+    local iconMode = canBrew and "brew" or "harvest"
     if opts.readonly ~= true then
-        if mode == "harvest" or mode == "brew" then
-            iconMode = mode
-            Macro._craftIconMode = mode
-        end
-    else
-        if mode == "harvest" or mode == "brew" then
-            iconMode = mode
-        end
+        Macro._craftIconMode = iconMode
     end
 
-    local craftCanUse = false
-    if mode == "harvest" then
-        craftCanUse = canHarvest
-    elseif mode == "brew" then
-        craftCanUse = canBrew
-    end
+    local craftCanUse = mode == "harvest" or mode == "brew"
 
     local snap = {
         mode = mode,
@@ -931,12 +945,12 @@ function Macro.ApplyButtonAppearance(button, opts)
     else
         canUse = canUse == true
     end
-    setButtonEnabledVisual(button, canUse)
     if canUse then
         bindHarvestGameActionForButton(button)
     else
         clearHarvestGameActionForButton(button)
     end
+    setButtonEnabledVisual(button, canUse)
 end
 
 function Macro.ApplyBrewButtonAppearance(button, opts)
@@ -950,14 +964,14 @@ function Macro.ApplyBrewButtonAppearance(button, opts)
     else
         canUse = canUse == true
     end
-    setButtonEnabledVisual(button, canUse)
-    -- Match Harvest: clear craft bind when disabled or the hotbar stays lit.
-    -- Activation uses Lua FirePerform; rebind when enabled for chrome.
+    -- Clear or bind before the tint. WindowSetGameActionData re-enables the slot;
+    -- tinting first left Craft lit after the footer Brew button had already greyed.
     if canUse then
         bindBrewGameActionForButton(button)
     else
         clearBrewGameActionForButton(button)
     end
+    setButtonEnabledVisual(button, canUse)
 end
 
 function Macro.ApplyCraftButtonAppearance(button, opts)
@@ -975,17 +989,106 @@ function Macro.ApplyCraftButtonAppearance(button, opts)
     local iconMode = snap.iconMode or Macro._craftIconMode or "harvest"
     EnsureCraftMacroIcon(iconMode)
     local canUse = snap.craftCanUse == true
-    setButtonEnabledVisual(button, canUse)
+    -- Bind only when the slot is on the wrong action. Clearing every pass
+    -- fired a hotbar echo that greys Craft after the tint, and the appearance
+    -- key then skipped the repaint. Tint still runs every pass.
     if canUse and snap.mode == "harvest" then
-        clearBrewGameActionForButton(button)
-        bindHarvestGameActionForButton(button)
+        if not GameActionAlreadyBound(button, "harvest") then
+            clearBrewGameActionForButton(button)
+            bindHarvestGameActionForButton(button, { force = true })
+        end
     elseif canUse and snap.mode == "brew" then
-        clearHarvestGameActionForButton(button)
-        bindBrewGameActionForButton(button)
-    else
+        if not GameActionAlreadyBound(button, "brew") then
+            clearHarvestGameActionForButton(button)
+            bindBrewGameActionForButton(button, { force = true })
+        end
+    elseif not GameActionAlreadyBound(button, "none") then
         clearHarvestGameActionForButton(button)
         clearBrewGameActionForButton(button)
+        RememberGameActionBind(button, "none")
     end
+    setButtonEnabledVisual(button, canUse)
+    if StockPiler3.CraftHarvestTimer and StockPiler3.CraftHarvestTimer.Paint then
+        StockPiler3.CraftHarvestTimer.Paint(button)
+    end
+end
+
+--- Paint every placed Craft button from the same booleans as the footers.
+--- MACRO_UPDATED (icon swap) relights the slot after Apply; call this again then.
+function Macro.ReapplyCraftEnable()
+    if Macro._reapplyingCraft == true then
+        return
+    end
+    if not ActionBars or not ActionBars.m_Bars then
+        return
+    end
+    Macro._reapplyingCraft = true
+    -- Keep the footer commit. A live CanHarvestNow() here can flicker false
+    -- while the Harvest button is still lit and grey only this slot.
+    local canHarvest = Macro._commitCanHarvest
+    if canHarvest == nil then
+        canHarvest = canHarvestMacro()
+    else
+        canHarvest = canHarvest == true
+    end
+    local canBrew = Macro._commitCanBrew
+    if canBrew == nil then
+        canBrew = canBrewMacro()
+    else
+        canBrew = canBrew == true
+    end
+    local snap = Macro.ResolveCraftMode({
+        canHarvest = canHarvest,
+        canBrew = canBrew,
+    })
+    local craftId = Macro.GetCraftMacroId()
+    if craftId then
+        local opts = {
+            snap = snap,
+            canHarvest = canHarvest,
+            canBrew = canBrew,
+        }
+        ForEachActionButton(function(button)
+            if Macro.IsCraftMacroButton(button) then
+                Macro.ApplyCraftButtonAppearance(button, opts)
+            end
+        end)
+    end
+    Macro._craftIconEcho = false
+    Macro._reapplyingCraft = false
+end
+
+--- Same booleans the footer just committed. Engine slot updates must not
+--- recompute CanHarvestNow/CanBrewNow — that greys only Craft after Harvest
+--- has already been painted, until some later refresh happens to repaint it.
+local function committedWant(which)
+    local h = Macro._commitCanHarvest
+    local b = Macro._commitCanBrew
+    if h == nil and b == nil then
+        return nil
+    end
+    if which == "harvest" then
+        return h == true
+    end
+    if which == "brew" then
+        return b == true
+    end
+    return h == true or b == true
+end
+
+function Macro.OnMacroUpdated(macroId)
+    local craftId = Macro.GetCraftMacroId()
+    if craftId == nil or tonumber(macroId) ~= tonumber(craftId) then
+        return
+    end
+    if Macro._refreshingAppearance == true
+        or Macro._reapplyingCraft == true
+        or Macro._aligningCraft == true
+    then
+        Macro._craftIconEcho = true
+        return
+    end
+    Macro.ReapplyCraftEnable()
 end
 
 --- Coalesce hotbar enable sync (footer/cultivation storms). Drain via DrainEnabledSync.
@@ -1015,6 +1118,95 @@ function Macro.DrainEnabledSync()
         Macro._pendingCanBrew = nil
     end
     Macro.RefreshMacroButtonAppearance(opts)
+end
+
+--- Next frame, force Craft/Harvest/Brew tint to match the footer booleans.
+--- A hotbar echo after Perform re-enables the slot without changing readiness,
+--- and the appearance-key check then skips the grey.
+function Macro.ArmEnableReassert()
+    local frame = tonumber(StockPiler3.FrameCounter) or 0
+    Macro._enableReassertAfter = frame
+end
+
+function Macro.DrainEnableReassert()
+    local after = Macro._enableReassertAfter
+    if after == nil then
+        return
+    end
+    local frame = tonumber(StockPiler3.FrameCounter) or 0
+    if frame <= after then
+        return
+    end
+    Macro._enableReassertAfter = nil
+    Macro._lastAppearanceKey = nil
+    Macro.RefreshMacroButtonAppearance({
+        canHarvest = canHarvestMacro(),
+        canBrew = canBrewMacro(),
+    })
+end
+
+--- Paint Craft from the footer booleans on every readiness pass.
+--- Harvest/Brew already stick; Craft was skipped once the appearance key
+--- matched, so a macro-icon echo could leave it grey until a later refresh.
+function Macro.AlignCraftEnable(canHarvest, canBrew)
+    canHarvest = canHarvest == true
+    canBrew = canBrew == true
+    Macro._commitCanHarvest = canHarvest
+    Macro._commitCanBrew = canBrew
+    if Macro._aligningCraft == true
+        or Macro._reapplyingCraft == true
+        or Macro._refreshingAppearance == true
+    then
+        return
+    end
+    if not ActionBars or not ActionBars.m_Bars then
+        return
+    end
+    local frame = tonumber(StockPiler3.FrameCounter) or 0
+    local snap = Macro.ResolveCraftMode({
+        canHarvest = canHarvest,
+        canBrew = canBrew,
+    })
+    local key = tostring(canHarvest) .. ":" .. tostring(canBrew)
+        .. ":" .. tostring(snap.mode or "idle")
+        .. ":" .. tostring(snap.iconMode or "harvest")
+        .. ":" .. tostring(snap.craftCanUse == true)
+    if Macro._alignCraftFrame == frame and Macro._alignCraftKey == key then
+        return
+    end
+    Macro._alignCraftFrame = frame
+    Macro._alignCraftKey = key
+    local craftId = Macro.GetCraftMacroId()
+    if not craftId then
+        return
+    end
+    Macro._aligningCraft = true
+    local ok, err = pcall(function()
+        RebuildOurMacroIds()
+        local opts = {
+            snap = snap,
+            canHarvest = canHarvest,
+            canBrew = canBrew,
+        }
+        local paintedCraft = 0
+        ForEachActionButton(function(button)
+            if Macro.IsCraftMacroButton(button) then
+                Macro.ApplyCraftButtonAppearance(button, opts)
+                paintedCraft = paintedCraft + 1
+            end
+        end)
+        if paintedCraft > 0 then
+            Macro._craftUnpainted = false
+        end
+    end)
+    Macro._aligningCraft = false
+    if ok ~= true then
+        D("align craft failed: " .. tostring(err))
+    end
+    if Macro._craftIconEcho == true then
+        Macro._craftIconEcho = false
+        Macro.ReapplyCraftEnable()
+    end
 end
 
 function Macro.RefreshMacroButtonAppearance(opts)
@@ -1052,9 +1244,14 @@ function Macro.RefreshMacroButtonAppearance(opts)
     local craftMode = tostring(craftSnap.mode or "idle")
     local craftIconMode = tostring(craftSnap.iconMode or Macro._craftIconMode or "harvest")
     local craftCanUse = craftSnap.craftCanUse == true
+    Macro._commitCanHarvest = canHarvest
+    Macro._commitCanBrew = canBrew
     local appearanceKey = tostring(canHarvest) .. ":" .. tostring(canBrew)
         .. ":" .. craftMode .. ":" .. craftIconMode .. ":" .. tostring(craftCanUse)
     if Macro._lastAppearanceKey == appearanceKey then
+        -- Harvest/Brew already match. Still retint Craft: an icon echo can
+        -- grey that slot alone without changing this key.
+        Macro.AlignCraftEnable(canHarvest, canBrew)
         return
     end
 
@@ -1063,21 +1260,13 @@ function Macro.RefreshMacroButtonAppearance(opts)
     local applyBrew = true
     local applyCraft = true
     if type(prevKey) == "string" then
-        local ph, pb, pcm, pim, pcu = string.match(
-            prevKey,
-            "^([^:]+):([^:]+):([^:]+):([^:]+):([^:]+)$"
-        )
+        local ph, pb = string.match(prevKey, "^([^:]+):([^:]+)")
         if ph ~= nil then
             applyHarvest = tostring(canHarvest) ~= ph
             applyBrew = tostring(canBrew) ~= pb
-            applyCraft = craftMode ~= pcm
-                or craftIconMode ~= pim
-                or tostring(craftCanUse) ~= pcu
-            if not applyHarvest and not applyBrew and not applyCraft then
-                applyHarvest = true
-                applyBrew = true
-                applyCraft = true
-            end
+            -- Always with Harvest and Brew. A skipped Craft pass stayed grey
+            -- after the icon reload until some later refresh.
+            applyCraft = true
         else
             -- Legacy two-field key from older builds: refresh all.
             applyHarvest = true
@@ -1111,49 +1300,49 @@ function Macro.RefreshMacroButtonAppearance(opts)
             canBrew = canBrew,
         }
 
+        local paintedHarvest = 0
+        local paintedBrew = 0
+        local paintedCraft = 0
+        if applyCraft and craftId then
+            EnsureCraftMacroIcon(craftIconMode)
+        end
+        ForEachActionButton(function(button)
+            if applyHarvest and macroId and Macro.IsMacroButton(button) then
+                Macro.ApplyButtonAppearance(button, harvestOpts)
+                paintedHarvest = paintedHarvest + 1
+            elseif applyBrew and brewId and Macro.IsBrewMacroButton(button) then
+                Macro.ApplyBrewButtonAppearance(button, brewOpts)
+                paintedBrew = paintedBrew + 1
+            elseif applyCraft and craftId and Macro.IsCraftMacroButton(button) then
+                Macro.ApplyCraftButtonAppearance(button, craftOpts)
+                paintedCraft = paintedCraft + 1
+            end
+        end)
         if applyHarvest and macroId then
-            local slots = CachedSlotsForMacro(macroId)
-            if #slots == 0 then
+            if paintedHarvest == 0 then
                 if not Macro.MacroWarningState.unplaced then
                     Print(T("macro.harvest_unplaced", { icon = tostring(MACRO_ICON) }))
                     Macro.MacroWarningState.unplaced = true
                 end
             else
                 Macro.MacroWarningState.unplaced = false
-                for i = 1, #slots do
-                    local hbar, buttonId = ActionBars:BarAndButtonIdFromSlot(slots[i])
-                    local button = hbar and hbar.m_Buttons and hbar.m_Buttons[buttonId]
-                    if button then
-                        Macro.ApplyButtonAppearance(button, harvestOpts)
-                    end
-                end
             end
         end
-
         if applyBrew and brewId then
-            local slots = CachedSlotsForMacro(brewId)
-            if #slots == 0 then
+            if paintedBrew == 0 then
                 if not Macro.BrewMacroWarningState.unplaced then
                     Print(T("macro.brew_unplaced", { icon = tostring(BREW_MACRO_ICON) }))
                     Macro.BrewMacroWarningState.unplaced = true
                 end
             else
                 Macro.BrewMacroWarningState.unplaced = false
-                for i = 1, #slots do
-                    local hbar, buttonId = ActionBars:BarAndButtonIdFromSlot(slots[i])
-                    local button = hbar and hbar.m_Buttons and hbar.m_Buttons[buttonId]
-                    if button then
-                        Macro.ApplyBrewButtonAppearance(button, brewOpts)
-                    end
-                end
             end
         end
-
         if applyCraft and craftId then
-            -- Icon swap (harvest↔brew) once inside Apply; idle keeps last icon.
-            EnsureCraftMacroIcon(craftIconMode)
-            local slots = CachedSlotsForMacro(craftId)
-            if #slots == 0 then
+            if paintedCraft == 0 then
+                -- Button was not on a bar yet. Later syncs retry without
+                -- repainting Harvest and Brew (appearance key stays).
+                Macro._craftUnpainted = true
                 if not Macro.CraftMacroWarningState.unplaced then
                     Print(T("macro.craft_unplaced", {
                         icon = tostring(CraftIconIdForMode(craftIconMode)),
@@ -1161,14 +1350,8 @@ function Macro.RefreshMacroButtonAppearance(opts)
                     Macro.CraftMacroWarningState.unplaced = true
                 end
             else
+                Macro._craftUnpainted = false
                 Macro.CraftMacroWarningState.unplaced = false
-                for i = 1, #slots do
-                    local hbar, buttonId = ActionBars:BarAndButtonIdFromSlot(slots[i])
-                    local button = hbar and hbar.m_Buttons and hbar.m_Buttons[buttonId]
-                    if button then
-                        Macro.ApplyCraftButtonAppearance(button, craftOpts)
-                    end
-                end
             end
         end
         RememberSlotFingerprint()
@@ -1183,6 +1366,11 @@ function Macro.RefreshMacroButtonAppearance(opts)
     end
     if ok ~= true then
         D("refresh failed: " .. tostring(err))
+    end
+    if Macro._hotbarEcho == true or Macro._craftIconEcho == true then
+        Macro._hotbarEcho = false
+        Macro._craftIconEcho = false
+        Macro.ArmEnableReassert()
     end
     if Macro._appearanceDirty == true then
         Macro._appearanceDirty = false
@@ -1237,7 +1425,10 @@ local function applySetActionDataAppearance(button, actionType, actionId)
         return
     end
     if craftId ~= nil and actionId == craftId then
-        Macro.ApplyCraftButtonAppearance(button)
+        Macro.ApplyCraftButtonAppearance(button, {
+            canHarvest = Macro._commitCanHarvest,
+            canBrew = Macro._commitCanBrew,
+        })
     end
 end
 
@@ -1283,27 +1474,47 @@ local function installUpdateEnabledStateHook()
         end
         local forced = false
         local want = false
-        if Macro.IsCraftMacroButton(self) then
+        local isCraft = Macro.IsCraftMacroButton(self) or (
+            ButtonIsOurs(self)
+            and not Macro.IsBrewMacroButton(self)
+            and not Macro.IsMacroButton(self)
+        )
+        if isCraft then
             forced = true
             if Macro._refreshingAppearance == true and Macro._refreshCraftCanUse ~= nil then
                 want = Macro._refreshCraftCanUse == true
             else
-                local snap = Macro.ResolveCraftMode({ readonly = true })
-                want = snap.craftCanUse == true
+                local committed = committedWant("craft")
+                if committed ~= nil then
+                    want = committed
+                else
+                    local snap = Macro.ResolveCraftMode({ readonly = true })
+                    want = snap.craftCanUse == true
+                end
             end
         elseif Macro.IsBrewMacroButton(self) then
             forced = true
             if Macro._refreshingAppearance == true and Macro._refreshCanBrew ~= nil then
                 want = Macro._refreshCanBrew == true
             else
-                want = canBrewMacro()
+                local committed = committedWant("brew")
+                if committed ~= nil then
+                    want = committed
+                else
+                    want = canBrewMacro()
+                end
             end
         elseif Macro.IsMacroButton(self) then
             forced = true
             if Macro._refreshingAppearance == true and Macro._refreshCanHarvest ~= nil then
                 want = Macro._refreshCanHarvest == true
             else
-                want = canHarvestMacro()
+                local committed = committedWant("harvest")
+                if committed ~= nil then
+                    want = committed
+                else
+                    want = canHarvestMacro()
+                end
             end
         end
         if forced then
@@ -1313,11 +1524,72 @@ local function installUpdateEnabledStateHook()
         end
         orgUpdateEnabledStateFn(self, isSlotEnabled, isTargetValid, isBlocked)
         if forced and want ~= true then
+            -- Drop a leftover PERFORM_CRAFTING bind or the slot stays bright
+            -- after the footer button has already been disabled.
+            if Macro._clearingBind ~= true then
+                Macro._clearingBind = true
+                if isCraft then
+                    clearHarvestGameActionForButton(self)
+                    clearBrewGameActionForButton(self)
+                elseif Macro.IsBrewMacroButton(self) then
+                    clearBrewGameActionForButton(self)
+                elseif Macro.IsMacroButton(self) then
+                    clearHarvestGameActionForButton(self)
+                end
+                Macro._clearingBind = false
+            end
             forceGreyMacroIcon(self)
         end
     end
     ActionButton.UpdateEnabledState = hookedUpdateEnabledStateFn
     updateEnabledStateHooked = true
+end
+
+--- MACRO_UPDATED -> UpdateIcon reloads the Craft icon and can leave that slot
+--- grey while Harvest stays lit. Re-apply the last painted footer booleans.
+local function installUpdateIconHook()
+    if not ActionButton or type(ActionButton.UpdateIcon) ~= "function" then
+        return
+    end
+    if Macro._updateIconHooked == true then
+        return
+    end
+    orgUpdateIconFn = ActionButton.UpdateIcon
+    ActionButton.UpdateIcon = function(self)
+        orgUpdateIconFn(self)
+        if Macro._inIconRefresh == true or not ButtonIsOurs(self) then
+            return
+        end
+        Macro._inIconRefresh = true
+        local canHarvest = Macro._commitCanHarvest
+        local canBrew = Macro._commitCanBrew
+        if Macro.IsCraftMacroButton(self)
+            or (not Macro.IsBrewMacroButton(self) and not Macro.IsMacroButton(self))
+        then
+            if canHarvest == nil then
+                canHarvest = canHarvestMacro()
+            end
+            if canBrew == nil then
+                canBrew = canBrewMacro()
+            end
+            Macro.ApplyCraftButtonAppearance(self, {
+                canHarvest = canHarvest == true,
+                canBrew = canBrew == true,
+            })
+        elseif Macro.IsMacroButton(self) then
+            if canHarvest == nil then
+                canHarvest = canHarvestMacro()
+            end
+            Macro.ApplyButtonAppearance(self, { canUse = canHarvest == true })
+        elseif Macro.IsBrewMacroButton(self) then
+            if canBrew == nil then
+                canBrew = canBrewMacro()
+            end
+            Macro.ApplyBrewButtonAppearance(self, { canUse = canBrew == true })
+        end
+        Macro._inIconRefresh = false
+    end
+    Macro._updateIconHooked = true
 end
 
 local function handleMacroHarvestActivation(flags)
@@ -1374,6 +1646,9 @@ local function installActionButtonHooks()
         end
         if Macro.IsCraftMacroButton(self) then
             local snap = Macro.ResolveCraftMode()
+            if snap.craftCanUse == true then
+                Macro.ApplyCraftButtonAppearance(self, { snap = snap })
+            end
             if snap.mode == "harvest" then
                 if snap.craftCanUse ~= true then
                     clearHarvestGameActionForButton(self)
@@ -1465,6 +1740,30 @@ local function installActionButtonHooks()
     actionButtonHooksInstalled = true
 end
 
+--- Stock ability tips use ActionButton:OnMouseOver's anchor
+--- { Point="top", RelativePoint="bottom", YOffset=-50 } on AbilityTooltip.
+--- That window is zero-size and its content grows upward from the origin, so
+--- the tip sits above the button. DefaultTooltip grows downward from its top;
+--- pin its bottom-left to the same point or the macro tip covers the bar.
+local function AnchorLikeAbilityTooltip(anchor)
+    if type(anchor) ~= "table" then
+        return anchor
+    end
+    if anchor.Point == "top"
+        and anchor.RelativePoint == "bottom"
+        and (tonumber(anchor.YOffset) or 0) == -50
+    then
+        return {
+            Point = "bottomleft",
+            RelativeTo = anchor.RelativeTo,
+            RelativePoint = "bottom",
+            XOffset = tonumber(anchor.XOffset) or 0,
+            YOffset = -50,
+        }
+    end
+    return anchor
+end
+
 local function installMacroTooltipHook()
     if tooltipHookInstalled or not Tooltips or type(Tooltips.CreateMacroTooltip) ~= "function" then
         return
@@ -1496,21 +1795,22 @@ local function installMacroTooltipHook()
                 end
             end
         end
+        local tipAnchor = AnchorLikeAbilityTooltip(anchor) or Tooltips.ANCHOR_WINDOW_TOP
         if isCraft then
             if StockPiler3.CraftTooltip and StockPiler3.CraftTooltip.Show then
-                StockPiler3.CraftTooltip.Show(mouseoverWindow, anchor or Tooltips.ANCHOR_WINDOW_TOP)
+                StockPiler3.CraftTooltip.Show(mouseoverWindow, tipAnchor)
             end
             return
         end
         if isHarvest then
             if StockPiler3.HarvestTooltip and StockPiler3.HarvestTooltip.Show then
-                StockPiler3.HarvestTooltip.Show(mouseoverWindow, anchor or Tooltips.ANCHOR_WINDOW_TOP)
+                StockPiler3.HarvestTooltip.Show(mouseoverWindow, tipAnchor)
             end
             return
         end
         if isBrew then
             if StockPiler3.BrewTooltip and StockPiler3.BrewTooltip.Show then
-                StockPiler3.BrewTooltip.Show(mouseoverWindow, anchor or Tooltips.ANCHOR_WINDOW_TOP)
+                StockPiler3.BrewTooltip.Show(mouseoverWindow, tipAnchor)
             end
             return
         end
@@ -1523,7 +1823,9 @@ end
 function Macro.OnHotBarUpdated()
     -- ApplyButtonAppearance / WindowSetGameActionData can fire this event while
     -- we refresh. Ignoring those echoes stops Macro.Appearance xN under trail hold.
+    -- Still reassert next frame: the echo re-enables the slot after we grey it.
     if Macro._refreshingAppearance == true then
+        Macro._hotbarEcho = true
         return
     end
     -- Rescan bars for fingerprint; only clear bind cache when slots actually moved.
@@ -1551,6 +1853,9 @@ function Macro.RegisterHotbarEventHandler()
         RegisterEventHandler(SystemData.Events.PLAYER_HOT_BAR_UPDATED, "StockPiler3.Macro.OnHotBarUpdated")
         hotbarEventRegistered = true
     end
+    if SystemData.Events.MACRO_UPDATED then
+        RegisterEventHandler(SystemData.Events.MACRO_UPDATED, "StockPiler3.Macro.OnMacroUpdated")
+    end
 end
 
 function Macro.UnregisterHotbarEventHandler()
@@ -1559,6 +1864,9 @@ function Macro.UnregisterHotbarEventHandler()
     end
     if SystemData.Events.PLAYER_HOT_BAR_UPDATED then
         UnregisterEventHandler(SystemData.Events.PLAYER_HOT_BAR_UPDATED, "StockPiler3.Macro.OnHotBarUpdated")
+    end
+    if SystemData.Events.MACRO_UPDATED then
+        UnregisterEventHandler(SystemData.Events.MACRO_UPDATED, "StockPiler3.Macro.OnMacroUpdated")
     end
     hotbarEventRegistered = false
 end
@@ -1680,8 +1988,12 @@ function Macro.Initialize()
     end
     installSetActionDataHook()
     installUpdateEnabledStateHook()
+    installUpdateIconHook()
     installActionButtonHooks()
     installMacroTooltipHook()
+    if StockPiler3.CraftHarvestTimer and StockPiler3.CraftHarvestTimer.Install then
+        StockPiler3.CraftHarvestTimer.Install()
+    end
     Macro.UpdateMacro()
     Macro.UpdateBrewMacro()
     Macro.UpdateCraftMacro()
@@ -1694,12 +2006,20 @@ function Macro.Initialize()
 end
 
 function Macro.Shutdown()
+    if StockPiler3.CraftHarvestTimer and StockPiler3.CraftHarvestTimer.Shutdown then
+        StockPiler3.CraftHarvestTimer.Shutdown()
+    end
     Macro.UnregisterHotbarEventHandler()
     if ActionButton and hookedSetActionDataFn and ActionButton.SetActionData == hookedSetActionDataFn then
         ActionButton.SetActionData = orgSetActionDataFn
     end
     if ActionButton and hookedUpdateEnabledStateFn and ActionButton.UpdateEnabledState == hookedUpdateEnabledStateFn then
         ActionButton.UpdateEnabledState = orgUpdateEnabledStateFn
+    end
+    if ActionButton and orgUpdateIconFn and Macro._updateIconHooked == true then
+        ActionButton.UpdateIcon = orgUpdateIconFn
+        orgUpdateIconFn = nil
+        Macro._updateIconHooked = false
     end
     if ActionButton and hookedOnLButtonUpFn and ActionButton.OnLButtonUp == hookedOnLButtonUpFn then
         ActionButton.OnLButtonUp = orgOnLButtonUpFn

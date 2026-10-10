@@ -887,10 +887,12 @@ function US.ScanUpgradePlant(opts)
     if Inv and Inv.GetSnapGen then
         invSnap = tonumber(Inv.GetSnapGen()) or 0
     end
+    local emptyPlots = US.CountEmptyPlots and US.CountEmptyPlots() or 0
     local cacheKey = tostring(snapGen) .. ":" .. tostring(invSnap)
         .. ":" .. tostring(climbCap)
         .. ":" .. fam .. ":" .. tostring(opts.ownedSeedReq or 0)
         .. ":" .. tostring(opts.mainsOnly == true)
+        .. ":" .. tostring(emptyPlots)
     if US._scanPlantKey == cacheKey then
         return US._scanPlant
     end
@@ -1789,17 +1791,26 @@ function US.MaybeNotifyStall()
     else
         msg = L"<icon02486> Upgrade seed stalled."
     end
-    if StockPiler3.Debug and StockPiler3.Debug.Notify then
-        StockPiler3.Debug.Notify(msg)
-    elseif StockPiler3.Debug and StockPiler3.Debug.Print then
+    if StockPiler3.Debug and StockPiler3.Debug.Print then
         StockPiler3.Debug.Print(msg)
     end
-    if type(PlaySound) == "function" and GameData and GameData.Sound
-        and GameData.Sound.RESPAWN ~= nil
-    then
-        pcall(PlaySound, GameData.Sound.RESPAWN)
-    elseif type(PlaySound) == "function" then
-        pcall(PlaySound, 216)
+    -- need_cult clears by planting. Buy / vendor / unknown-family do not.
+    local needsUser = reason == "need_buy" or reason == "need_vendor"
+        or reason == "autobuy_off" or reason == "no_vendor_seed"
+        or reason == "no_family"
+    if reason == "need_cult" then
+        local Watch = StockPiler3.Watch
+        local growing = Watch and Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() == true
+        needsUser = growing ~= true
+    end
+    if needsUser then
+        if type(PlaySound) == "function" and GameData and GameData.Sound
+            and GameData.Sound.RESPAWN ~= nil
+        then
+            pcall(PlaySound, GameData.Sound.RESPAWN)
+        elseif type(PlaySound) == "function" then
+            pcall(PlaySound, 216)
+        end
     end
 end
 

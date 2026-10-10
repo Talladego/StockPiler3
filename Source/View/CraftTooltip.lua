@@ -3,6 +3,8 @@
 -- Primary line = what this click does; optional follow-up = queued next.
 -- Then one section per planted plot: seed (icon + tier color), full time
 -- left (TotalTimer), and applied additives.
+-- While the tip is open the engine calls OnTooltipUpdate each frame.
+-- That path only rewrites the time lines, about once a second.
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
@@ -276,8 +278,21 @@ local function BuildActionRows()
             end
         end
     end
+
+    -- Stay overlay: show the same user-action reason in red under the title.
+    local Timer = StockPiler3.CraftHarvestTimer
+    if Timer and Timer.NeedsUserStay and Timer.NeedsUserStay() == true
+        and Timer.UserStayReasonText
+    then
+        local reason = Timer.UserStayReasonText()
+        if reason ~= nil and reason ~= L"" then
+            push(T("macro.craft_tip_stay", { reason = reason }), "warning")
+        end
+    end
     return rows
 end
+
+local PlotTimeRow
 
 local function AppendPlotSections(rows, plots)
     if type(rows) ~= "table" or type(plots) ~= "table" or #plots == 0 then
@@ -320,18 +335,10 @@ local function AppendPlotSections(rows, plots)
             color = SeedRarityColor(itemData),
         }
 
-        local stage = tonumber(plot.stage) or 0
-        local total = tonumber(plot.totalTimer) or 0
-        if stage == grown or stage == harvesting then
-            rows[#rows + 1] = {
-                text = T("macro.craft_tip_time_ready"),
-                kind = "stocked",
-            }
-        else
-            rows[#rows + 1] = {
-                text = T("macro.craft_tip_time", { time = FormatTotalTime(total) }),
-                kind = "meta",
-            }
+        rows[#rows + 1] = PlotTimeRow(plot, grown, harvesting)
+        local timeRows = CraftTooltip._timeRows
+        if type(timeRows) == "table" then
+            timeRows[#timeRows + 1] = #rows
         end
 
         local additives = plot.additives
@@ -364,7 +371,35 @@ local function AppendPlotSections(rows, plots)
     end
 end
 
+function PlotTimeRow(plot, grown, harvesting)
+    local stage = tonumber(plot.stage) or 0
+    local total = tonumber(plot.totalTimer) or 0
+    if stage == grown or stage == harvesting then
+        return {
+            text = T("macro.craft_tip_time_ready"),
+            kind = "stocked",
+        }
+    end
+    return {
+        text = T("macro.craft_tip_time", { time = FormatTotalTime(total) }),
+        kind = "meta",
+    }
+end
+
+local function ResetTimeRows()
+    local list = CraftTooltip._timeRows
+    if type(list) ~= "table" then
+        list = {}
+        CraftTooltip._timeRows = list
+        return
+    end
+    for i = #list, 1, -1 do
+        list[i] = nil
+    end
+end
+
 local function BuildTipRows()
+    ResetTimeRows()
     local rows = BuildActionRows()
     AppendPlotSections(rows, CollectPlantedPlots())
     return rows
@@ -386,6 +421,19 @@ local function Fingerprint()
         local Brew = StockPiler3.Brew
         blocked = tostring(Brew and Brew.AutoBrewBlockedReason and Brew.AutoBrewBlockedReason() or "")
     end
+    local stayKey = ""
+    local Timer = StockPiler3.CraftHarvestTimer
+    if Timer and Timer.UserStayInfo then
+        local stay = Timer.UserStayInfo()
+        if type(stay) == "table" then
+            stayKey = tostring(stay.key or "")
+            if stay.text ~= nil then
+                stayKey = stayKey .. ":" .. NameKey(stay.text)
+            elseif Timer.UserStayReasonText then
+                stayKey = stayKey .. ":" .. NameKey(Timer.UserStayReasonText())
+            end
+        end
+    end
 
     local parts = {
         tostring(snap.mode or "idle"),
@@ -396,6 +444,7 @@ local function Fingerprint()
         tostring(snap.brewPhase or "idle"),
         NameKey(brewName),
         blocked,
+        stayKey,
     }
 
     local plots = CollectPlantedPlots()
@@ -417,12 +466,11 @@ local function Fingerprint()
             table.sort(bits)
             addKey = table.concat(bits, ",")
         end
-        -- Floor totalTimer so the tip refreshes about once per second while hovered.
+        -- Stage and additives only. Seconds are patched in place while hovered.
         parts[#parts + 1] = table.concat({
             tostring(tonumber(p.plotNum) or i),
             tostring(tonumber(p.seedUid) or 0),
             tostring(tonumber(p.stage) or 0),
-            tostring(math.floor(tonumber(p.totalTimer) or 0)),
             addKey,
         }, "/")
     end
@@ -440,37 +488,96 @@ function CraftTooltip.Show(mouseoverWindow, anchor)
         or (Tooltips and Tooltips.ANCHOR_WINDOW_TOP)
         or nil
     CraftTooltip._liveFp = Fingerprint()
+    CraftTooltip._tipAcc = 0
 
     local rows = BuildTipRows()
     local RT = StockPiler3.RecipeTooltip
     if RT and RT.ShowColoredRows then
         RT.ShowColoredRows(mouseoverWindow, rows, CraftTooltip._liveAnchor, #rows + 2)
-        return
-    end
-    -- Fallback: flatten to a text tip.
-    local chunks = {}
-    for i = 1, #rows do
-        local entry = rows[i]
-        if type(entry) == "table" and entry.text ~= nil and entry.text ~= L"" then
-            chunks[#chunks + 1] = entry.text
+    else
+        -- Fallback: flatten to a text tip.
+        local chunks = {}
+        for i = 1, #rows do
+            local entry = rows[i]
+            if type(entry) == "table" and entry.text ~= nil and entry.text ~= L"" then
+                chunks[#chunks + 1] = entry.text
+            end
+        end
+        local text = L""
+        for i = 1, #chunks do
+            if i > 1 then
+                text = text .. L"\n"
+            end
+            text = text .. chunks[i]
+        end
+        if Tooltips and Tooltips.CreateTextOnlyTooltip then
+            Tooltips.CreateTextOnlyTooltip(mouseoverWindow, text)
+            Tooltips.AnchorTooltip(CraftTooltip._liveAnchor)
         end
     end
-    local text = L""
-    for i = 1, #chunks do
-        if i > 1 then
-            text = text .. L"\n"
-        end
-        text = text .. chunks[i]
-    end
-    if Tooltips and Tooltips.CreateTextOnlyTooltip then
-        Tooltips.CreateTextOnlyTooltip(mouseoverWindow, text)
-        Tooltips.AnchorTooltip(CraftTooltip._liveAnchor)
+    -- CreateTextOnlyTooltip clears any previous callback. Arm after the paint.
+    if Tooltips and Tooltips.SetUpdateCallback then
+        Tooltips.SetUpdateCallback(CraftTooltip.OnTooltipUpdate)
     end
 end
 
 function CraftTooltip.ClearLive()
     CraftTooltip._liveWindow = nil
     CraftTooltip._liveFp = nil
+    CraftTooltip._tipAcc = 0
+end
+
+--- Rewrite time lines on the open tip. Full rebuild only when the plots change.
+local function PatchLiveTimes()
+    local rows = CraftTooltip._timeRows
+    if type(rows) ~= "table" or not Tooltips or type(Tooltips.SetTooltipText) ~= "function" then
+        return false
+    end
+    local plots = CollectPlantedPlots()
+    if #plots ~= #rows then
+        return false
+    end
+    local grown = StageGrown()
+    local harvesting = StageHarvesting()
+    local changed = false
+    for i = 1, #plots do
+        local entry = PlotTimeRow(plots[i], grown, harvesting)
+        local row = tonumber(rows[i]) or 0
+        local text = entry.text or L""
+        if row > 0 and Tooltips.GetTooltipText and Tooltips.GetTooltipText(row, 1) ~= text then
+            Tooltips.SetTooltipText(row, 1, text, false)
+            changed = true
+        elseif row > 0 and not Tooltips.GetTooltipText then
+            Tooltips.SetTooltipText(row, 1, text, false)
+            changed = true
+        end
+    end
+    if changed and Tooltips.Finalize then
+        Tooltips.Finalize()
+    end
+    return true
+end
+
+function CraftTooltip.OnTooltipUpdate(timePassed)
+    local acc = (tonumber(CraftTooltip._tipAcc) or 0) + (tonumber(timePassed) or 0)
+    if acc < 1 then
+        CraftTooltip._tipAcc = acc
+        return
+    end
+    CraftTooltip._tipAcc = 0
+    local win = CraftTooltip._liveWindow
+    if win == nil or win == "" then
+        return
+    end
+    local mouseWin = SystemData and SystemData.MouseOverWindow and SystemData.MouseOverWindow.name
+    if mouseWin ~= win then
+        CraftTooltip.ClearLive()
+        return
+    end
+    local fp = Fingerprint()
+    if fp ~= CraftTooltip._liveFp or PatchLiveTimes() ~= true then
+        CraftTooltip.Show(win, CraftTooltip._liveAnchor)
+    end
 end
 
 function CraftTooltip.MaybeRefresh()

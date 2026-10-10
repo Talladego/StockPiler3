@@ -88,6 +88,14 @@ function StockPiler3Window.SyncActionReadiness(opts)
         and StockPiler3.Grow.CanHarvestNow() == true
     local canBrew = StockPiler3.Brew and StockPiler3.Brew.CanBrewNow
         and StockPiler3.Brew.CanBrewNow() == true
+    -- Same booleans that light the footer and macros, including coalesce
+    -- returns, so a deferred paint cannot skip the ready chime.
+    if StockPiler3.Grow and StockPiler3.Grow.AnnounceHarvestEnabled then
+        StockPiler3.Grow.AnnounceHarvestEnabled(canHarvest)
+    end
+    if StockPiler3.Brew and StockPiler3.Brew.AnnounceBrewEnabled then
+        StockPiler3.Brew.AnnounceBrewEnabled(canBrew)
+    end
     local enabledWatches = 0
     if onPlants then
         if StockPiler3.Watch and StockPiler3.Watch.CountEnabledPlantWatches then
@@ -99,6 +107,8 @@ function StockPiler3Window.SyncActionReadiness(opts)
     local canClearWatches = enabledWatches > 0
 
     -- Same-frame coalesce: first call paints; later calls only re-queue if inputs moved.
+    -- Exception: immediate + readiness flip must re-paint now (open-fail / op-lock greying
+    -- was deferred into plant quiet and left macros lit while clicks no-op).
     if StockPiler3Window._footerSyncFrame == frame and frame > 0 then
         local prevH = StockPiler3Window._footerCanHarvest
         local prevB = StockPiler3Window._footerCanBrew
@@ -106,22 +116,27 @@ function StockPiler3Window.SyncActionReadiness(opts)
         local prevOnWatch = StockPiler3Window._footerOnWatch
         local prevOnPotions = StockPiler3Window._footerOnPotions
         local prevOnPlants = StockPiler3Window._footerOnPlants
+        local moved = prevH ~= canHarvest or prevB ~= canBrew
+            or prevClear ~= canClearWatches
+            or prevOnWatch ~= onWatch
+            or prevOnPotions ~= onPotions
+            or prevOnPlants ~= onPlants
         StockPiler3Window._footerCanHarvest = canHarvest
         StockPiler3Window._footerCanBrew = canBrew
         StockPiler3Window._footerCanClearWatches = canClearWatches
         StockPiler3Window._footerOnWatch = onWatch
         StockPiler3Window._footerOnPotions = onPotions
         StockPiler3Window._footerOnPlants = onPlants
-        if prevH ~= canHarvest or prevB ~= canBrew
-            or prevClear ~= canClearWatches
-            or prevOnWatch ~= onWatch
-            or prevOnPotions ~= onPotions
-            or prevOnPlants ~= onPlants
-        then
-            StockPiler3Window._footerRefreshPending = true
-            StockPiler3Window._footerSyncAllowDeferred = true
+        if moved and immediate then
+            StockPiler3Window._footerSyncFrame = nil
+            -- Fall through to full paint with latest readiness.
+        else
+            if moved then
+                StockPiler3Window._footerRefreshPending = true
+                StockPiler3Window._footerSyncAllowDeferred = true
+            end
+            return canHarvest, canBrew
         end
-        return canHarvest, canBrew
     end
 
     local appearanceKey = tostring(canHarvest) .. ":" .. tostring(canBrew)
@@ -134,7 +149,8 @@ function StockPiler3Window.SyncActionReadiness(opts)
         and StockPiler3Window._footerCanClearWatches == canClearWatches
     -- `immediate` must re-apply macro tint: ActionButton.UpdateEnabledState greys
     -- our macros mid-craft while CanBrewNow can stay true, so appearanceKey is unchanged.
-    if unchanged and not immediate then
+    local craftWaiting = StockPiler3.Macro and StockPiler3.Macro._craftUnpainted == true
+    if unchanged and not immediate and not craftWaiting then
         local macroKey = StockPiler3.Macro and StockPiler3.Macro.GetReadinessKey
             and StockPiler3.Macro.GetReadinessKey()
         if StockPiler3.Macro == nil
@@ -218,6 +234,10 @@ function StockPiler3Window.SyncActionReadiness(opts)
         end
     end
 
+    if StockPiler3.Macro and StockPiler3.Macro._craftUnpainted == true then
+        readinessChanged = true
+    end
+
     if readinessChanged or immediate then
         if StockPiler3.Macro then
             if immediate and StockPiler3.Macro.RefreshMacroButtonAppearance then
@@ -233,6 +253,14 @@ function StockPiler3Window.SyncActionReadiness(opts)
             elseif StockPiler3.Macro.SyncEnabledState then
                 StockPiler3.Macro.SyncEnabledState(canHarvest, canBrew)
             end
+        end
+        -- Next frame: hotbar / MACRO_UPDATED echoes relight Craft after the
+        -- footer Harvest or Brew button has already changed.
+        if (prevHarvest ~= canHarvest or prevBrew ~= canBrew)
+            and StockPiler3.Macro
+            and StockPiler3.Macro.ArmEnableReassert
+        then
+            StockPiler3.Macro.ArmEnableReassert()
         end
     end
 
@@ -465,6 +493,7 @@ function StockPiler3Window.BeginOpenPaint()
     StockPiler3Window._openPaintPending = true
     StockPiler3Window._openPaintGaveUp = false
     StockPiler3Window._openPaintAttempts = 0
+    StockPiler3Window._openPaintDidRefresh = false
     StockPiler3Window._openPaintShownFrame = tonumber(StockPiler3.FrameCounter) or 0
     StockPiler3Window._openPaintNeedKick = true
     if StockPiler3.Ui then
@@ -541,10 +570,15 @@ function StockPiler3Window.FlushOpenPaint()
     if StockPiler3TabWatch and type(StockPiler3TabWatch.listData) == "table" then
         listCount = #StockPiler3TabWatch.listData
     end
-    if WatchListPopulated() or (listCount > 0 and WatchListHasPaintedRow()) then
+    -- A row left over from the settle paint is not "done". Reload-while-open
+    -- used to stop here and keep the pre-latch status until /sp3 dumpall.
+    if StockPiler3Window._openPaintDidRefresh == true
+        and (WatchListPopulated() or (listCount > 0 and WatchListHasPaintedRow()))
+    then
         StockPiler3Window._openPaintPending = false
         return
     end
+    StockPiler3Window._openPaintDidRefresh = true
     if StockPiler3TabWatch and StockPiler3TabWatch.Refresh then
         StockPiler3TabWatch.Refresh({ forceRebind = true, forcePlan = false })
     else

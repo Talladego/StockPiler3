@@ -28,6 +28,7 @@ local ACCOUNT_LEAKED_SETTINGS_KEYS = {
     "characters",
     "debugEnabled",
     "eventTrace",
+    "chatMode",
     "perfEnabled",
     "perfThresholdMs",
     "potionKnownRecipeOnly",
@@ -79,6 +80,8 @@ StockPiler3.DefaultSettings = {
     characters = {},
     debugEnabled = false,
     eventTrace = false,
+    -- on | quiet | off. on keeps stall/ready lines; quiet is changes and harvest/brew.
+    chatMode = "on",
     language = 0,
     selectedTab = 1,
     potionNameFilter = "",
@@ -223,9 +226,13 @@ function P.EnsureSettings()
     if s.perfThresholdMs ~= nil then
         s.perfThresholdMs = nil
     end
+    if s.chatMode ~= "on" and s.chatMode ~= "quiet" and s.chatMode ~= "off" then
+        s.chatMode = "on"
+    end
     if StockPiler3.Debug then
         StockPiler3.Debug.Enabled = s.debugEnabled == true
         StockPiler3.Debug.EventTrace = s.eventTrace == true
+        StockPiler3.Debug.ChatMode = s.chatMode
     end
     return s
 end

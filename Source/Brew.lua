@@ -35,7 +35,8 @@ Brew._stuckProbeAt = 0
 Brew._canBrewCache = nil
 Brew._canBrewCacheKey = nil
 Brew._brewReadyLatched = false
-Brew._readyNotifyKeys = nil -- nil = uninitialized (seed on first observe, no chat)
+Brew._readyNotifyKeys = nil -- nil = uninitialized (seed on first observe)
+Brew._brewEnableAnnounced = nil -- potion key last chimed for a lit Brew button
 Brew._lastHasReady = nil
 Brew._wasBusy = false
 Brew._awaitingBrewComplete = false
@@ -853,7 +854,7 @@ local function ChatBrewBlocked(why)
     else
         return
     end
-    CC.Print(msg)
+    CC.Print(msg, "action")
 end
 
 function Brew.AutoBrewBlockedReason()
@@ -882,6 +883,23 @@ local function ForceBrewUiRefresh(opts)
     local frame = tonumber(StockPiler3.FrameCounter) or 0
     Brew._brewUiForcedFrame = frame
     RequestFooterRefresh()
+    -- Immediate macro tint: FlushPendingFooterRefresh holds during plant quiet /
+    -- harvest storm, which left Craft/Brew lit after open-fail / busy while
+    -- clicks already no-op on CanBrewNow.
+    if StockPiler3Window and StockPiler3Window.SyncActionReadiness then
+        StockPiler3Window.SyncActionReadiness({ immediate = true })
+    elseif StockPiler3.Macro and StockPiler3.Macro.RefreshMacroButtonAppearance then
+        local canHarvest = StockPiler3.Grow and StockPiler3.Grow.CanHarvestNow
+            and StockPiler3.Grow.CanHarvestNow() == true
+        local canBrew = Brew.CanBrewNow() == true
+        StockPiler3.Macro._enabledSyncPending = false
+        StockPiler3.Macro._pendingCanHarvest = nil
+        StockPiler3.Macro._pendingCanBrew = nil
+        StockPiler3.Macro.RefreshMacroButtonAppearance({
+            canHarvest = canHarvest,
+            canBrew = canBrew,
+        })
+    end
     -- Row Load/Brew chrome must flip as soon as session phase changes.
     if StockPiler3TabWatch and StockPiler3TabWatch.InvalidateBrewChrome then
         StockPiler3TabWatch.InvalidateBrewChrome()
@@ -924,6 +942,10 @@ local function ForceBrewUiRefresh(opts)
         StockPiler3.Macro.RefreshMacroButtonAppearance({
             canBrew = Brew.CanBrewNow() == true,
         })
+    end
+    -- Perform's hotbar echo re-lights Craft after this paint. Reassert next frame.
+    if StockPiler3.Macro and StockPiler3.Macro.ArmEnableReassert then
+        StockPiler3.Macro.ArmEnableReassert()
     end
 end
 
@@ -1189,39 +1211,95 @@ function Brew.CanBrewNow()
     if OpenFailBlocked() then
         return false
     end
-    local session = GetSession()
-    local phase = tostring(session.phase or "idle")
-
     -- Manual row loads: footer not lit for perform.
     if Brew._loadSource == "manual" then
         return false
     end
 
-    if phase == "loaded" then
-        -- SkillUp Apo: keep footer lit while the board can still perform.
-        if session.skillUp == true then
-            return Brew.ValidateApothecaryPerform() == true
-                and (tonumber(session.craftable) or 0) > 0
-        end
-        -- Target met while still loaded: do not fall through to another watch.
-        if not RowNeedsMorePotions(session) then
-            return false
-        end
-        -- Auto board: enable only while this session row is uncontested Ready.
-        -- (Drop craftOk loophole - fail/wrong-tier must darken Brew until Ready again.)
-        return RowIsReadyToCraft(FindSessionRow())
-    end
-
-    local blocked = AutoBrewBlocked()
-    if blocked then
+    local session = GetSession()
+    local phase = tostring(session.phase or "idle")
+    -- Idle Ready only starts a load (TryBrewClick returns "blocked"). Never light
+    -- Craft/Brew until the board is loaded and a click would actually Perform.
+    if phase ~= "loaded" then
         return false
     end
 
-    return type(Brew.PickReadyWatch()) == "table"
+    -- SkillUp Apo: keep footer lit while the board can still perform.
+    if session.skillUp == true then
+        return Brew.ValidateApothecaryPerform() == true
+            and (tonumber(session.craftable) or 0) > 0
+    end
+    -- Target met while still loaded: do not fall through to another watch.
+    if not RowNeedsMorePotions(session) then
+        return false
+    end
+    if (tonumber(session.potionDeficit) or 0) <= 0 then
+        return false
+    end
+    local row = FindSessionRow()
+    if not RowIsReadyToCraft(row) then
+        return false
+    end
+    -- Match TryBrewClick "go": Ready plan row is not enough if the board cannot Perform.
+    return Brew.ValidateApothecaryPerform() == true
 end
 
---- Chat/sound when a watch newly enters uncontested Ready to brew.
---- Latches per potionKey - not CanBrewNow (busy mid-craft would re-fire every brew).
+--- Chat + sound when Brew becomes usable (same boolean as the footer and macros).
+--- Busy mid-craft keeps the latch so each perform does not chime again. A
+--- different loaded recipe still chimes when the button lights for it.
+function Brew.AnnounceBrewEnabled(canBrew)
+    local Sch = StockPiler3.Scheduler
+    if Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true then
+        return
+    end
+    if Brew.IsBusy() == true then
+        return
+    end
+    if canBrew ~= true then
+        Brew._brewEnableAnnounced = nil
+        return
+    end
+    local session = GetSession()
+    local key = tostring(session.potionRecipeKey or session.potionKey or session.rowId or "")
+    if key == "" then
+        key = "?"
+    end
+    if Brew._brewEnableAnnounced == key then
+        return
+    end
+    Brew._brewEnableAnnounced = key
+    local name = session.name
+    if name == nil or name == L"" or name == "" then
+        local row = Brew.PickReadyWatch and Brew.PickReadyWatch()
+        name = type(row) == "table" and row.name or nil
+    end
+    if name == nil or name == L"" or name == "" then
+        if StockPiler3.T then
+            name = StockPiler3.T("brew.potion_fallback")
+        else
+            name = L"potion"
+        end
+    elseif type(name) ~= "wstring" then
+        name = towstring(tostring(name))
+    end
+    local msg = L"<icon10985> Ready - " .. name .. L"."
+    if StockPiler3.T then
+        msg = StockPiler3.T("brew.ready", { name = name })
+    end
+    LogBrew("brew-ready announce key=" .. key)
+    local soundId = GameData and GameData.Sound and GameData.Sound.HELP_TIPS_HIGHTLIGHT_WINDOW
+    if StockPiler3.Debug and StockPiler3.Debug.AnnounceReady then
+        StockPiler3.Debug.AnnounceReady(msg, soundId)
+    elseif StockPiler3.Debug and StockPiler3.Debug.Notify then
+        StockPiler3.Debug.Notify(msg)
+        if soundId and Sound and Sound.Play then
+            Sound.Play(soundId)
+        end
+    end
+end
+
+--- Footer refresh when a plan row becomes ready to craft. The ready chime
+--- follows CanBrewNow (AnnounceBrewEnabled), not the plan row.
 function Brew.MaybeNotifyBrewReady()
     local plan = CurrentPlan()
     local rows = plan and plan.rows
@@ -1275,35 +1353,6 @@ function Brew.MaybeNotifyBrewReady()
 
     if #newly == 0 then
         return
-    end
-
-    local best = newly[1]
-    for i = 2, #newly do
-        if CompareReadyWatch(newly[i], best) then
-            best = newly[i]
-        end
-    end
-    local name = best and best.name
-    if name == nil or name == L"" then
-        if StockPiler3.T then
-            name = StockPiler3.T("brew.potion_fallback")
-        else
-            name = L"potion"
-        end
-    elseif type(name) ~= "wstring" then
-        name = towstring(tostring(name))
-    end
-
-    local msg = L"<icon10985> Ready - " .. name .. L"."
-    if StockPiler3.T then
-        msg = StockPiler3.T("brew.ready", { name = name })
-    end
-    if StockPiler3.Debug and StockPiler3.Debug.Print then
-        StockPiler3.Debug.Print(msg)
-    end
-    local soundId = GameData and GameData.Sound and GameData.Sound.HELP_TIPS_HIGHTLIGHT_WINDOW
-    if soundId and Sound and Sound.Play then
-        Sound.Play(soundId)
     end
     if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
         StockPiler3Window.RequestFooterRefresh()
@@ -1470,6 +1519,9 @@ local function BeginLoadJob(row, source)
     end
     SetSessionPhase("loading", "begin-load")
     Brew.InvalidateCanBrewCache()
+    -- Grey macros while load runs (IsBusy → CanBrewNow false). First click only
+    -- starts the load; without this the button stayed lit and felt dead.
+    ForceBrewUiRefresh({ rows = false })
     return true
 end
 
@@ -1548,8 +1600,8 @@ local function AdvanceLoadJob()
             job.waitTicks = 0
             return true
         end
-        -- Throttle OpenWindow: every-tick SendInitCrafting/ToggleShowing buzzes audio
-        -- when CraftingStatus.SkillType stays 0 (scenario / craft blocked).
+-- Throttle OpenWindow: every-tick SendInitCrafting buzzes audio
+-- when CraftingStatus.SkillType stays 0 (scenario / craft blocked).
         local retryEvery = tonumber(Brew.OPEN_RETRY_TICKS) or 20
         if retryEvery < 5 then
             retryEvery = 5
@@ -1563,6 +1615,9 @@ local function AdvanceLoadJob()
             local skillType = a.CraftingSkillType and a.CraftingSkillType()
             LogBrew("load abort open-timeout skill=" .. tostring(skillType))
             NoteOpenFail(skillType)
+            if a.CloseWindow then
+                a.CloseWindow(GetSession())
+            end
             ClearSession({ reason = "open-timeout" })
             ForceBrewUiRefresh()
             return false
@@ -2002,8 +2057,9 @@ function Brew.Tick()
     return false
 end
 
---- Auto-load SkillUp Apo board when idle (watches done); user Brew click performs.
-function Brew.MaybeAutoLoadSkillUp()
+--- Auto-load the top Ready row (SkillUp or watch) while idle so Craft/Brew only
+--- light when a click would Perform — not for the silent "start load" click.
+function Brew.MaybeAutoLoadReady()
     if type(Brew._job) == "table" then
         return false
     end
@@ -2021,30 +2077,21 @@ function Brew.MaybeAutoLoadSkillUp()
     if blocked then
         return false
     end
-    local SkillUp = StockPiler3.SkillUp
-    if not (SkillUp and SkillUp.ShouldApoBrew and SkillUp.ShouldApoBrew() == true) then
-        return false
-    end
-    -- Prefer real watch Ready rows; only auto-load SkillUp when none.
-    local plan = CurrentPlan()
-    local rows = plan and plan.rows
-    if type(rows) == "table" then
-        for i = 1, #rows do
-            if RowIsReadyToCraft(rows[i]) then
-                return false
-            end
-        end
-    end
-    local row = SkillUp.BuildApoBrewRow and SkillUp.BuildApoBrewRow()
+    local row = Brew.PickReadyWatch()
     if type(row) ~= "table" then
         return false
     end
     if BeginLoadJob(row, "auto") then
         KickLoadJob()
-        LogBrew("skillup auto-load")
+        LogBrew("auto-load ready key=" .. tostring(row.potionKey or row.id or "?"))
         return true
     end
     return false
+end
+
+--- Back-compat alias (SkillUp used to be the only auto-load path).
+function Brew.MaybeAutoLoadSkillUp()
+    return Brew.MaybeAutoLoadReady()
 end
 
 --- Clear auto-loaded sessions that cannot perform after settle.
@@ -2422,6 +2469,10 @@ function Brew.RegisterEventHandlers()
             Brew._busTokens[#Brew._busTokens + 1] = B.Subscribe(E.SESSION_LOADED, function()
                 Brew._readyNotifyKeys = nil
                 Brew._brewReadyLatched = false
+                Brew._brewEnableAnnounced = nil
+                if StockPiler3.Grow then
+                    StockPiler3.Grow._harvestEnableAnnounced = false
+                end
                 Brew.ClearOpenFailBackoff()
                 Brew.InvalidateCanBrewCache()
                 -- Scenario/zone load leaves apo board invalid; a stuck loaded session

@@ -376,6 +376,7 @@ function Bridge.OnStoreShow()
 end
 
 function Bridge.OnLoadingEnd()
+    Bridge._loadingEndSeen = true
     local Caps = StockPiler3.TradeSkillCaps
     if Caps and Caps.BeginLoadSkillRefresh then
         Caps.BeginLoadSkillRefresh()
@@ -472,6 +473,12 @@ local function RunUpdateProcessed(timeElapsed)
     if StockPiler3.Macro and StockPiler3.Macro.DrainEnabledSync then
         StockPiler3.Macro.DrainEnabledSync()
     end
+    if StockPiler3.Macro and StockPiler3.Macro.DrainEnableReassert then
+        StockPiler3.Macro.DrainEnableReassert()
+    end
+    if StockPiler3.CraftHarvestTimer and StockPiler3.CraftHarvestTimer.OnUpdate then
+        StockPiler3.CraftHarvestTimer.OnUpdate(timeElapsed)
+    end
 
     -- Footer after Scheduler so SkipUiHoldFooter can hold this frame.
     local Sch = StockPiler3.Scheduler
@@ -554,6 +561,34 @@ function Bridge.Register()
     end
 end
 
+local function LoadingScreenShowing()
+    local names = { "EA_Window_LoadingScreen", "LoadingScreen" }
+    for i = 1, #names do
+        local n = names[i]
+        if type(DoesWindowExist) == "function" and DoesWindowExist(n)
+            and type(WindowGetShowing) == "function" and WindowGetShowing(n) == true
+        then
+            return true
+        end
+    end
+    return false
+end
+
+--- /reload often fires LOADING_END before this bridge registers; synthesize it
+--- once the loading screen is already gone so AutoGrow is not stuck settling.
+function Bridge.MaybeCatchUpLoadingEnd()
+    if Bridge._loadingEndSeen == true then
+        return
+    end
+    if LoadingScreenShowing() then
+        return
+    end
+    if StockPiler3.Debug and StockPiler3.Debug.LogAlways then
+        StockPiler3.Debug.LogAlways("session catch-up loading-end (event missed)")
+    end
+    Bridge.OnLoadingEnd()
+end
+
 function Bridge.Unregister()
     if Bridge._registered ~= true then
         return
@@ -580,6 +615,7 @@ function Bridge.Unregister()
     Bridge._pendingCraftSlots = nil
     Bridge._pendingMainSlotSet = nil
     Bridge._pendingCraftSlotSet = nil
+    Bridge._loadingEndSeen = false
 end
 
 function Bridge.Initialize()

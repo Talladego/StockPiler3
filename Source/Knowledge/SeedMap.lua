@@ -866,6 +866,29 @@ function SM.ResolveSeedUidForPlant(plantUid, plantSpec)
     if plantUid <= 0 then
         return 0
     end
+    local snap = 0
+    local InvSnap = StockPiler3.Inventory
+    if InvSnap and InvSnap.GetSnapGen then
+        snap = tonumber(InvSnap.GetSnapGen()) or 0
+    end
+    if (tonumber(SM._resolveSeedSnap) or -1) ~= snap then
+        SM._resolveSeedByPlant = {}
+        SM._resolveSeedSnap = snap
+    end
+    local cache = SM._resolveSeedByPlant
+    if type(cache) ~= "table" then
+        cache = {}
+        SM._resolveSeedByPlant = cache
+    end
+    local hit = cache[plantUid]
+    if hit ~= nil then
+        return hit
+    end
+    local function remember(uid)
+        uid = tonumber(uid) or 0
+        cache[plantUid] = uid
+        return uid
+    end
     local plantReq = 0
     if type(plantSpec) == "table" then
         plantReq = tonumber(plantSpec.skillLevel) or tonumber(plantSpec.craftingSkillRequirement) or 0
@@ -1058,10 +1081,10 @@ function SM.ResolveSeedUidForPlant(plantUid, plantSpec)
                 bestUid = 0
                 bestScore = -1
             else
-                return bestUid
+                return remember(bestUid)
             end
         else
-            return bestUid
+            return remember(bestUid)
         end
     end
     -- Prefer any grow/refine-linked seed at the plant's skillReq before falling
@@ -1095,10 +1118,10 @@ function SM.ResolveSeedUidForPlant(plantUid, plantSpec)
         end
         considerSame(refineSeed)
         if bestSame > 0 then
-            return bestSame
+            return remember(bestSame)
         end
         if bestUnknown > 0 then
-            return bestUnknown
+            return remember(bestUnknown)
         end
     end
     -- Explicit refine/grow link wins when the seed is not in bags (score cannot
@@ -1110,7 +1133,7 @@ function SM.ResolveSeedUidForPlant(plantUid, plantSpec)
     if refineSeed > 0 then
         local rReq = seedSkillReq(refineSeed)
         if plantReq <= 0 or rReq <= 0 or rReq >= plantReq then
-            return refineSeed
+            return remember(refineSeed)
         end
     end
     if type(linked) == "table" then
@@ -1119,13 +1142,13 @@ function SM.ResolveSeedUidForPlant(plantUid, plantSpec)
             if cand > 0 then
                 local cReq = seedSkillReq(cand)
                 if plantReq <= 0 or cReq <= 0 or cReq >= plantReq then
-                    return cand
+                    return remember(cand)
                 end
             end
         end
     end
     -- Do not fall back to PickBestSeedUid (prefers Eternal/L1 in bags).
-    return 0
+    return remember(0)
 end
 
 function SM.IsOneWayHarvestSpec(spec)

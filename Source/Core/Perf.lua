@@ -142,6 +142,16 @@ local function MakeInAddonPerf()
     end
 
     function Perf.PrintSummary()
+        if StockPiler3.Debug.Reply then
+            StockPiler3.Debug.Reply(towstring(string.format(
+            "SP3 perf spikes=%d emptyTrail=%d thr=%dms enabled=%s",
+            Perf._summary.spikes or 0,
+            Perf._summary.emptyTrail or 0,
+            Perf.GetFrameThreshold(),
+            tostring(Perf.Enabled)
+        )))
+            return
+        end
         StockPiler3.Debug.Print(towstring(string.format(
             "SP3 perf spikes=%d emptyTrail=%d thr=%dms enabled=%s",
             Perf._summary.spikes or 0,

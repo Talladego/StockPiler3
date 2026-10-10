@@ -3,7 +3,7 @@
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
-StockPiler3.Version = L"0.3.294"
+StockPiler3.Version = L"0.3.327"
 
 local function T(key, tokens)
     return StockPiler3.Util.T(key, tokens)
@@ -16,8 +16,10 @@ local function EmitLog(msg)
 end
 
 local function Print(msg)
-    if StockPiler3.Debug and StockPiler3.Debug.Print then
-        StockPiler3.Debug.Print(msg)
+    if StockPiler3.Debug and StockPiler3.Debug.Reply then
+        StockPiler3.Debug.Reply(msg)
+    elseif StockPiler3.Debug and StockPiler3.Debug.Print then
+        StockPiler3.Debug.Print(msg, "user")
     end
 end
 
@@ -31,6 +33,34 @@ local function SetDebugEnabled(on)
     StockPiler3.Debug.Enabled = s.debugEnabled
     EmitLog("settings| debug=" .. (StockPiler3.Debug.Enabled and "ON" or "OFF"))
     Print(T("boot.debug", { state = OnOff(StockPiler3.Debug.Enabled) }))
+end
+
+local function ChatModeLabel(mode)
+    if mode == "quiet" then
+        return T("boot.chat_quiet")
+    end
+    if mode == "off" then
+        return T("boot.chat_off")
+    end
+    return T("boot.chat_on")
+end
+
+local function SetChatMode(mode)
+    local Dbg = StockPiler3.Debug
+    local normalized = "on"
+    if Dbg and Dbg.NormalizeChatMode then
+        normalized = Dbg.NormalizeChatMode(mode)
+    end
+    local s = StockPiler3.Persistence.EnsureSettings()
+    s.chatMode = normalized
+    if Dbg then
+        Dbg.ChatMode = normalized
+    end
+    EmitLog("settings| chat=" .. normalized)
+    local msg = T("boot.chat", { state = ChatModeLabel(normalized) })
+    if Dbg and Dbg.Print then
+        Dbg.Print(msg, "force")
+    end
 end
 
 local function SetEventTrace(on)
@@ -55,6 +85,7 @@ local function PrintHelp()
     Print(T("boot.help.audit"))
     Print(T("boot.help.mem"))
     Print(T("boot.help.harvest"))
+    Print(T("boot.help.chat"))
 end
 
 local function DumpMem(emit)
@@ -247,6 +278,23 @@ function StockPiler3.OnSlash(input)
     end
     if lower == "debug off" then
         SetDebugEnabled(false)
+        return
+    end
+    if lower == "chat" then
+        local s = StockPiler3.Persistence.EnsureSettings()
+        SetChatMode(s.chatMode or "on")
+        return
+    end
+    if lower == "chat on" or lower == "chat all" then
+        SetChatMode("on")
+        return
+    end
+    if lower == "chat quiet" then
+        SetChatMode("quiet")
+        return
+    end
+    if lower == "chat off" or lower == "chat silent" then
+        SetChatMode("off")
         return
     end
     if lower == "dumpall" or lower == "dump all" or lower == "all" then
@@ -505,7 +553,9 @@ function StockPiler3.Initialize()
     end
     EmitLog("init v" .. tostring(StockPiler3.Version)
         .. " debug=" .. tostring(StockPiler3.Debug and StockPiler3.Debug.Enabled == true))
-    Print(T("boot.loaded", { version = StockPiler3.Version }))
+    if StockPiler3.Debug and StockPiler3.Debug.Print then
+        StockPiler3.Debug.Print(T("boot.loaded", { version = StockPiler3.Version }))
+    end
     if StockPiler3.Scheduler and StockPiler3.Scheduler.MarkAwaitingSessionLoad then
         StockPiler3.Scheduler.MarkAwaitingSessionLoad()
     elseif StockPiler3.Scheduler and StockPiler3.Scheduler.BeginSessionSettle then
@@ -516,6 +566,10 @@ function StockPiler3.Initialize()
     end
     if StockPiler3.Scheduler and StockPiler3.Scheduler.EnqueueBagFlush then
         StockPiler3.Scheduler.EnqueueBagFlush(true)
+    end
+    local Bridge = StockPiler3.EngineEventBridge
+    if Bridge and Bridge.MaybeCatchUpLoadingEnd then
+        Bridge.MaybeCatchUpLoadingEnd()
     end
 end
 

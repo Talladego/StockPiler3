@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.294** — Clear sticky Cult/Apo when TradeSkillLevels reports unlearn (explicit 0).
+**Version 0.3.296** — Paint SkillUp Watch rows after logon/reload without dumpall.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 

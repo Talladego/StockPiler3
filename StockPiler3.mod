@@ -1,6 +1,6 @@
 ﻿<?xml version="1.0" encoding="UTF-8"?>
 <ModuleFile xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    <UiMod name="StockPiler3" version="0.3.294" date="2026-10-05">
+    <UiMod name="StockPiler3" version="0.3.327" date="2026-10-10">
         <Author name="Talladego" email="" />
         <Description text="StockPiler3 - lean cult/apo stock automation. Parallel-safe with StockPiler / StockPiler2." />
         <VersionSettings gameVersion="1.4.8" windowsVersion="1.0" savedVariablesVersion="1.0" />
@@ -62,6 +62,7 @@
             <File name="Source/Refine.lua" />
             <File name="Source/Buy.lua" />
             <File name="Source/Macro/Macro.lua" />
+            <File name="Source/Macro/CraftHarvestTimer.lua" />
             <File name="Source/View/HarvestChrome.lua" />
             <File name="Source/View/HarvestTooltip.lua" />
             <File name="Source/View/BrewChrome.lua" />

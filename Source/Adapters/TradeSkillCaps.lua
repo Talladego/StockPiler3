@@ -2,7 +2,8 @@
 -- StockPiler3 Adapters/TradeSkillCaps - live cult/apo skill levels
 -- Prefer GetTradeSkillLevel / TradeSkillLevels (stock Abilities + Cultivation).
 -- Player.tradeSkills often empties mid-session; sticky holds through unknown
--- empties. Explicit 0 from TradeSkillLevels is a real unlearn and clears sticky.
+-- empties and through explicit-0 blips on GetCultSkill/GetApoSkill.
+-- TRADE_SKILL_UPDATED with an explicit 0 is a real unlearn and clears sticky.
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
@@ -123,17 +124,19 @@ local function PersistSticky()
     row.lastApoSkill = apo
 end
 
---- live + explicit from ReadLevel. Trust explicit 0 (unlearn); keep sticky on unknown.
+--- live + explicit from ReadLevel.
+--- Hot paths keep sticky on explicit 0: TradeSkillLevels can blip to 0 in
+--- combat/scenario (0.3.238–0.3.240). Real unlearn is OnTradeSkillPulse.
 local function StickLevel(live, explicit, last)
     live = tonumber(live) or 0
     last = tonumber(last) or 0
-    if explicit == true then
+    if explicit == true and live > 0 then
         return live, live
     end
     if live > 0 then
         return live, live
     end
-    -- Transient empty (combat/scenario): keep last known.
+    -- Transient empty or explicit-0 blip: keep last known.
     if last > 0 then
         return last, last
     end
@@ -248,6 +251,18 @@ function Caps.OnTradeSkillPulse()
             Caps._loadEmptyPulses = 0
             PersistSticky()
             changed = newCult ~= prevCult or newApo ~= prevApo
+            if changed then
+                local Ui = StockPiler3.Ui
+                if Ui then
+                    if Ui.InvalidateSkillGates then
+                        Ui.InvalidateSkillGates()
+                    end
+                    Ui._watchUiLastKey = nil
+                    if Ui.MarkWatchUiDirty then
+                        Ui.MarkWatchUiDirty()
+                    end
+                end
+            end
         else
             Caps._loadEmptyPulses = (tonumber(Caps._loadEmptyPulses) or 0) + 1
             -- Never clear sticky on empties: scenario/combat fires many empty
@@ -270,35 +285,19 @@ function Caps.OnTradeSkillPulse()
             end
         end
     else
-        if cultExplicit == true then
+        -- Trainer unlearn reports explicit 0 here (TRADE_SKILL_UPDATED).
+        -- GetCultSkill/GetApoSkill do not honor 0, so this is the clear path.
+        if cultExplicit == true or liveCult > 0 then
             if liveCult ~= prevCult then
-                Caps._lastCult = liveCult
                 changed = true
-            else
-                Caps._lastCult = liveCult
             end
-        elseif liveCult > 0 then
-            if liveCult ~= prevCult then
-                Caps._lastCult = liveCult
-                changed = true
-            else
-                Caps._lastCult = liveCult
-            end
+            Caps._lastCult = liveCult
         end
-        if apoExplicit == true then
+        if apoExplicit == true or liveApo > 0 then
             if liveApo ~= prevApo then
-                Caps._lastApo = liveApo
                 changed = true
-            else
-                Caps._lastApo = liveApo
             end
-        elseif liveApo > 0 then
-            if liveApo ~= prevApo then
-                Caps._lastApo = liveApo
-                changed = true
-            else
-                Caps._lastApo = liveApo
-            end
+            Caps._lastApo = liveApo
         end
         if cultExplicit == true or apoExplicit == true
             or liveCult > 0 or liveApo > 0
@@ -312,6 +311,30 @@ function Caps.OnTradeSkillPulse()
                 prevApo, tonumber(Caps._lastApo) or 0,
                 tostring(cultExplicit == true), tostring(apoExplicit == true)
             ))
+        end
+        if changed then
+            local Ui = StockPiler3.Ui
+            if Ui then
+                if Ui.InvalidateSkillGates then
+                    Ui.InvalidateSkillGates()
+                end
+                Ui._watchUiLastKey = nil
+                Ui._watchUiFlushedAt = 0
+                if Ui.MarkWatchUiDirty then
+                    Ui.MarkWatchUiDirty()
+                end
+            end
+            local Grow = StockPiler3.Grow
+            if Grow and Grow.InvalidatePlantQueue then
+                Grow.InvalidatePlantQueue({ reason = "trade-skill" })
+            end
+            local Sch = StockPiler3.Scheduler
+            if Sch and Sch.EnqueuePlanRebuild then
+                Sch.EnqueuePlanRebuild({ urgent = true })
+            end
+            if Sch and Sch.WakeAutoGrow then
+                Sch.WakeAutoGrow()
+            end
         end
     end
     if (tonumber(Caps._lastCult) or 0) > 0 or (tonumber(Caps._lastApo) or 0) > 0 then

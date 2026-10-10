@@ -270,11 +270,14 @@ end
 
 local function UnparkApoRoot()
     local name = ApoRootName()
+    local wasParked = AA._apoParked == true
     AA._apoParked = false
     if not (DoesWindowExist and DoesWindowExist(name)) then
         return
     end
-    if type(WindowClearAnchors) == "function" then
+    -- Clearing anchors on every hide (player-closed stock Apo) can reopen at
+    -- top-left. Only strip stealth park anchors.
+    if wasParked and type(WindowClearAnchors) == "function" then
         TryQuiet("WindowClearAnchors", WindowClearAnchors, name)
     end
     SetRootHandleInput(true)
@@ -379,6 +382,25 @@ function AA.EndStealthUi()
     UnparkApoRoot()
 end
 
+--- Show Apo without stock ShowCurrentWindow side effects:
+--- - AddToOpenList(MODE_AUTOMATIC) + Cascade.Resolve can close the vendor
+---   (store is MODE_HIGHLANDER; overflow windows get Done/closeFunction)
+--- - EA_BackpackUtilsMediator.ShowBackpack() opens bags the player left closed
+--- Cultivation planting uses AddCraftingItem and never opens CultivationWindow,
+--- which is why plant jobs do not disturb bag/vendor the same way.
+local function ShowApoRootVisible()
+    local name = ApoRootName()
+    if not (DoesWindowExist and DoesWindowExist(name)) then
+        return false
+    end
+    if WindowGetShowing(name) == true then
+        return true
+    end
+    -- Direct show only. Apo XML OnShown clears the board; it does not join cascade.
+    TryCall("WindowSetShowing", WindowSetShowing, name, true)
+    return WindowGetShowing(name) == true
+end
+
 function AA.InitHeadlessSession()
     local apo = AA.TradeSkill()
     if CraftingSystem and type(CraftingSystem.SetCurrentTradeSkill) == "function" then
@@ -387,12 +409,15 @@ function AA.InitHeadlessSession()
     if CraftingSystem and type(CraftingSystem.SetStaticData) == "function" then
         TryQuiet("SetStaticData", CraftingSystem.SetStaticData)
     end
-    if type(SendInitCrafting) == "function" then
-        TryCall("SendInitCrafting", SendInitCrafting, apo)
-    end
-    AA.SetSoftLocks(true)
+    ShowApoRootVisible()
     if type(ApothecaryWindow) == "table" and type(ApothecaryWindow.Show) == "function" then
+        -- SendInitCrafting + soft locks only (no backpack).
         TryQuiet("ApothecaryWindow.Show", ApothecaryWindow.Show)
+    elseif type(SendInitCrafting) == "function" then
+        TryCall("SendInitCrafting", SendInitCrafting, apo)
+        AA.SetSoftLocks(true)
+    else
+        AA.SetSoftLocks(true)
     end
 end
 
@@ -421,15 +446,16 @@ function AA.EnforceStealthHide(session)
         return false
     end
     AA.BeginOwnedSession()
-    if AA.CraftingSkillType() == AA.TradeSkill() then
+    if AA.IsWindowOpen() and AA.ParkApoRoot() then
         session._brewApoStealth = true
-        return AA.ParkApoRoot()
+        return true
     end
     return false
 end
 
---- Stock ToggleShowing must actually show so SkillType stamps. Then park the
---- root off-screen (children follow). Player ability unparks via the hook.
+--- Headless show (no cascade / backpack) so SkillType can stamp, then park
+--- off-screen in the same call. Player ability still uses stock ToggleShowing
+--- via InstallStealthHooks / PlaceApoOnScreen.
 function AA.OpenWindow(session)
     session = type(session) == "table" and session or nil
     local apo = AA.TradeSkill()
@@ -441,22 +467,13 @@ function AA.OpenWindow(session)
         session._brewApoStealth = false
     end
 
+    AA._sp3Opening = true
     AA.InitHeadlessSession()
-    local name = ApoRootName()
-    local alreadyShowing = DoesWindowExist(name) and WindowGetShowing(name) == true
-    if not alreadyShowing then
-        AA._sp3Opening = true
-        CallOrigToggle(apo)
-        AA._sp3Opening = false
+    AA._sp3Opening = false
+    if AA.IsWindowOpen() and AA.ParkApoRoot() and session then
+        session._brewApoStealth = true
     end
-    if AA.CraftingSkillType() == apo then
-        if session then
-            session._brewApoStealth = true
-        end
-        AA.ParkApoRoot()
-        return true
-    end
-    return false
+    return AA.CraftingSkillType() == apo
 end
 
 function AA.CloseWindow(session)
