@@ -379,9 +379,7 @@ function StockPiler3TabPlants.UpdateRows()
             local data = type(listData) == "table" and dataIndex and listData[dataIndex] or nil
             if type(data) == "table" then
                 WindowSetShowing(rowName, true)
-                if DefaultColor and DefaultColor.SetListRowTint then
-                    DefaultColor.SetListRowTint(rowName .. "Background", rowIndex, false)
-                end
+                StockPiler3.ViewList.ApplyRowStripe(rowName .. "Background", rowIndex)
                 if DoesWindowExist(rowName .. "Watch") then
                     local blocked = data.watchBlocked == true
                     if StockPiler3.Watch and StockPiler3.Watch.CanEnablePlantWatch then
@@ -525,6 +523,7 @@ function StockPiler3TabPlants.OnEffectComboChanged()
 end
 
 function StockPiler3TabPlants.OnMouseOverIcon()
+    StockPiler3.ViewList.OnRowChildMouseOver()
     local data = RowDataFromSender()
     if type(data) ~= "table" then
         return
@@ -552,6 +551,7 @@ function StockPiler3TabPlants.OnMouseOverIcon()
 end
 
 function StockPiler3TabPlants.OnMouseOverRecipe()
+    StockPiler3.ViewList.OnRowChildMouseOver()
     local data = RowDataFromSender()
     if type(data) ~= "table" or type(data.recipes) ~= "table" then
         return
@@ -627,6 +627,7 @@ function StockPiler3TabPlants.OnMouseOverRecipe()
 end
 
 function StockPiler3TabPlants.OnMouseOverForget()
+    StockPiler3.ViewList.OnRowChildMouseOver()
     StockPiler3.ViewList.ShowTextTip(SystemData.ActiveWindow.name, T("tip.plants.forget"))
 end
 

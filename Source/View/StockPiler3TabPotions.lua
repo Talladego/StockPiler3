@@ -609,7 +609,7 @@ function StockPiler3TabPotions.UpdateRows()
             local data = dataIndex and type(listData) == "table" and listData[dataIndex] or nil
             if data then
                 WindowSetShowing(rowName, true)
-                DefaultColor.SetListRowTint(rowName .. "Background", rowIndex, false)
+                StockPiler3.ViewList.ApplyRowStripe(rowName .. "Background", rowIndex)
                 local blocked = data.watchBlocked == true
                 if StockPiler3.Watch and StockPiler3.Watch.CanEnablePotionWatch then
                     blocked = StockPiler3.Watch.CanEnablePotionWatch(data.potionKey or data.id) ~= true
@@ -746,6 +746,7 @@ function StockPiler3TabPotions.OnToggleWatch()
 end
 
 function StockPiler3TabPotions.OnMouseOverIcon()
+    StockPiler3.ViewList.OnRowChildMouseOver()
     local data = RowDataFromActiveChild()
     if not data then
         return
@@ -761,6 +762,7 @@ function StockPiler3TabPotions.OnMouseOverIcon()
 end
 
 function StockPiler3TabPotions.OnMouseOverRecipe()
+    StockPiler3.ViewList.OnRowChildMouseOver()
     local data = RowDataFromActiveChild()
     if not data or not data.recipeData then
         return
@@ -809,5 +811,6 @@ function StockPiler3TabPotions.OnForgetRow()
 end
 
 function StockPiler3TabPotions.OnMouseOverForget()
+    StockPiler3.ViewList.OnRowChildMouseOver()
     StockPiler3.ViewList.ShowTextTip(SystemData.ActiveWindow.name, T("potions.forget_tip"))
 end

@@ -1,8 +1,8 @@
 ----------------------------------------------------------------
--- StockPiler3 Macro - ActionBar Harvest / Brew / Craft macros
--- (WarTriage / GatherButton / SP1 pattern). Macros only; does
--- not hijack stock Cultivating / Apothecary craft skills.
--- Craft: brew when the Brew footer is lit, else harvest when Harvest is lit, else grey.
+-- StockPiler3 Macro - ActionBar Craft macro (Harvest/Brew legacy
+-- orphans still recognized). Macros only; does not hijack stock
+-- Cultivating / Apothecary craft skills.
+-- Craft: brew when CanBrewNow, else harvest when CanHarvestNow, else grey.
 ----------------------------------------------------------------
 
 StockPiler3.Macro = StockPiler3.Macro or {}
@@ -436,70 +436,32 @@ local function EnsureCraftMacroIcon(iconMode)
     return true
 end
 
+--- Refresh an orphan Harvest macro slot if the player still has one.
+--- Does not create new Harvest macros (Craft-only).
 function Macro.UpdateMacro()
-    local macros = GetMacroTable()
-    local limit = NumMacroSlots()
-
     local existing = Macro.GetMacroId()
-    if existing then
-        SetMacroSlot(existing, MACRO_NAME, MACRO_TEXT, MACRO_ICON)
-        Macro.MacroWarningState.full = false
-        Macro.MacroWarningState.missing = false
-        return true
+    if not existing then
+        Macro.MacroWarningState.missing = true
+        return false
     end
-
-    for slot = 1, limit do
-        local macro = macros[slot]
-        if type(macro) == "table" and MacroText(macro) == L"" and (macro.name == nil or macro.name == L"") then
-            SetMacroSlot(slot, MACRO_NAME, MACRO_TEXT, MACRO_ICON)
-            Print(T("macro.harvest_created", {
-                icon = tostring(MACRO_ICON),
-                slot = tostring(slot),
-            }))
-            Macro.MacroWarningState.full = false
-            Macro.MacroWarningState.missing = false
-            return true
-        end
-    end
-
-    if not Macro.MacroWarningState.full then
-        Print(T("macro.harvest_full"))
-        Macro.MacroWarningState.full = true
-    end
-    return false
+    SetMacroSlot(existing, MACRO_NAME, MACRO_TEXT, MACRO_ICON)
+    Macro.MacroWarningState.full = false
+    Macro.MacroWarningState.missing = false
+    return true
 end
 
+--- Refresh an orphan Brew macro slot if the player still has one.
+--- Does not create new Brew macros (Craft-only).
 function Macro.UpdateBrewMacro()
-    local macros = GetMacroTable()
-    local limit = NumMacroSlots()
-
     local existing = Macro.GetBrewMacroId()
-    if existing then
-        SetMacroSlot(existing, BREW_MACRO_NAME, BREW_MACRO_TEXT, BREW_MACRO_ICON, "brew")
-        Macro.BrewMacroWarningState.full = false
-        Macro.BrewMacroWarningState.missing = false
-        return true
+    if not existing then
+        Macro.BrewMacroWarningState.missing = true
+        return false
     end
-
-    for slot = 1, limit do
-        local macro = macros[slot]
-        if type(macro) == "table" and MacroText(macro) == L"" and (macro.name == nil or macro.name == L"") then
-            SetMacroSlot(slot, BREW_MACRO_NAME, BREW_MACRO_TEXT, BREW_MACRO_ICON, "brew")
-            Print(T("macro.brew_created", {
-                icon = tostring(BREW_MACRO_ICON),
-                slot = tostring(slot),
-            }))
-            Macro.BrewMacroWarningState.full = false
-            Macro.BrewMacroWarningState.missing = false
-            return true
-        end
-    end
-
-    if not Macro.BrewMacroWarningState.full then
-        Print(T("macro.brew_full"))
-        Macro.BrewMacroWarningState.full = true
-    end
-    return false
+    SetMacroSlot(existing, BREW_MACRO_NAME, BREW_MACRO_TEXT, BREW_MACRO_ICON, "brew")
+    Macro.BrewMacroWarningState.full = false
+    Macro.BrewMacroWarningState.missing = false
+    return true
 end
 
 function Macro.UpdateCraftMacro()
@@ -845,9 +807,12 @@ function Macro.IsCraftMacroButton(button)
     return macroId ~= nil and button.m_ActionId == macroId
 end
 
---- Fire PERFORM_CRAFTING via a placed Harvest macro Action window.
-function Macro.FireHarvestGameAction()
+local function FireHarvestFromMacroSlots(macroId)
     if type(WindowGameAction) ~= "function" or not ActionBars or not ActionBars.BarAndButtonIdFromSlot then
+        return false
+    end
+    macroId = tonumber(macroId) or 0
+    if macroId <= 0 then
         return false
     end
     local function tryButton(button)
@@ -863,10 +828,6 @@ function Macro.FireHarvestGameAction()
         end
         local ok = TryCall("WindowGameAction", WindowGameAction, actionName)
         return ok == true
-    end
-    local macroId = Macro.GetMacroId()
-    if not macroId then
-        return false
     end
     local slots = Macro.GetMacroSlots(macroId) or {}
     for i = 1, #slots do
@@ -881,36 +842,24 @@ end
 
 --- Fire Cultivation PERFORM_CRAFTING via a placed Craft macro Action window.
 function Macro.FireCraftHarvestGameAction()
-    if type(WindowGameAction) ~= "function" or not ActionBars or not ActionBars.BarAndButtonIdFromSlot then
-        return false
+    return FireHarvestFromMacroSlots(Macro.GetCraftMacroId())
+end
+
+--- Legacy: fire via an orphan Harvest macro slot (Craft-only no longer creates these).
+function Macro.FireHarvestGameAction()
+    return FireHarvestFromMacroSlots(Macro.GetMacroId())
+end
+
+--- Preferred harvest fire order: Craft bar → footer chrome → orphan Harvest slots.
+function Macro.FireHarvestActionPreferred()
+    if Macro.FireCraftHarvestGameAction() then
+        return true
     end
-    local function tryButton(button)
-        if not button or not button.m_Name then
-            return false
-        end
-        local actionName = button.m_Name .. "Action"
-        if not DoesWindowExist(actionName) then
-            return false
-        end
-        if not bindHarvestGameActionForButton(button, { force = true }) then
-            return false
-        end
-        local ok = TryCall("WindowGameAction", WindowGameAction, actionName)
-        return ok == true
+    local Chrome = StockPiler3.HarvestChrome
+    if Chrome and Chrome.FireFooterHarvestAction and Chrome.FireFooterHarvestAction() == true then
+        return true
     end
-    local macroId = Macro.GetCraftMacroId()
-    if not macroId then
-        return false
-    end
-    local slots = Macro.GetMacroSlots(macroId) or {}
-    for i = 1, #slots do
-        local hbar, buttonId = ActionBars:BarAndButtonIdFromSlot(slots[i])
-        local button = hbar and hbar.m_Buttons and hbar.m_Buttons[buttonId]
-        if tryButton(button) then
-            return true
-        end
-    end
-    return false
+    return Macro.FireHarvestGameAction()
 end
 
 local function clearPickupIfMouse(flags)
@@ -1306,25 +1255,12 @@ function Macro.RefreshMacroButtonAppearance(opts)
                 paintedCraft = paintedCraft + 1
             end
         end)
-        if applyHarvest and macroId then
-            if paintedHarvest == 0 then
-                if not Macro.MacroWarningState.unplaced then
-                    Print(T("macro.harvest_unplaced", { icon = tostring(MACRO_ICON) }))
-                    Macro.MacroWarningState.unplaced = true
-                end
-            else
-                Macro.MacroWarningState.unplaced = false
-            end
+        -- Harvest/Brew orphans: paint if on a bar; never nag about unplaced.
+        if applyHarvest and macroId and paintedHarvest > 0 then
+            Macro.MacroWarningState.unplaced = false
         end
-        if applyBrew and brewId then
-            if paintedBrew == 0 then
-                if not Macro.BrewMacroWarningState.unplaced then
-                    Print(T("macro.brew_unplaced", { icon = tostring(BREW_MACRO_ICON) }))
-                    Macro.BrewMacroWarningState.unplaced = true
-                end
-            else
-                Macro.BrewMacroWarningState.unplaced = false
-            end
+        if applyBrew and brewId and paintedBrew > 0 then
+            Macro.BrewMacroWarningState.unplaced = false
         end
         if applyCraft and craftId then
             if paintedCraft == 0 then
@@ -1870,17 +1806,51 @@ function Macro.HarvestClick()
     if Grow.PrepareHarvestPlot and Grow.PrepareHarvestPlot(true) ~= true then
         return
     end
-    if Macro.FireHarvestGameAction() then
-        return
-    end
-    -- Fallback when no bar slot / Action bind failed (footer WindowGameAction fallback).
-    if StockPiler3.HarvestChrome and StockPiler3.HarvestChrome.FireHarvestAction then
-        StockPiler3.HarvestChrome.FireHarvestAction()
+    if Macro.FireHarvestActionPreferred() then
         return
     end
     if Grow.HarvestClick then
         Grow.HarvestClick()
     end
+end
+
+--- One-time tip: legacy Harvest/Brew on a bar while Craft is unplaced.
+function Macro.MaybeTipCraftOnly()
+    local s = StockPiler3.Settings
+    if type(s) ~= "table" or s._craftOnlyTipShown == true then
+        return
+    end
+    local craftId = Macro.GetCraftMacroId()
+    if not craftId then
+        return
+    end
+    local craftSlots = Macro.GetMacroSlots(craftId) or {}
+    if #craftSlots > 0 then
+        s._craftOnlyTipShown = true
+        return
+    end
+    local hasLegacyOnBar = false
+    local harvestId = Macro.GetMacroId()
+    local brewId = Macro.GetBrewMacroId()
+    if harvestId then
+        local slots = Macro.GetMacroSlots(harvestId) or {}
+        if #slots > 0 then
+            hasLegacyOnBar = true
+        end
+    end
+    if not hasLegacyOnBar and brewId then
+        local slots = Macro.GetMacroSlots(brewId) or {}
+        if #slots > 0 then
+            hasLegacyOnBar = true
+        end
+    end
+    if not hasLegacyOnBar then
+        return
+    end
+    s._craftOnlyTipShown = true
+    Print(T("macro.craft_only_tip", {
+        icon = tostring(CraftIconIdForMode(Macro._craftIconMode or "harvest")),
+    }))
 end
 
 function Macro.BrewClick()
@@ -1922,15 +1892,7 @@ function Macro.CraftClick()
         if Grow.PrepareHarvestPlot and Grow.PrepareHarvestPlot(true) ~= true then
             return
         end
-        if Macro.FireCraftHarvestGameAction() then
-            return
-        end
-        -- Fallback: harvest macro slots / chrome / direct harvest.
-        if Macro.FireHarvestGameAction() then
-            return
-        end
-        if StockPiler3.HarvestChrome and StockPiler3.HarvestChrome.FireHarvestAction then
-            StockPiler3.HarvestChrome.FireHarvestAction()
+        if Macro.FireHarvestActionPreferred() then
             return
         end
         if Grow.HarvestClick then
@@ -1968,9 +1930,11 @@ end
 
 function Macro.Initialize()
     if Macro._initialized then
+        -- Craft-only create; refresh orphan Harvest/Brew text if still present.
         Macro.UpdateMacro()
         Macro.UpdateBrewMacro()
         Macro.UpdateCraftMacro()
+        Macro.MaybeTipCraftOnly()
         Macro.RefreshMacroButtonAppearance()
         return
     end
@@ -1985,6 +1949,7 @@ function Macro.Initialize()
     Macro.UpdateMacro()
     Macro.UpdateBrewMacro()
     Macro.UpdateCraftMacro()
+    Macro.MaybeTipCraftOnly()
     Macro.RegisterHotbarEventHandler()
     Macro.RefreshMacroButtonAppearance()
     Macro._initialized = true

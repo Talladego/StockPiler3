@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.328** — Code-quality cleanup on top of 0.3.327 feature work.
+**Version 0.3.329** — Craft-only hotbar macro; row zebra gutter + mouseover highlight.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -115,7 +115,7 @@ Offline climb-link repair (client shut down): `tools/_repair_climb_links_sv.py` 
 
 ## Macros
 
-Creates **StockPiler3 Harvest**, **StockPiler3 Brew**, and **StockPiler3 Craft**. Drag to a hotbar. Craft is context-aware (harvest vs brew): latched icon (starts as Harvest, grey when idle), smart tooltip shows the next click and any follow-up. Does not hijack stock craft skills. Ignores SP1/SP2 macro names.
+Creates **StockPiler3 Craft** only. Drag it to a hotbar. Context-aware (brew when Ready, else harvest): latched icon (starts as Harvest, grey when idle), smart tooltip, harvest countdown / stay overlay. Prefer-brew when both are lit (use the footer Harvest button to harvest while Brew is Ready). Footer Harvest / Brew remain. Old Harvest / Brew macros still work if left on a bar but are no longer created. Does not hijack stock craft skills. Ignores SP1/SP2 macro names.
 
 ## Design
 
@@ -136,6 +136,7 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.329 | Craft-only macro (stop creating Harvest/Brew); harvest fire Craft/footer-first; row zebra clears scrollbar + mouseover highlight |
 | 0.3.328 | Cleanup: dead Adapter/Core/Planner/Brew/Grow/View code, stale comments, nil guards, unused locale keys |
 | 0.3.327 | Headless Apo open (no cascade/backpack); defer refine while vendor open; AutoBuy resume after idle-no-jobs; Craft harvest timer + stay icon; chat item icons; combined buy status; live Craft tooltip times |
 | 0.3.296 | Paint SkillUp Watch rows after logon/reload without dumpall |

@@ -231,3 +231,118 @@ function VL.LiveTipMaybeRefresh(state, buildText, fingerprint, showFn)
         VL.LiveTipShow(state, buildText, fingerprint, win, state._liveAnchor)
     end
 end
+
+----------------------------------------------------------------
+-- List row zebra + mouseover highlight
+----------------------------------------------------------------
+
+--- Walk up from a child control to the ListBox row that owns …Background.
+function VL.ResolveListRow(winName)
+    winName = tostring(winName or "")
+    local guard = 0
+    while winName ~= "" and guard < 8 do
+        guard = guard + 1
+        if string.find(winName, "ListRow", 1, true)
+            and type(DoesWindowExist) == "function"
+            and DoesWindowExist(winName .. "Background")
+        then
+            return winName
+        end
+        if type(WindowGetParent) ~= "function" then
+            break
+        end
+        winName = WindowGetParent(winName) or ""
+    end
+    return nil
+end
+
+local function PaintRowHover(bgName)
+    if type(DoesWindowExist) == "function" and not DoesWindowExist(bgName) then
+        return
+    end
+    local c = DefaultColor and DefaultColor.ROW_BACKGROUND_HIGHLIGHT
+    if type(c) ~= "table" then
+        c = { r = 66, g = 35, b = 0, a = 1 }
+    end
+    WindowSetTintColor(bgName, tonumber(c.r) or 66, tonumber(c.g) or 35, tonumber(c.b) or 0)
+    if type(WindowSetAlpha) == "function" and c.a ~= nil then
+        WindowSetAlpha(bgName, tonumber(c.a) or 1)
+    end
+end
+
+--- Apply zebra stripe, or keep mouseover highlight if this row is hovered.
+function VL.ApplyRowStripe(bgName, rowIndex)
+    if type(DoesWindowExist) == "function" and not DoesWindowExist(bgName) then
+        return
+    end
+    rowIndex = tonumber(rowIndex) or 1
+    if VL._hoverRow and (VL._hoverRow .. "Background") == bgName then
+        PaintRowHover(bgName)
+        return
+    end
+    if DefaultColor and DefaultColor.SetListRowTint then
+        DefaultColor.SetListRowTint(bgName, rowIndex, false)
+    end
+end
+
+function VL.BeginRowHover(rowName)
+    rowName = tostring(rowName or "")
+    if rowName == "" or (type(DoesWindowExist) == "function" and not DoesWindowExist(rowName)) then
+        return
+    end
+    local rowIndex = tonumber(WindowGetId(rowName)) or 1
+    if VL._hoverRow and VL._hoverRow ~= rowName then
+        local prev = VL._hoverRow
+        local prevIdx = VL._hoverRowIndex or 1
+        VL._hoverRow = nil
+        VL._hoverRowIndex = nil
+        if DoesWindowExist(prev .. "Background") and DefaultColor and DefaultColor.SetListRowTint then
+            DefaultColor.SetListRowTint(prev .. "Background", prevIdx, false)
+        end
+    end
+    VL._hoverRow = rowName
+    VL._hoverRowIndex = rowIndex
+    PaintRowHover(rowName .. "Background")
+end
+
+function VL.EndRowHover(rowName)
+    rowName = tostring(rowName or "")
+    if rowName == "" or VL._hoverRow ~= rowName then
+        return
+    end
+    local mouseWin = SystemData and SystemData.MouseOverWindow and SystemData.MouseOverWindow.name
+    if mouseWin and mouseWin ~= "" and VL.ResolveListRow(mouseWin) == rowName then
+        return
+    end
+    local idx = VL._hoverRowIndex or 1
+    VL._hoverRow = nil
+    VL._hoverRowIndex = nil
+    if DoesWindowExist(rowName .. "Background") and DefaultColor and DefaultColor.SetListRowTint then
+        DefaultColor.SetListRowTint(rowName .. "Background", idx, false)
+    end
+end
+
+function VL.OnRowMouseOver()
+    VL.BeginRowHover(SystemData.ActiveWindow.name)
+end
+
+function VL.OnRowMouseOverEnd()
+    VL.EndRowHover(SystemData.ActiveWindow.name)
+end
+
+function VL.OnRowChildMouseOver()
+    local row = VL.ResolveListRow(SystemData.ActiveWindow.name)
+    if row then
+        VL.BeginRowHover(row)
+    end
+end
+
+function VL.OnRowChildMouseOverEnd()
+    local row = VL.ResolveListRow(SystemData.ActiveWindow.name)
+    if row then
+        VL.EndRowHover(row)
+    end
+end
+
+-- Flat global for XML EventHandler paths (engine resolves one table level).
+StockPiler3ViewList = VL

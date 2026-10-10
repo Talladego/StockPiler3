@@ -437,6 +437,17 @@
                     </Anchors>
                 </Button>
 
+                <!-- Opaque fill under list + scrollbar gutter (hides world underpaint). -->
+                <FullResizeImage name="$parentListFill" inherits="EA_FullResizeImage_BlackTransparent" handleinput="false" layer="background">
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="0" y="178" />
+                        </Anchor>
+                        <Anchor point="bottomright" relativePoint="bottomright">
+                            <AbsPoint x="-6" y="-8" />
+                        </Anchor>
+                    </Anchors>
+                </FullResizeImage>
                 <ListBox name="$parentList" scrollbar="EA_ScrollBar_DefaultVerticalChain" rowdef="StockPiler3WatchRow" visiblerows="11" rowspacing="2">
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">

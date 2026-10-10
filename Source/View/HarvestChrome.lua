@@ -125,12 +125,8 @@ function HarvestChrome.ClearHarvestActionBound()
     return cleared
 end
 
-function HarvestChrome.FireHarvestAction()
-    if StockPiler3.Macro and StockPiler3.Macro.FireHarvestGameAction then
-        if StockPiler3.Macro.FireHarvestGameAction() == true then
-            return true
-        end
-    end
+--- Footer-only WindowGameAction (no macro bar slots). Used by preferred fire order.
+function HarvestChrome.FireFooterHarvestAction()
     HarvestChrome.EnsureHarvestActionBound()
     if type(WindowGameAction) ~= "function" then
         return false
@@ -153,4 +149,23 @@ function HarvestChrome.FireHarvestAction()
         return ok == true
     end
     return tryWin(HARVEST_WIN, true) or tryWin(HARVEST_ACTION_WIN, true)
+end
+
+--- Craft bar → footer → orphan Harvest slots.
+function HarvestChrome.FireHarvestAction()
+    if StockPiler3.Macro and StockPiler3.Macro.FireHarvestActionPreferred then
+        return StockPiler3.Macro.FireHarvestActionPreferred() == true
+    end
+    if StockPiler3.Macro and StockPiler3.Macro.FireCraftHarvestGameAction then
+        if StockPiler3.Macro.FireCraftHarvestGameAction() == true then
+            return true
+        end
+    end
+    if HarvestChrome.FireFooterHarvestAction() then
+        return true
+    end
+    if StockPiler3.Macro and StockPiler3.Macro.FireHarvestGameAction then
+        return StockPiler3.Macro.FireHarvestGameAction() == true
+    end
+    return false
 end

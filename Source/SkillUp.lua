@@ -4573,7 +4573,7 @@ local function BuildApoWatchStatusRow()
     local dash = TOr("ui.dash", L"-")
     local statusLines = {
         TOr("skillup.watch.apo_tip", L"Addon-controlled Apothecary Skill up (not a saved watch)."),
-        TOr("skillup.watch.apo_brew_tip", L"Does not use AutoGrow. Use Brew when ready (or the Brew macro)."),
+        TOr("skillup.watch.apo_brew_tip", L"Does not use AutoGrow. Use Brew when ready (or the Craft macro)."),
         TFmt("skillup.watch.apo_tier_line", { tier = tostring(tier) },
             towstring(string.format("Brewing at Apo skill %d", tier))),
         TFmt("skillup.watch.apo_craftable_line", { n = tostring(craftable or 0) },

@@ -78,7 +78,9 @@ function StockPiler3TabWatch.PrimeRowChrome()
     for rowIndex = 1, numVisible do
         local rowName = "SP3TabWatchListRow" .. rowIndex
         if DoesWindowExist(rowName) then
-            if DefaultColor and DefaultColor.SetListRowTint then
+            if StockPiler3.ViewList and StockPiler3.ViewList.ApplyRowStripe then
+                StockPiler3.ViewList.ApplyRowStripe(rowName .. "Background", rowIndex)
+            elseif DefaultColor and DefaultColor.SetListRowTint then
                 DefaultColor.SetListRowTint(rowName .. "Background", rowIndex, false)
             elseif WindowSetTintColor then
                 WindowSetTintColor(rowName .. "Background", 20, 20, 20)
@@ -1396,9 +1398,7 @@ function StockPiler3TabWatch.UpdateRows(opts)
             local data = dataIndex and type(listData) == "table" and listData[dataIndex] or nil
             if data then
                 WindowSetShowing(rowName, true)
-                if DefaultColor and DefaultColor.SetListRowTint then
-                    DefaultColor.SetListRowTint(rowName .. "Background", rowIndex, false)
-                end
+                StockPiler3.ViewList.ApplyRowStripe(rowName .. "Background", rowIndex)
                 local brewState = GetRowCraftUiState(data)
                 local craftableGreen = RowCraftableGreen(data)
                 local craftableSnapOk = RowCraftableSnapCurrent(data)
@@ -2679,6 +2679,7 @@ function StockPiler3TabWatch.OnMouseOverBudgetReset()
 end
 
 function StockPiler3TabWatch.OnMouseOverIcon()
+    StockPiler3.ViewList.OnRowChildMouseOver()
     local data = RowDataFromActiveChild()
     if not data then
         return
@@ -2732,6 +2733,7 @@ function StockPiler3TabWatch.OnMouseOverName()
 end
 
 function StockPiler3TabWatch.OnMouseOverStatus()
+    StockPiler3.ViewList.OnRowChildMouseOver()
     local data = RowDataFromActiveChild()
     if not data then
         return
@@ -2774,6 +2776,7 @@ function StockPiler3TabWatch.OnMouseOverStatus()
 end
 
 function StockPiler3TabWatch.OnMouseOverStock()
+    StockPiler3.ViewList.OnRowChildMouseOver()
     local data = RowDataFromActiveChild()
     if not data then
         return
@@ -2793,6 +2796,7 @@ function StockPiler3TabWatch.OnMouseOverStock()
 end
 
 function StockPiler3TabWatch.OnMouseOverCraftable()
+    StockPiler3.ViewList.OnRowChildMouseOver()
     local data = RowDataFromActiveChild()
     if not data or IsPlantWatchRow(data) then
         return
@@ -2818,6 +2822,7 @@ function StockPiler3TabWatch.OnMouseOverCraftable()
 end
 
 function StockPiler3TabWatch.OnMouseOverTarget()
+    StockPiler3.ViewList.OnRowChildMouseOver()
     local data = RowDataFromActiveChild()
     if data and IsUpgradeWatchRow(data) then
         Tip(T("upgrade.watch.tip"))
@@ -2831,10 +2836,12 @@ function StockPiler3TabWatch.OnMouseOverTarget()
 end
 
 function StockPiler3TabWatch.OnMouseOverPrio()
+    StockPiler3.ViewList.OnRowChildMouseOver()
     Tip(T("tip.watch.prio_chip"))
 end
 
 function StockPiler3TabWatch.OnMouseOverRowAutoGrow()
+    StockPiler3.ViewList.OnRowChildMouseOver()
     local data = RowDataFromActiveChild()
     if data and IsUpgradeWatchRow(data) then
         Tip(T("upgrade.watch.ag_tip"))
@@ -2848,6 +2855,7 @@ function StockPiler3TabWatch.OnMouseOverRowAutoGrow()
 end
 
 function StockPiler3TabWatch.OnMouseOverLoad()
+    StockPiler3.ViewList.OnRowChildMouseOver()
     local data = RowDataFromActiveChild()
     if StockPiler3.BrewTooltip and StockPiler3.BrewTooltip.ShowRow then
         StockPiler3.BrewTooltip.ShowRow(SystemData.ActiveWindow.name, data)

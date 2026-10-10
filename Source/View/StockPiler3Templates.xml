@@ -100,11 +100,18 @@
             <Size>
                 <AbsPoint x="1000" y="32" />
             </Size>
+            <EventHandlers>
+                <EventHandler event="OnMouseOver" function="StockPiler3ViewList.OnRowMouseOver" />
+                <EventHandler event="OnMouseOverEnd" function="StockPiler3ViewList.OnRowMouseOverEnd" />
+            </EventHandlers>
             <Windows>
+                <!-- Inset -22 clears EA_ScrollBar_DefaultVerticalChain so zebra never paints under the thumb. -->
                 <FullResizeImage name="$parentBackground" inherits="EA_FullResizeImage_TintableSolidBackground" layer="background" handleinput="false">
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft" />
-                        <Anchor point="bottomright" relativePoint="bottomright" />
+                        <Anchor point="bottomright" relativePoint="bottomright">
+                            <AbsPoint x="-22" y="0" />
+                        </Anchor>
                     </Anchors>
                 </FullResizeImage>
 
@@ -119,6 +126,8 @@
                     </Anchors>
                     <EventHandlers>
                         <EventHandler event="OnLButtonUp" function="StockPiler3TabPotions.OnToggleWatch" />
+                        <EventHandler event="OnMouseOver" function="StockPiler3ViewList.OnRowChildMouseOver" />
+                        <EventHandler event="OnMouseOverEnd" function="StockPiler3ViewList.OnRowChildMouseOverEnd" />
                     </EventHandlers>
                 </Button>
 
@@ -133,6 +142,7 @@
                     </Anchors>
                     <EventHandlers>
                         <EventHandler event="OnMouseOver" function="StockPiler3TabPotions.OnMouseOverIcon" />
+                        <EventHandler event="OnMouseOverEnd" function="StockPiler3ViewList.OnRowChildMouseOverEnd" />
                     </EventHandlers>
                 </DynamicImage>
 
@@ -246,6 +256,7 @@
                     </Anchors>
                     <EventHandlers>
                         <EventHandler event="OnMouseOver" function="StockPiler3TabPotions.OnMouseOverRecipe" />
+                        <EventHandler event="OnMouseOverEnd" function="StockPiler3ViewList.OnRowChildMouseOverEnd" />
                     </EventHandlers>
                 </DynamicImage>
 
@@ -261,6 +272,7 @@
                     <EventHandlers>
                         <EventHandler event="OnLButtonUp" function="StockPiler3TabPotions.OnForgetRow" />
                         <EventHandler event="OnMouseOver" function="StockPiler3TabPotions.OnMouseOverForget" />
+                        <EventHandler event="OnMouseOverEnd" function="StockPiler3ViewList.OnRowChildMouseOverEnd" />
                     </EventHandlers>
                 </Button>
             </Windows>
@@ -271,11 +283,18 @@
             <Size>
                 <AbsPoint x="1000" y="32" />
             </Size>
+            <EventHandlers>
+                <EventHandler event="OnMouseOver" function="StockPiler3ViewList.OnRowMouseOver" />
+                <EventHandler event="OnMouseOverEnd" function="StockPiler3ViewList.OnRowMouseOverEnd" />
+            </EventHandlers>
             <Windows>
+                <!-- Inset -22 clears EA_ScrollBar_DefaultVerticalChain so zebra never paints under the thumb. -->
                 <FullResizeImage name="$parentBackground" inherits="EA_FullResizeImage_TintableSolidBackground" layer="background" handleinput="false">
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft" />
-                        <Anchor point="bottomright" relativePoint="bottomright" />
+                        <Anchor point="bottomright" relativePoint="bottomright">
+                            <AbsPoint x="-22" y="0" />
+                        </Anchor>
                     </Anchors>
                 </FullResizeImage>
 
@@ -290,6 +309,8 @@
                     </Anchors>
                     <EventHandlers>
                         <EventHandler event="OnLButtonUp" function="StockPiler3TabPlants.OnToggleWatch" />
+                        <EventHandler event="OnMouseOver" function="StockPiler3ViewList.OnRowChildMouseOver" />
+                        <EventHandler event="OnMouseOverEnd" function="StockPiler3ViewList.OnRowChildMouseOverEnd" />
                     </EventHandlers>
                 </Button>
 
@@ -304,6 +325,7 @@
                     </Anchors>
                     <EventHandlers>
                         <EventHandler event="OnMouseOver" function="StockPiler3TabPlants.OnMouseOverIcon" />
+                        <EventHandler event="OnMouseOverEnd" function="StockPiler3ViewList.OnRowChildMouseOverEnd" />
                     </EventHandlers>
                 </DynamicImage>
 
@@ -417,6 +439,7 @@
                     </Anchors>
                     <EventHandlers>
                         <EventHandler event="OnMouseOver" function="StockPiler3TabPlants.OnMouseOverRecipe" />
+                        <EventHandler event="OnMouseOverEnd" function="StockPiler3ViewList.OnRowChildMouseOverEnd" />
                     </EventHandlers>
                 </DynamicImage>
 
@@ -432,6 +455,7 @@
                     <EventHandlers>
                         <EventHandler event="OnLButtonUp" function="StockPiler3TabPlants.OnForgetRow" />
                         <EventHandler event="OnMouseOver" function="StockPiler3TabPlants.OnMouseOverForget" />
+                        <EventHandler event="OnMouseOverEnd" function="StockPiler3ViewList.OnRowChildMouseOverEnd" />
                     </EventHandlers>
                 </Button>
             </Windows>
@@ -442,11 +466,18 @@
             <Size>
                 <AbsPoint x="1000" y="32" />
             </Size>
+            <EventHandlers>
+                <EventHandler event="OnMouseOver" function="StockPiler3ViewList.OnRowMouseOver" />
+                <EventHandler event="OnMouseOverEnd" function="StockPiler3ViewList.OnRowMouseOverEnd" />
+            </EventHandlers>
             <Windows>
-                <FullResizeImage name="$parentBackground" inherits="EA_FullResizeImage_TintableSolidBackground" handleinput="false">
+                <!-- Inset -22 clears EA_ScrollBar_DefaultVerticalChain so zebra never paints under the thumb. -->
+                <FullResizeImage name="$parentBackground" inherits="EA_FullResizeImage_TintableSolidBackground" layer="background" handleinput="false">
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft" />
-                        <Anchor point="bottomright" relativePoint="bottomright" />
+                        <Anchor point="bottomright" relativePoint="bottomright">
+                            <AbsPoint x="-22" y="0" />
+                        </Anchor>
                     </Anchors>
                 </FullResizeImage>
 
@@ -481,6 +512,7 @@
                         <EventHandler event="OnLButtonUp" function="StockPiler3TabWatch.OnPrioLButtonUp" />
                         <EventHandler event="OnRButtonUp" function="StockPiler3TabWatch.OnPrioRButtonUp" />
                         <EventHandler event="OnMouseOver" function="StockPiler3TabWatch.OnMouseOverPrio" />
+                        <EventHandler event="OnMouseOverEnd" function="StockPiler3ViewList.OnRowChildMouseOverEnd" />
                     </EventHandlers>
                 </Label>
 
@@ -495,6 +527,7 @@
                     </Anchors>
                     <EventHandlers>
                         <EventHandler event="OnMouseOver" function="StockPiler3TabWatch.OnMouseOverIcon" />
+                        <EventHandler event="OnMouseOverEnd" function="StockPiler3ViewList.OnRowChildMouseOverEnd" />
                     </EventHandlers>
                 </DynamicImage>
 
@@ -509,6 +542,7 @@
                     </Anchors>
                     <EventHandlers>
                         <EventHandler event="OnMouseOver" function="StockPiler3TabWatch.OnMouseOverName" />
+                        <EventHandler event="OnMouseOverEnd" function="StockPiler3ViewList.OnRowChildMouseOverEnd" />
                     </EventHandlers>
                 </Label>
 
@@ -523,6 +557,7 @@
                     </Anchors>
                     <EventHandlers>
                         <EventHandler event="OnMouseOver" function="StockPiler3TabWatch.OnMouseOverStatus" />
+                        <EventHandler event="OnMouseOverEnd" function="StockPiler3ViewList.OnRowChildMouseOverEnd" />
                     </EventHandlers>
                 </Label>
 
@@ -537,6 +572,7 @@
                     </Anchors>
                     <EventHandlers>
                         <EventHandler event="OnMouseOver" function="StockPiler3TabWatch.OnMouseOverStock" />
+                        <EventHandler event="OnMouseOverEnd" function="StockPiler3ViewList.OnRowChildMouseOverEnd" />
                     </EventHandlers>
                 </Label>
 
@@ -551,6 +587,7 @@
                     </Anchors>
                     <EventHandlers>
                         <EventHandler event="OnMouseOver" function="StockPiler3TabWatch.OnMouseOverCraftable" />
+                        <EventHandler event="OnMouseOverEnd" function="StockPiler3ViewList.OnRowChildMouseOverEnd" />
                     </EventHandlers>
                 </Label>
 
@@ -585,6 +622,7 @@
                         <EventHandler event="OnLButtonUp" function="StockPiler3TabWatch.OnTargetLButtonUp" />
                         <EventHandler event="OnRButtonUp" function="StockPiler3TabWatch.OnTargetRButtonUp" />
                         <EventHandler event="OnMouseOver" function="StockPiler3TabWatch.OnMouseOverTarget" />
+                        <EventHandler event="OnMouseOverEnd" function="StockPiler3ViewList.OnRowChildMouseOverEnd" />
                     </EventHandlers>
                 </Label>
 
@@ -600,6 +638,7 @@
                     <EventHandlers>
                         <EventHandler event="OnLButtonUp" function="StockPiler3TabWatch.OnToggleRowAutoGrow" />
                         <EventHandler event="OnMouseOver" function="StockPiler3TabWatch.OnMouseOverRowAutoGrow" />
+                        <EventHandler event="OnMouseOverEnd" function="StockPiler3ViewList.OnRowChildMouseOverEnd" />
                     </EventHandlers>
                 </Button>
 
@@ -616,6 +655,7 @@
                         <EventHandler event="OnLButtonUp" function="StockPiler3TabWatch.OnLoadRow" />
                         <EventHandler event="OnRButtonUp" function="StockPiler3TabWatch.OnLoadRowRightClick" />
                         <EventHandler event="OnMouseOver" function="StockPiler3TabWatch.OnMouseOverLoad" />
+                        <EventHandler event="OnMouseOverEnd" function="StockPiler3ViewList.OnRowChildMouseOverEnd" />
                     </EventHandlers>
                 </Button>
             </Windows>

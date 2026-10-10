@@ -258,6 +258,16 @@
                     </Anchors>
                 </Button>
 
+                <FullResizeImage name="$parentListFill" inherits="EA_FullResizeImage_BlackTransparent" handleinput="false" layer="background">
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="0" y="162" />
+                        </Anchor>
+                        <Anchor point="bottomright" relativePoint="bottomright">
+                            <AbsPoint x="-6" y="-8" />
+                        </Anchor>
+                    </Anchors>
+                </FullResizeImage>
                 <ListBox name="$parentList" scrollbar="EA_ScrollBar_DefaultVerticalChain" rowdef="StockPiler3PlantRow" visiblerows="12" rowspacing="2">
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
