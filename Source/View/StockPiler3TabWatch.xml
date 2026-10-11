@@ -353,6 +353,31 @@
                     </EventHandlers>
                 </Button>
 
+                <Button name="$parentAutoBrew" inherits="EA_Button_DefaultCheckBox">
+                    <Size>
+                        <AbsPoint x="20" y="20" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="440" y="124" />
+                        </Anchor>
+                    </Anchors>
+                    <EventHandlers>
+                        <EventHandler event="OnLButtonUp" function="StockPiler3TabWatch.OnToggleAutoBrew" />
+                        <EventHandler event="OnMouseOver" function="StockPiler3TabWatch.OnMouseOverAutoBrew" />
+                    </EventHandlers>
+                </Button>
+                <Label name="$parentAutoBrewLabel" font="font_chat_text" maxchars="24" textalign="leftcenter" handleinput="false">
+                    <Size>
+                        <AbsPoint x="96" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="464" y="120" />
+                        </Anchor>
+                    </Anchors>
+                </Label>
+
                 <!-- Headers: Prio | Name | Status | Stock | Craftable | Target | AutoGrow | Brew (1000px) -->
                 <Button name="$parentColPrio" inherits="StockPiler3_StaticHeader">
                     <Size>

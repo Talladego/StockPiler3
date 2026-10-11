@@ -453,6 +453,9 @@ function Orch._TickBody()
         if Brew and Brew.ProbeStuckAutoLoaded then
             Brew.ProbeStuckAutoLoaded("orch-tick")
         end
+        if Brew and Brew.MaybeAutoPerformReady then
+            Brew.MaybeAutoPerformReady()
+        end
     end
     if Orch.IsBrewSessionActive() == true then
         if Sch and Sch.SetAutoGrowIdle then

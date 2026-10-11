@@ -15,6 +15,7 @@ local ACCOUNT_LEAKED_SETTINGS_KEYS = {
     "autoGrowAdditives",
     "autoGrowEnabled",
     "autoBuyEnabled",
+    "autoBrewEnabled",
     "autoBuyReserveGold",
     "autoBuyBudgetGold",
     "autoBuySpentBrass",
@@ -96,6 +97,7 @@ StockPiler3.DefaultCharacterSettings = {
     autoGrowEnabled = false,
     autoGrowAdditives = false,
     autoBuyEnabled = false,
+    autoBrewEnabled = false,
     autoBuyReserveGold = 10,
     autoBuyBudgetGold = 50,
     autoBuySpentBrass = 0,
@@ -261,6 +263,7 @@ function P.EnsureCharacterBucketShape(char)
     char.autoGrowEnabled = char.autoGrowEnabled == true
     char.autoGrowAdditives = char.autoGrowAdditives == true
     char.autoBuyEnabled = char.autoBuyEnabled == true
+    char.autoBrewEnabled = char.autoBrewEnabled == true
     char.brewMacroEnabled = char.brewMacroEnabled == true
     char.brewRespectGrowReserve = char.brewRespectGrowReserve ~= false
     char.brewPreferNonGrowableFirst = char.brewPreferNonGrowableFirst ~= false

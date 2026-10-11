@@ -2107,6 +2107,36 @@ function Brew.ProbeStuckAutoLoaded(reason)
     return Brew.MaybeClearLoadedIfCannotContinue(reason or "stuck-probe") == true
 end
 
+--- AutoBrew: perform an auto-loaded Ready board when the master toggle is on.
+--- Silent MaybeAutoLoadReady still runs without AutoBrew; this only fires Perform.
+function Brew.MaybeAutoPerformReady()
+    local Watch = StockPiler3.Watch
+    if not (Watch and Watch.IsAutoBrewEnabled and Watch.IsAutoBrewEnabled() == true) then
+        return false
+    end
+    if Brew._loadSource ~= "auto" then
+        return false
+    end
+    if type(Brew._job) == "table" then
+        return false
+    end
+    if InLoadSettle() then
+        return false
+    end
+    local blocked = AutoBrewBlocked()
+    if blocked then
+        return false
+    end
+    if Brew.CanBrewNow() ~= true then
+        return false
+    end
+    local ok = Brew.TryPerform(nil)
+    if ok == true then
+        LogBrew("auto-perform ready")
+    end
+    return ok == true
+end
+
 function Brew.OnUpdate(timeElapsed)
     if type(Brew._job) == "table" then
         Brew.Tick()
@@ -2140,6 +2170,9 @@ function Brew.OnUpdate(timeElapsed)
     if now > 0 and now >= due then
         Brew._stuckProbeAt = now
         Brew.ProbeStuckAutoLoaded("onupdate")
+        if Brew.MaybeAutoPerformReady then
+            Brew.MaybeAutoPerformReady()
+        end
         if Brew.MaybeAutoLoadSkillUp then
             Brew.MaybeAutoLoadSkillUp()
         end

@@ -14,6 +14,7 @@ local TAB_ROOT = "SP3TabWatch"
 local ENABLE_WIN = "SP3TabWatchEnable"
 local ADDITIVES_WIN = "SP3TabWatchAdditives"
 local AUTOBUY_WIN = "SP3TabWatchAutoBuy"
+local AUTOBREW_WIN = "SP3TabWatchAutoBrew"
 local SEED_BUFFER_ENABLE_WIN = "SP3TabWatchSeedBufferEnable"
 local OPTIMISTIC_MODE_WIN = "SP3TabWatchOptimisticMode"
 local SKILLUP_SKILLS_WIN = "SP3TabWatchSkillUpSkills"
@@ -43,6 +44,11 @@ local function CanAutoBuyUi()
         return true
     end
     return CanAutoGrowUi()
+end
+
+local function CanAutoBrewUi()
+    local Caps = StockPiler3.TradeSkillCaps
+    return Caps and Caps.CanBrewPotions and Caps.CanBrewPotions() == true
 end
 
 local function OnOff(flag)
@@ -698,6 +704,20 @@ local function UpdateAutoBuyCheckbox()
     syncingUi = false
 end
 
+local function UpdateAutoBrewCheckbox()
+    if not DoesWindowExist(AUTOBREW_WIN) then
+        return
+    end
+    local canBrew = CanAutoBrewUi()
+    local row = CharRow(false)
+    local on = canBrew and type(row) == "table" and row.autoBrewEnabled == true
+    syncingUi = true
+    ButtonSetCheckButtonFlag(AUTOBREW_WIN, true)
+    ButtonSetPressedFlag(AUTOBREW_WIN, on)
+    ButtonSetDisabledFlag(AUTOBREW_WIN, not canBrew)
+    syncingUi = false
+end
+
 local function UpdateOptimisticModeCheckbox()
     if not DoesWindowExist(OPTIMISTIC_MODE_WIN) then
         return
@@ -1021,6 +1041,9 @@ function StockPiler3TabWatch.Initialize()
     LabelSetText("SP3TabWatchAdditivesLabel", T("watch.use_additives"))
     LabelSetText("SP3TabWatchSeedBufferLabel", T("watch.seed_buffer_label"))
     LabelSetText("SP3TabWatchAutoBuyLabel", T("watch.autobuy_label"))
+    if DoesWindowExist("SP3TabWatchAutoBrewLabel") then
+        LabelSetText("SP3TabWatchAutoBrewLabel", T("watch.autobrew_label"))
+    end
     LabelSetText("SP3TabWatchOptimisticModeLabel", T("watch.optimistic_mode_label"))
     LabelSetText("SP3TabWatchReserveLabel", T("watch.reserve_label"))
     LabelSetText("SP3TabWatchBudgetLabel", T("watch.budget_label"))
@@ -1056,10 +1079,12 @@ function StockPiler3TabWatch.RefreshSkillGates()
     end
     local canGrow = CanAutoGrowUi()
     local canBuy = CanAutoBuyUi()
+    local canBrew = CanAutoBrewUi()
     local row = CharRow(false)
     local autoGrow = canGrow and type(row) == "table" and row.autoGrowEnabled == true
     local additives = canGrow and type(row) == "table" and row.autoGrowAdditives == true
     local autoBuy = canBuy and type(row) == "table" and row.autoBuyEnabled == true
+    local autoBrew = canBrew and type(row) == "table" and row.autoBrewEnabled == true
     local optimistic = type(row) ~= "table" or row.watchOptimisticOutcomeEstimate ~= false
     local seedBufOn = canGrow and (type(row) ~= "table" or row.growSeedBufferEnabled ~= false)
     local seedBuf = StockPiler3.Watch and StockPiler3.Watch.GetSeedBufferMin and StockPiler3.Watch.GetSeedBufferMin() or 5
@@ -1074,8 +1099,8 @@ function StockPiler3TabWatch.RefreshSkillGates()
     local UpgradeSeed = StockPiler3.UpgradeSeed
     local upgradeOn = UpgradeSeed and UpgradeSeed.IsEnabled and UpgradeSeed.IsEnabled() == true
     local gatesKey = table.concat({
-        tostring(canGrow), tostring(canBuy), tostring(autoGrow), tostring(additives),
-        tostring(autoBuy), tostring(optimistic), tostring(seedBufOn), tostring(seedBuf),
+        tostring(canGrow), tostring(canBuy), tostring(canBrew), tostring(autoGrow), tostring(additives),
+        tostring(autoBuy), tostring(autoBrew), tostring(optimistic), tostring(seedBufOn), tostring(seedBuf),
         tostring(reserve), tostring(budget), tostring(spent),
         tostring(cultVis), tostring(apoVis), tostring(skillUpCult), tostring(skillUpApo),
         tostring(upgradeOn),
@@ -1089,6 +1114,7 @@ function StockPiler3TabWatch.RefreshSkillGates()
     UpdateEnableCheckbox()
     UpdateAdditivesCheckbox()
     UpdateAutoBuyCheckbox()
+    UpdateAutoBrewCheckbox()
     UpdateOptimisticModeCheckbox()
     UpdateSeedBufferEnableCheckbox()
     UpdateUpgradeSeedsCheckbox()
@@ -1901,6 +1927,26 @@ function StockPiler3TabWatch.OnToggleAutoBuy()
     end
     if StockPiler3.Buy and StockPiler3.Buy.InvalidateJobsCache then
         StockPiler3.Buy.InvalidateJobsCache()
+    end
+end
+
+function StockPiler3TabWatch.OnToggleAutoBrew()
+    if syncingUi then
+        return
+    end
+    if not CanAutoBrewUi() then
+        UpdateAutoBrewCheckbox()
+        return
+    end
+    local row = CharRow(true)
+    if type(row) ~= "table" then
+        return
+    end
+    row.autoBrewEnabled = ButtonGetPressedFlag(AUTOBREW_WIN) == true
+    NotifySettings(T("watch.autobrew", { state = OnOff(row.autoBrewEnabled) }))
+    UpdateAutoBrewCheckbox()
+    if StockPiler3.Brew and StockPiler3.Brew.InvalidateCanBrewCache then
+        StockPiler3.Brew.InvalidateCanBrewCache()
     end
 end
 
@@ -2893,6 +2939,14 @@ end
 
 function StockPiler3TabWatch.OnMouseOverAutoBuy()
     Tip(T("tip.watch.autobuy"))
+end
+
+function StockPiler3TabWatch.OnMouseOverAutoBrew()
+    if not CanAutoBrewUi() then
+        Tip(T("tip.watch.autobrew_need_apo"))
+        return
+    end
+    Tip(T("tip.watch.autobrew"))
 end
 
 function StockPiler3TabWatch.OnMouseOverOptimisticMode()

@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.354** - Watch craftable/status recount on settings/knowledge (no /sp3 dumpall needed).
+**Version 0.3.355** - AutoBrew: automatically perform Ready watches to stock target.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -36,7 +36,7 @@ Learned recipe catalog (one row per fingerprint). Watch / Forget / recipe tips. 
 
 ### Watch
 
-Master **AutoGrow**, additives, **Combat pause**, seed buffer, **Upgrade seeds**, **AutoBuy** (reserve + hard lifetime gold allowance + Reset). Per-watch Prio / Target / AutoGrow / Brew.
+Master **AutoGrow**, additives, **Combat pause**, seed buffer, **Upgrade seeds**, **AutoBuy** (reserve + hard lifetime gold allowance + Reset), **AutoBrew** (auto-perform Ready watches to target). Per-watch Prio / Target / AutoGrow / Brew.
 
 **Level up skills** (when under 200 and watches are done): one Watch checkbox for Cultivating + Apothecary Skill up. Ephemeral status rows (not saved watches). Cult row mirrors master AutoGrow; Apo keeps Brew when a stable board is ready.
 
@@ -139,6 +139,8 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.355 | AutoBrew master toggle: auto-perform Ready watches to target (yields to plant/refine/harvest); SyncTipSlotNeeds forward-declare |
+| 0.3.354 | Watch craftable/status recount on settings/knowledge (no /sp3 dumpall needed) |
 | 0.3.348 | Seed buffer / Upgrade Seeds: Cult-max plant stock fills buffer when seed uid is unknown (Savage Marshroot s0); Draught stimulant no longer skipped by seed-only hot path |
 | 0.3.347 | Potions: composite recipe watches no longer alias sibling recipes for the same output uid; legacy plain uid:N migrates onto the toggled recipe key |
 | 0.3.346 | Upgrade Seeds: HaveTargetRung counts same-or-higher rung (L200 satisfies L50 watch arrive); CollectBuyJobs scans owned seeds to Cult floor so mid watches do not AutoBuy L1 |

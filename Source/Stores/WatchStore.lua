@@ -845,6 +845,16 @@ function Watch.IsAutoBuyEnabled()
     return type(row) == "table" and row.autoBuyEnabled == true
 end
 
+--- Master AutoBrew: auto-perform Ready watches to target (load already silent).
+function Watch.IsAutoBrewEnabled()
+    local Caps = StockPiler3.TradeSkillCaps
+    if Caps and Caps.CanBrewPotions and Caps.CanBrewPotions() ~= true then
+        return false
+    end
+    local row = CharacterRow(false)
+    return type(row) == "table" and row.autoBrewEnabled == true
+end
+
 function Watch.GetAutoBuyReserveGold()
     local row = CharacterRow(false)
     local n = type(row) == "table" and tonumber(row.autoBuyReserveGold) or nil
