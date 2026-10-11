@@ -1948,6 +1948,12 @@ function StockPiler3TabWatch.OnToggleAutoBrew()
     if StockPiler3.Brew and StockPiler3.Brew.InvalidateCanBrewCache then
         StockPiler3.Brew.InvalidateCanBrewCache()
     end
+    -- Footer Brew + Craft-macro brew path follow CanBrewNow (false while AutoBrew on).
+    if StockPiler3.Ui and StockPiler3.Ui.RequestFooterRefresh then
+        StockPiler3.Ui.RequestFooterRefresh()
+    elseif StockPiler3Window and StockPiler3Window.SyncActionReadiness then
+        StockPiler3Window.SyncActionReadiness()
+    end
 end
 
 function StockPiler3TabWatch.OnToggleOptimisticMode()

@@ -567,9 +567,10 @@ local function BrewSessionSticky()
 end
 
 --- Craft enable matches the footer buttons: brew when CanBrewNow, else harvest
---- when CanHarvestNow, else dark. Icon is the brew icon only while brew is
---- ready; every other state uses the harvest icon (plants in the ground, or
---- nothing planted). A loading session must not force brew while Brew is dark.
+--- when CanHarvestNow, else dark. With AutoBrew on, CanBrewNow stays false so
+--- Craft is harvest-only. Icon is the brew icon only while brew is ready;
+--- every other state uses the harvest icon. A loading session must not force
+--- brew while Brew is dark.
 --- Sticky phase and ready-plot count stay on the snap for the tooltip only.
 --- opts.canHarvest / opts.canBrew: reuse enable-sync values when provided.
 --- opts.readonly: tip path - do not mutate _craftIconMode.

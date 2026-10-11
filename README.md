@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.355** - AutoBrew: automatically perform Ready watches to stock target.
+**Version 0.3.356** - AutoBrew: Ready watches auto-perform; footer Brew stays dark and Craft is harvest-only while on.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -139,6 +139,7 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.356 | AutoBrew on: footer Brew stays dark; Craft macro harvest-only (AutoBrew owns perform) |
 | 0.3.355 | AutoBrew master toggle: auto-perform Ready watches to target (yields to plant/refine/harvest); SyncTipSlotNeeds forward-declare |
 | 0.3.354 | Watch craftable/status recount on settings/knowledge (no /sp3 dumpall needed) |
 | 0.3.348 | Seed buffer / Upgrade Seeds: Cult-max plant stock fills buffer when seed uid is unknown (Savage Marshroot s0); Draught stimulant no longer skipped by seed-only hot path |

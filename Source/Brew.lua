@@ -1184,7 +1184,50 @@ function Brew.InvalidateCanBrewCache()
     Brew._canBrewCacheKey = nil
 end
 
+--- True when an auto-loaded Ready (or SkillUp) board can Perform. Used by
+--- AutoBrew; user-facing CanBrewNow stays false while AutoBrew is on.
+local function BoardReadyToAutoPerform()
+    local Caps = StockPiler3.TradeSkillCaps
+    if Caps and Caps.CanBrewPotions and Caps.CanBrewPotions() ~= true then
+        return false
+    end
+    if Brew.IsBusy() then
+        return false
+    end
+    if OpenFailBlocked() then
+        return false
+    end
+    if Brew._loadSource ~= "auto" then
+        return false
+    end
+    local session = GetSession()
+    local phase = tostring(session.phase or "idle")
+    if phase ~= "loaded" then
+        return false
+    end
+    if session.skillUp == true then
+        return Brew.ValidateApothecaryPerform() == true
+            and (tonumber(session.craftable) or 0) > 0
+    end
+    if not RowNeedsMorePotions(session) then
+        return false
+    end
+    if (tonumber(session.potionDeficit) or 0) <= 0 then
+        return false
+    end
+    local row = FindSessionRow()
+    if not RowIsReadyToCraft(row) then
+        return false
+    end
+    return Brew.ValidateApothecaryPerform() == true
+end
+
 function Brew.CanBrewNow()
+    -- AutoBrew owns perform: keep footer Brew and Craft-macro brew path dark.
+    local Watch = StockPiler3.Watch
+    if Watch and Watch.IsAutoBrewEnabled and Watch.IsAutoBrewEnabled() == true then
+        return false
+    end
     local Caps = StockPiler3.TradeSkillCaps
     if Caps and Caps.CanBrewPotions and Caps.CanBrewPotions() ~= true then
         return false
@@ -2109,12 +2152,10 @@ end
 
 --- AutoBrew: perform an auto-loaded Ready board when the master toggle is on.
 --- Silent MaybeAutoLoadReady still runs without AutoBrew; this only fires Perform.
+--- Does not use CanBrewNow (that stays false while AutoBrew is on for footer/macro).
 function Brew.MaybeAutoPerformReady()
     local Watch = StockPiler3.Watch
     if not (Watch and Watch.IsAutoBrewEnabled and Watch.IsAutoBrewEnabled() == true) then
-        return false
-    end
-    if Brew._loadSource ~= "auto" then
         return false
     end
     if type(Brew._job) == "table" then
@@ -2127,7 +2168,7 @@ function Brew.MaybeAutoPerformReady()
     if blocked then
         return false
     end
-    if Brew.CanBrewNow() ~= true then
+    if BoardReadyToAutoPerform() ~= true then
         return false
     end
     local ok = Brew.TryPerform(nil)
