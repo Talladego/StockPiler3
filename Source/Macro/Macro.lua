@@ -232,7 +232,7 @@ local function MacroSlotMatches(slot, name, text)
     local textMatch = MacroText(macro) == text
     local nameMatch = macro.name == name
     if text ~= nil and text ~= L"" and name ~= nil and name ~= L"" then
-        return textMatch or nameMatch
+        return textMatch and nameMatch
     end
     return textMatch or nameMatch
 end
@@ -309,10 +309,14 @@ local function ButtonIsOurs(button)
     if id == nil then
         return false
     end
-    -- Get*MacroId verifies cached slots against name/text before trusting them.
-    return id == Macro.GetCraftMacroId()
-        or id == Macro.GetBrewMacroId()
-        or id == Macro.GetMacroId()
+    -- Trust ids rebuilt on MACROS_LOADED / MACRO_UPDATED (and hook install).
+    -- Do not call Get*MacroId here — those rescans GetMacroTable per button paint.
+    local ids = Macro._ourIds
+    if type(ids) ~= "table" then
+        RebuildOurMacroIds()
+        ids = Macro._ourIds
+    end
+    return type(ids) == "table" and ids[id] == true
 end
 
 --- m_Bars is keyed by page id or by window name once the id is past the
@@ -1077,12 +1081,15 @@ end
 
 function Macro.OnMacrosLoaded()
     ForgetCachedMacroSlot(nil)
+    RebuildOurMacroIds()
     Macro.RequestEnabledSync()
 end
 
 function Macro.OnMacroUpdated(macroId)
     if ForgetCachedMacroSlot(macroId) and tonumber(macroId) then
         ReleaseForeignMacroButtons(tonumber(macroId))
+    else
+        RebuildOurMacroIds()
     end
     local craftId = Macro.GetCraftMacroId()
     if craftId == nil or tonumber(macroId) ~= tonumber(craftId) then

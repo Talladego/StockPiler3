@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.334** — Fix `/assist` from hotbar macros: foreign hotbar clicks leave the click hook with field reads and a tail call only (the client drops `/assist` if addon code calls a Lua function while the click is handled).
+**Version 0.3.335** — Assist-safe hotbar hooks; cached macro ids require name+text match; `ButtonIsOurs` uses the rebuilt id set instead of rescanning every paint.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
