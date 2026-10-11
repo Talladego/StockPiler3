@@ -1,7 +1,8 @@
 ----------------------------------------------------------------
 -- StockPiler3 Knowledge/MaterialSpec - role fingerprints for bag/vendor/brew
 -- Match by craft stats (not exact uid/name). Containers share skill+slot
--- (Fabricated vs normal vials). Incomplete mains stay boundUid-only.
+-- (Fabricated vs normal vials). Incomplete mains prefer boundUid, then
+-- completed Items.ToSpec / slot+skill+stab+power twins (butcher preserved).
 --
 -- Potions-tab columns (Lvl/Effect/Pwr/Stab/Mult/SCrit) mirror the stats we
 -- sum for recipe identity. SCrit = SPECIAL_CHANCE (Super-Critical): may later
@@ -714,6 +715,65 @@ local function EnrichFromLearnedItems(other, itemData, roleHint)
     return type(enriched) == "table" and enriched or other
 end
 
+--- Incomplete recipe mains are uid-bound at learn time (board omitted EFFECT).
+--- Once Items.ToSpec(boundUid) is complete, return that product so butcher /
+--- preserved twins (Supple Scale vs Preserved Glossy Chitin) can ProductMatch.
+local function CompleteTargetFromIncomplete(spec)
+    if type(spec) ~= "table" or spec.incomplete ~= true then
+        return nil
+    end
+    local boundUid = tonumber(spec.boundUid) or tonumber(spec.uid) or 0
+    if boundUid <= 0 or not (StockPiler3.Items and StockPiler3.Items.ToSpec) then
+        return nil
+    end
+    local learned = StockPiler3.Items.ToSpec(boundUid)
+    if type(learned) ~= "table" or learned.incomplete == true then
+        return nil
+    end
+    if MS.IsCultivationAdditive(learned) then
+        return nil
+    end
+    local complete = MS.AsApothecaryProduct(learned, spec.role or learned.role)
+    if type(complete) ~= "table" or complete.incomplete == true then
+        return nil
+    end
+    return complete
+end
+
+--- When Items has not completed the bound uid yet, still accept a bag main that
+--- shares slot/skill/stab/power with the incomplete stub (twin preserved forms).
+local function IncompleteMainStatsMatch(itemData, spec)
+    if type(itemData) ~= "table" or type(spec) ~= "table" then
+        return false
+    end
+    if tostring(spec.role or "") ~= "main" then
+        return false
+    end
+    local product = MS.AsApothecaryProduct(itemData, "main")
+    if type(product) ~= "table" or product.incomplete == true then
+        return false
+    end
+    if (tonumber(product.slotType) or 0) ~= (tonumber(spec.slotType) or 0) then
+        return false
+    end
+    if (tonumber(product.skillLevel) or 0) ~= (tonumber(spec.skillLevel) or 0) then
+        return false
+    end
+    if (tonumber(product.tradeSkill) or 0) ~= (tonumber(spec.tradeSkill) or 0) then
+        return false
+    end
+    local B = CraftBonusRefs()
+    local otherBonuses = NormalizeBonusKeys(product.bonuses)
+    local specBonuses = NormalizeBonusKeys(spec.bonuses)
+    if not BonusMatch(otherBonuses, specBonuses, B.STABILITY) then
+        return false
+    end
+    if not BonusMatch(otherBonuses, specBonuses, B.POWER) then
+        return false
+    end
+    return true
+end
+
 --- itemData may be raw bag item or an already-built MaterialSpec.
 function MS.Matches(itemData, spec)
     if type(itemData) ~= "table" or type(spec) ~= "table" then
@@ -731,7 +791,14 @@ function MS.Matches(itemData, spec)
         if itemUid <= 0 and IsMaterialSpec(itemData) then
             itemUid = tonumber(itemData.boundUid) or tonumber(itemData.uid) or 0
         end
-        return itemUid == boundUid
+        if itemUid == boundUid then
+            return true
+        end
+        local complete = CompleteTargetFromIncomplete(spec)
+        if type(complete) == "table" then
+            return MS.Matches(itemData, complete)
+        end
+        return IncompleteMainStatsMatch(itemData, spec)
     end
 
     local other = itemData
@@ -954,7 +1021,18 @@ function MS.ProductMatches(itemData, spec)
         if boundUid <= 0 then
             return false
         end
-        return (tonumber(itemData.uniqueID) or tonumber(itemData.uid) or 0) == boundUid
+        local itemUid = tonumber(itemData.uniqueID) or tonumber(itemData.uid) or 0
+        if itemUid == boundUid then
+            return true
+        end
+        -- Board-learned incomplete main (e.g. Supple Scale uid:3030027): allow
+        -- fingerprint twins once Items knows the complete form, or when the bag
+        -- main shares slot/skill/stab/power (Preserved Glossy Chitin Shard).
+        local complete = CompleteTargetFromIncomplete(spec)
+        if type(complete) == "table" then
+            return MS.ProductMatches(itemData, complete)
+        end
+        return IncompleteMainStatsMatch(itemData, spec)
     end
     local role = spec.role or nil
     local product = MS.AsApothecaryProduct(itemData, role)

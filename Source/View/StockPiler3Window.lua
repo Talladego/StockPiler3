@@ -403,6 +403,23 @@ function StockPiler3Window.FlushPendingListRepopulate()
     StockPiler3Window.RefreshActiveTab()
 end
 
+--- Show only SelectedTab's child; hide the others. Recovers stacked tab chrome
+--- after KickListBoxLayout / forceRebind accidentally showed Watch over Potions.
+function StockPiler3Window.EnsureSelectedTabShowing()
+    if not DoesWindowExist("StockPiler3Window") then
+        return
+    end
+    local selected = StockPiler3Window.SelectedTab or StockPiler3Window.TABS_POTIONS
+    for index, tab in ipairs(StockPiler3Window.Tabs) do
+        if DoesWindowExist(tab.name) then
+            ButtonSetPressedFlag(tab.name, index == selected)
+        end
+        if DoesWindowExist(tab.window) then
+            WindowSetShowing(tab.window, index == selected)
+        end
+    end
+end
+
 function StockPiler3Window.PrimeTabListsIfNeeded()
     if StockPiler3Window._tabListsPrimed == true then
         return
@@ -417,19 +434,13 @@ function StockPiler3Window.PrimeTabListsIfNeeded()
     local selected = StockPiler3Window.SelectedTab or StockPiler3Window.TABS_POTIONS
     -- Layout only. Never call tab.refresh here — that ran WarmHave inside WatchRows
     -- on the same frame as SelectTab/OnShow (SP2 Flatten).
-    for index, tab in ipairs(StockPiler3Window.Tabs) do
-        if DoesWindowExist(tab.name) then
-            ButtonSetPressedFlag(tab.name, index == selected)
-        end
-        if DoesWindowExist(tab.window) then
-            WindowSetShowing(tab.window, index == selected)
-            if index == selected and type(WindowForceProcessAnchors) == "function" then
-                if StockPiler3.Debug and StockPiler3.Debug.TryCall then
-                    StockPiler3.Debug.TryCall("WindowForceProcessAnchors", WindowForceProcessAnchors, tab.window)
-                else
-                    pcall(WindowForceProcessAnchors, tab.window)
-                end
-            end
+    StockPiler3Window.EnsureSelectedTabShowing()
+    local tab = StockPiler3Window.Tabs[selected]
+    if tab and DoesWindowExist(tab.window) and type(WindowForceProcessAnchors) == "function" then
+        if StockPiler3.Debug and StockPiler3.Debug.TryCall then
+            StockPiler3.Debug.TryCall("WindowForceProcessAnchors", WindowForceProcessAnchors, tab.window)
+        else
+            pcall(WindowForceProcessAnchors, tab.window)
         end
     end
 end
@@ -696,8 +707,15 @@ function StockPiler3Window.ConfirmClearWatches()
             StockPiler3.Ui.MarkWatchUiDirty()
         end
     end
-    if StockPiler3TabWatch and StockPiler3TabWatch.Refresh then
-        StockPiler3TabWatch.Refresh({ forcePlan = false })
+    -- forceRebind only while Watch is visible — otherwise KickListBoxLayout
+    -- would show Watch on top of Potions/Plants (Clear Watches runs from those tabs).
+    if StockPiler3Window.SelectedTab == StockPiler3Window.TABS_WATCH
+        and StockPiler3TabWatch and StockPiler3TabWatch.Refresh
+    then
+        StockPiler3TabWatch.Refresh({ forcePlan = false, forceRebind = true })
+    end
+    if StockPiler3Window.EnsureSelectedTabShowing then
+        StockPiler3Window.EnsureSelectedTabShowing()
     end
     -- Clear Watches must grey immediately after bulk clear.
     if StockPiler3Window.SyncActionReadiness then

@@ -582,14 +582,6 @@ local function CountItemsMatchingSpec(spec)
         return 0
     end
     local Inv = StockPiler3.Inventory
-    -- Incomplete mains: exact uid only.
-    if spec.incomplete == true then
-        local bound = tonumber(spec.boundUid) or tonumber(spec.uid) or 0
-        if bound > 0 and Inv and Inv.CountByUid then
-            return tonumber(Inv.CountByUid(bound)) or 0
-        end
-        return 0
-    end
     local M = MS()
     local total = 0
     local function accumulate(item)
@@ -613,6 +605,8 @@ local function CountItemsMatchingSpec(spec)
             total = total + stack
         end
     end
+    -- Incomplete mains included: ProductMatches accepts fingerprint twins
+    -- (Supple Scale stub ↔ Preserved Glossy Chitin), not boundUid-only.
     if Inv and Inv.ForEachItem and M then
         Inv.ForEachItem(accumulate)
     end
@@ -698,7 +692,14 @@ local function GrowReserveForSpec(spec)
         end
     end
     if seedUid <= 0 then
-        return 0
+        -- Plant-only cushion (Cult-max s0, e.g. Savage Marshroot): hold bufferMin
+        -- of the plant itself so brewRespectGrowReserve cannot burn the stack.
+        if isSeed or plantOrSeedUid <= 0 then
+            return 0
+        end
+        local Inv = StockPiler3.Inventory
+        local have = Inv and Inv.CountByUid and tonumber(Inv.CountByUid(plantOrSeedUid)) or 0
+        return math.max(0, minBuf - have)
     end
 
     -- Prefer Refine budget (live + ground + outstanding); else live seed count.
@@ -1191,6 +1192,165 @@ function RS.RecipeFingerprintStats(recipe, potionUid)
     end
     stats.yield = yield
     return stats
+end
+
+--- Per-potion brew success for tip/UI: times this uid dropped / brewAttempts.
+--- Shared fingerprints (good + potent) must not both show brewSuccesses/attempts.
+--- Legacy recipes with no outcomes table fall back to fingerprint brewSuccesses.
+function RS.OutcomeSuccessStats(recipe, potionUid)
+    local attempts = 0
+    local successes = 0
+    if type(recipe) == "table" then
+        attempts = tonumber(recipe.brewAttempts) or 0
+        successes = tonumber(recipe.brewSuccesses) or 0
+        potionUid = tonumber(potionUid) or 0
+        if potionUid > 0 and type(recipe.outcomes) == "table" and next(recipe.outcomes) ~= nil then
+            local oc = recipe.outcomes[tostring(potionUid)]
+            if oc == nil then
+                oc = recipe.outcomes[potionUid]
+            end
+            successes = (type(oc) == "table" and tonumber(oc.successes)) or 0
+        end
+    end
+    local rate = nil
+    if attempts > 0 then
+        rate = successes / attempts
+    end
+    return {
+        brewAttempts = attempts,
+        brewSuccesses = successes,
+        successRate = rate,
+    }
+end
+
+--- Min brewAttempts before AutoGrow/craftable may trust outcome rates.
+local OUTCOME_RATE_MIN_ATTEMPTS = 5
+
+--- Observed bottles of this potion per brew of its fingerprint.
+--- Optional potionUid selects a shared-recipe outcome (potent / good).
+function RS.RecipeOutputYield(recipe, potionUid)
+    potionUid = tonumber(potionUid) or 0
+    if type(recipe) == "table" and type(recipe.outcomes) == "table" then
+        local uid = potionUid
+        if uid <= 0 then
+            uid = tonumber(recipe.outputUid) or tonumber(recipe.activeOutcomeUid) or 0
+        end
+        if uid > 0 then
+            local oc = recipe.outcomes[tostring(uid)]
+            if oc == nil then
+                oc = recipe.outcomes[uid]
+            end
+            if type(oc) == "table" then
+                local successes = tonumber(oc.successes) or 0
+                local productSum = tonumber(oc.productSum) or 0
+                if successes > 0 and productSum > 0 then
+                    return productSum / successes
+                end
+                local y = tonumber(oc.yield) or 0
+                if y > 0 then
+                    return y
+                end
+            end
+        end
+    end
+    local observed = ObservedRecipeYield(recipe)
+    if observed and observed > 0 then
+        return observed
+    end
+    local yield = tonumber(recipe and recipe.recipeYield) or 1
+    if yield < 1 then
+        yield = 1
+    end
+    return yield
+end
+
+--- Fraction of fingerprint brews that produced this potion uid.
+--- Returns nil when sample size is below OUTCOME_RATE_MIN_ATTEMPTS.
+function RS.OutcomeSuccessRate(recipe, potionUid)
+    local stats = RS.OutcomeSuccessStats(recipe, potionUid)
+    local attempts = tonumber(stats and stats.brewAttempts) or 0
+    if attempts < OUTCOME_RATE_MIN_ATTEMPTS then
+        return nil
+    end
+    local rate = stats and stats.successRate
+    if rate == nil then
+        return nil
+    end
+    if rate < 0 then
+        rate = 0
+    elseif rate > 1 then
+        rate = 1
+    end
+    return rate, tonumber(stats.brewSuccesses) or 0, attempts
+end
+
+--- Crafts to cover a potion deficit at best-case yield (optimistic).
+function RS.CraftsNeededForDeficit(deficit, recipe, potionUid)
+    deficit = math.max(0, tonumber(deficit) or 0)
+    if deficit <= 0 then
+        return 0
+    end
+    local yield = RS.RecipeOutputYield(recipe, potionUid)
+    if yield < 1 then
+        yield = 1
+    end
+    return math.max(1, math.ceil(deficit / yield))
+end
+
+--- Best-case bottles from current materials (crafts × yield).
+function RS.CountPotionsCraftable(recipe, opts, potionUid)
+    local crafts = RS.CountCraftsPossible(recipe, opts)
+    local bottles = crafts * RS.RecipeOutputYield(recipe, potionUid)
+    return math.floor((tonumber(bottles) or 0) + 0.5)
+end
+
+--- Expected bottles of this potion from current materials using outcome rate.
+--- Returns expected, rate, bestCase, crafts. expected is nil when rate unknown.
+function RS.ExpectedCraftableBottles(recipe, potionUid, opts)
+    potionUid = tonumber(potionUid) or tonumber(recipe and recipe.outputUid) or 0
+    local crafts = RS.CountCraftsPossible(recipe, opts)
+    local yield = RS.RecipeOutputYield(recipe, potionUid)
+    if yield < 1 then
+        yield = 1
+    end
+    local best = crafts * yield
+    local rate = RS.OutcomeSuccessRate(recipe, potionUid)
+    local expected = nil
+    if rate ~= nil then
+        if rate < 0 then
+            rate = 0
+        elseif rate > 1 then
+            rate = 1
+        end
+        expected = best * rate
+    end
+    return expected, rate, best, crafts
+end
+
+--- Crafts expected to cover a deficit when only `rate` of brews produce this potion.
+--- Falls back to optimistic CraftsNeededForDeficit when rate is unknown.
+function RS.ExpectedCraftsForDeficit(deficit, recipe, potionUid)
+    deficit = math.max(0, tonumber(deficit) or 0)
+    if deficit <= 0 then
+        return 0, nil
+    end
+    potionUid = tonumber(potionUid) or tonumber(recipe and recipe.outputUid) or 0
+    local rate = RS.OutcomeSuccessRate(recipe, potionUid)
+    local yield = RS.RecipeOutputYield(recipe, potionUid)
+    if yield < 1 then
+        yield = 1
+    end
+    if rate == nil or rate <= 0 then
+        return RS.CraftsNeededForDeficit(deficit, recipe, potionUid), rate
+    end
+    if rate > 1 then
+        rate = 1
+    end
+    local perCraft = yield * rate
+    if perCraft <= 0 then
+        return RS.CraftsNeededForDeficit(deficit, recipe, potionUid), rate
+    end
+    return math.max(1, math.ceil(deficit / perCraft)), rate
 end
 
 function RS.SlimRecipeForStorage(recipe)
@@ -2654,8 +2814,9 @@ end
 --- True when Seed Buffer is on and any growable refinable recipe line for this watch
 --- is below the buffer (bag + in-ground + outstanding). Memoized per bag snap +
 --- garden planGen + refine outstanding (planting must invalidate without a bag move).
---- opts.seedUids: known seed uniqueIDs from plan tip / statusTipSlots - prefer these and
---- skip SeedMap.ResolveSeedForSpec / FindPlantUidForSpec (live Watch hitch path).
+--- opts.seedUids: known seed uniqueIDs from plan tip / statusTipSlots.
+--- opts.plantUids: plants with no known seed (Savage Marshroot s0) — plant bag
+--- count is the cushion so stimulant lines are not skipped by the seed-only hot path.
 function RS.WatchHasSeedBufferShort(recipe, opts)
     if not (StockPiler3.Watch and StockPiler3.Watch.IsSeedBufferEnabled
         and StockPiler3.Watch.IsSeedBufferEnabled() == true)
@@ -2718,14 +2879,22 @@ function RS.WatchHasSeedBufferShort(recipe, opts)
         return 0
     end
 
-    local function AnyKnownSeedShort(seedUids)
-        if type(seedUids) ~= "table" or #seedUids == 0 then
+    local function CreditForPlant(plantUid)
+        plantUid = tonumber(plantUid) or 0
+        if plantUid <= 0 or not Inv or not Inv.CountByUid then
+            return nil
+        end
+        return tonumber(Inv.CountByUid(plantUid)) or 0
+    end
+
+    local function AnyUidShort(uids, creditFn)
+        if type(uids) ~= "table" or #uids == 0 then
             return nil
         end
         local any = false
         local checked = false
-        for i = 1, #seedUids do
-            local credit = CreditForSeed(seedUids[i])
+        for i = 1, #uids do
+            local credit = creditFn(uids[i])
             if credit ~= nil then
                 checked = true
                 if credit < buffer then
@@ -2740,11 +2909,18 @@ function RS.WatchHasSeedBufferShort(recipe, opts)
         return any
     end
 
-    -- Hot path: plan tip / row-stamped seedUids - CountByUid budget only.
-    local knownShort = AnyKnownSeedShort(opts.seedUids)
-    if knownShort ~= nil then
-        memo.byRecipe[recipeId] = knownShort
-        return knownShort
+    -- Hot path: stamped seed + plant uids (do not skip plant-only stimulant lines).
+    local seedShort = AnyUidShort(opts.seedUids, CreditForSeed)
+    local plantShort = AnyUidShort(opts.plantUids, CreditForPlant)
+    if seedShort == true or plantShort == true then
+        memo.byRecipe[recipeId] = true
+        return true
+    end
+    local hotChecked = (type(opts.seedUids) == "table" and #opts.seedUids > 0)
+        or (type(opts.plantUids) == "table" and #opts.plantUids > 0)
+    if hotChecked and seedShort ~= true and plantShort ~= true then
+        memo.byRecipe[recipeId] = false
+        return false
     end
 
     local SM = StockPiler3.SeedMap
@@ -2789,6 +2965,7 @@ function RS.WatchHasSeedBufferShort(recipe, opts)
                 if seen[productKey] ~= true then
                     seen[productKey] = true
                     local seedUid = 0
+                    local plantUid = 0
                     local line = lineByKey and lineByKey[productKey]
                     if type(line) ~= "table" then
                         local M = MS()
@@ -2799,6 +2976,7 @@ function RS.WatchHasSeedBufferShort(recipe, opts)
                     end
                     if type(line) == "table" then
                         seedUid = tonumber(line.seedUid) or 0
+                        plantUid = tonumber(line.plantUid) or 0
                     end
                     -- Cold miss only: ResolveSeed when seed lines cache has no mapping.
                     if seedUid <= 0 then
@@ -2810,6 +2988,18 @@ function RS.WatchHasSeedBufferShort(recipe, opts)
                     if seedUid > 0 then
                         local credit = CreditForSeed(seedUid) or 0
                         if credit < buffer then
+                            short = true
+                            break
+                        end
+                    else
+                        -- Bound uid / tip plant only — FindPlantUidForSpec is a full
+                        -- bag+Items ProductMatches walk (0.3.348 Watch hitch / crash).
+                        if plantUid <= 0 then
+                            plantUid = tonumber(spec.uid) or tonumber(spec.uniqueID)
+                                or tonumber(spec.boundUid) or 0
+                        end
+                        local have = CreditForPlant(plantUid)
+                        if have ~= nil and have < buffer then
                             short = true
                             break
                         end

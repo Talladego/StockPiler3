@@ -48,6 +48,9 @@ local function DefaultWatch()
 end
 
 --- Resolve a watch by exact store key, or by unique uid:N / uid:N|rk:... match.
+--- Composite keys (uid:N|rk:...) never alias a sibling recipe for the same
+--- output — Potions-tab multi-recipe rows must toggle independently.
+--- Legacy plain uid:N still resolves when no composite watches exist yet.
 --- Returns watch, storeKey (nil, nil when missing or ambiguous).
 function Watch.ResolveWatchEntry(recipeKey)
     local key = tostring(recipeKey or "")
@@ -62,7 +65,32 @@ function Watch.ResolveWatchEntry(recipeKey)
     if type(direct) == "table" then
         return direct, key
     end
-    local uidPrefix = string.match(key, "^(uid:%d+)")
+
+    local RS = StockPiler3.RecipeSpec
+    local parsed = RS and RS.ParsePotionRecipeKey and RS.ParsePotionRecipeKey(key) or nil
+    if type(parsed) == "table" and parsed.isComposite == true then
+        local plain = tostring(parsed.potionKey or "")
+        if plain == "" then
+            return nil, nil
+        end
+        local prefixPipe = plain .. "|"
+        for k, w in pairs(watches) do
+            if type(w) == "table" and type(k) == "string"
+                and string.sub(k, 1, #prefixPipe) == prefixPipe
+            then
+                -- Exact key missed; a composite for this output exists (sibling or
+                -- scrubbed self). Do not treat sibling / plain as this recipe.
+                return nil, nil
+            end
+        end
+        local plainWatch = watches[plain]
+        if type(plainWatch) == "table" then
+            return plainWatch, plain
+        end
+        return nil, nil
+    end
+
+    local uidPrefix = string.match(key, "^(uid:%d+)$")
     if uidPrefix == nil then
         local bare = tonumber(key)
         if bare and bare > 0 then
@@ -94,6 +122,48 @@ function Watch.ResolveWatchEntry(recipeKey)
         return watch, storeKey
     end
     return scan(false)
+end
+
+--- When toggling a composite recipe key, move a legacy plain uid:N watch onto
+--- that key so sibling recipes stop sharing one enabled flag.
+local function MigratePlainWatchToComposite(recipeKey)
+    local key = tostring(recipeKey or "")
+    if key == "" then
+        return
+    end
+    local RS = StockPiler3.RecipeSpec
+    local parsed = RS and RS.ParsePotionRecipeKey and RS.ParsePotionRecipeKey(key) or nil
+    if type(parsed) ~= "table" or parsed.isComposite ~= true then
+        return
+    end
+    local plain = tostring(parsed.potionKey or "")
+    if plain == "" then
+        return
+    end
+    local row = CharacterRow(true)
+    if type(row) ~= "table" then
+        return
+    end
+    if type(row.watches) ~= "table" then
+        row.watches = {}
+    end
+    if type(row.watches[key]) == "table" then
+        return
+    end
+    if type(row.watches[plain]) ~= "table" then
+        return
+    end
+    local prefixPipe = plain .. "|"
+    for k, w in pairs(row.watches) do
+        if type(w) == "table" and type(k) == "string"
+            and string.sub(k, 1, #prefixPipe) == prefixPipe
+        then
+            return
+        end
+    end
+    row.watches[key] = row.watches[plain]
+    row.watches[plain] = nil
+    Watch.BumpGen()
 end
 
 --- Read-only watch peek (does not create SV stubs).
@@ -379,6 +449,7 @@ function Watch.EnsureWatch(recipeKey, opts)
 end
 
 function Watch.SetTarget(recipeKey, targetStock)
+    MigratePlainWatchToComposite(recipeKey)
     local watch = Watch.EnsureWatch(recipeKey)
     targetStock = tonumber(targetStock)
     if targetStock == nil then
@@ -393,6 +464,7 @@ function Watch.SetTarget(recipeKey, targetStock)
 end
 
 function Watch.SetAutoGrow(recipeKey, enabled)
+    MigratePlainWatchToComposite(recipeKey)
     -- Prefer an existing store row (uid fallback) so toggles do not orphan a new key.
     local watch, storeKey = Watch.ResolveWatchEntry(recipeKey)
     if type(watch) ~= "table" then
@@ -612,6 +684,7 @@ function Watch.SetEnabled(recipeKey, enabled, opts)
     if enabled == true and opts.fromPotionsToggle == true then
         opts.autoGrow = true
     end
+    MigratePlainWatchToComposite(recipeKey)
     local watch = Watch.EnsureWatch(recipeKey, opts)
     local wasEnabled = watch.enabled == true
     if enabled == true then
@@ -747,14 +820,24 @@ end
 function Watch.IsAutoGrowPauseCombat()
     local row = CharacterRow(false)
     if type(row) ~= "table" then
-        return true
+        return false
     end
-    return row.autoGrowPauseCombat ~= false
+    return row.autoGrowPauseCombat == true
 end
 
 -- Alias used by Scheduler.ShouldDeferAutoGrowPlant
 function Watch.IsCombatPauseEnabled()
     return Watch.IsAutoGrowPauseCombat()
+end
+
+--- When true (default), craftable / AutoGrow mats assume each brew yields the watched potion.
+--- When false, scale by learned outcome success rate (min 5 brew attempts).
+function Watch.IsOptimisticOutcomeEstimate()
+    local row = CharacterRow(false)
+    if type(row) ~= "table" then
+        return true
+    end
+    return row.watchOptimisticOutcomeEstimate ~= false
 end
 
 function Watch.IsAutoBuyEnabled()
@@ -942,6 +1025,14 @@ function Watch.SetPlantEnabled(plantKey, enabled, opts)
     end
     watch.enabled = enabled == true
     Watch.BumpGen()
+    -- Drop Upgrade Seeds targets immediately so unwatch stops that genus climb.
+    local US = StockPiler3.UpgradeSeed
+    if US and US.InvalidateUpgradeTargetsCache then
+        US.InvalidateUpgradeTargetsCache()
+    end
+    if enabled ~= true and US then
+        US._active = nil
+    end
     return watch, true
 end
 

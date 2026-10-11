@@ -46,12 +46,16 @@ ME.SPECIAL_APO_MAIN_UID = {
 }
 
 --- Identity: omit these craftingBonus refs from MS.Key so Fabricated vs
---- Artisan's Glass Vial (DESTROY_ON_FAIL / br=15) share demand/buy keys.
+--- Artisan's Glass Vial (DESTROY_ON_FAIL / br=15) share demand/buy keys, and
+--- so board snapshots that include TYPE/CRAFTING_FAMILY match FromItemData keys
+--- (those refs are already stripped when parsing bag/learned items).
 function ME.IdentityIgnoreBonusRefs()
     local B = StockPiler3.MaterialSpec and StockPiler3.MaterialSpec.CraftBonusRefs
         and StockPiler3.MaterialSpec.CraftBonusRefs()
     local destroy = (B and B.DESTROY_ON_FAIL) or 15
-    return { [destroy] = true }
+    local family = (B and B.CRAFTING_FAMILY) or 5
+    local typ = (B and B.TYPE) or 8
+    return { [destroy] = true, [family] = true, [typ] = true }
 end
 
 --- Name fallback only when uid unknown - Squig Bits butcher family.

@@ -183,7 +183,7 @@
                     </Anchors>
                 </Label>
 
-                <Button name="$parentCombatPause" inherits="EA_Button_DefaultCheckBox">
+                <Button name="$parentOptimisticMode" inherits="EA_Button_DefaultCheckBox">
                     <Size>
                         <AbsPoint x="20" y="20" />
                     </Size>
@@ -193,11 +193,11 @@
                         </Anchor>
                     </Anchors>
                     <EventHandlers>
-                        <EventHandler event="OnLButtonUp" function="StockPiler3TabWatch.OnToggleCombatPause" />
-                        <EventHandler event="OnMouseOver" function="StockPiler3TabWatch.OnMouseOverCombatPause" />
+                        <EventHandler event="OnLButtonUp" function="StockPiler3TabWatch.OnToggleOptimisticMode" />
+                        <EventHandler event="OnMouseOver" function="StockPiler3TabWatch.OnMouseOverOptimisticMode" />
                     </EventHandlers>
                 </Button>
-                <Label name="$parentCombatPauseLabel" font="font_chat_text" maxchars="28" textalign="leftcenter" handleinput="false">
+                <Label name="$parentOptimisticModeLabel" font="font_chat_text" maxchars="28" textalign="leftcenter" handleinput="false">
                     <Size>
                         <AbsPoint x="128" y="28" />
                     </Size>

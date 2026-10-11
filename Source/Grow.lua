@@ -1022,9 +1022,33 @@ local function CollectPlantWatchOrder(RS)
                             have = tonumber(RS.PotionHaveCombined(potion)) or 0
                         end
                         local craftable = 0
-                        if RS.CountCraftsPossible then
+                        local outUid = tonumber(potion.outputUid) or 0
+                        local optimistic = true
+                        if Watch and Watch.IsOptimisticOutcomeEstimate then
+                            optimistic = Watch.IsOptimisticOutcomeEstimate() ~= false
+                        end
+                        if not optimistic and RS.ExpectedCraftableBottles then
+                            local expected, _, best = RS.ExpectedCraftableBottles(recipe, outUid)
+                            if expected ~= nil then
+                                craftable = math.max(0, math.floor((tonumber(expected) or 0) + 0.5))
+                            elseif best ~= nil then
+                                craftable = math.max(0, math.floor((tonumber(best) or 0) + 0.5))
+                            end
+                        elseif RS.CountPotionsCraftable then
+                            craftable = math.max(0, math.floor(
+                                (tonumber(RS.CountPotionsCraftable(recipe, nil, outUid)) or 0) + 0.5
+                            ))
+                        elseif RS.CountCraftsPossible then
                             local n = tonumber(RS.CountCraftsPossible(recipe)) or 0
-                            local yield = tonumber(recipe.recipeYield) or 5
+                            local yield = 1
+                            if RS.RecipeOutputYield then
+                                yield = tonumber(RS.RecipeOutputYield(recipe, outUid)) or 1
+                            else
+                                yield = tonumber(recipe.recipeYield) or 5
+                            end
+                            if yield < 1 then
+                                yield = 1
+                            end
                             craftable = math.max(0, math.floor(n * yield + 0.5))
                         end
                         push(

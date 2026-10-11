@@ -97,7 +97,7 @@ local function SpecKey(spec)
     return nil
 end
 
---- Uid binding only for incomplete mains (exact identity until EFFECT stamped).
+--- Bound exemplar uid for incomplete mains (Have/buy still use ProductMatches).
 local function SpecBoundUid(spec)
     if type(spec) ~= "table" then
         return 0
@@ -174,6 +174,12 @@ local function SettingsHash()
     end
     if Watch and Watch.IsAutoBuyEnabled and Watch.IsAutoBuyEnabled() == true then
         hash = hash + 5
+    end
+    -- Default on (optimistic). Only flip hash when explicitly off so caches rebuild.
+    if Watch and Watch.IsOptimisticOutcomeEstimate
+        and Watch.IsOptimisticOutcomeEstimate() ~= true
+    then
+        hash = hash + 23
     end
     if RespectGrowReserve() then
         hash = hash + 7
@@ -299,7 +305,7 @@ local function IsHaveCacheWarmForSnap()
         and type(Planner._specHaveCache) == "table"
 end
 
---- CountByUid only for incomplete+boundUid; one bag pass for complete specs.
+--- One bag pass via ProductMatches (incomplete stubs count fingerprint twins).
 --- Do not pre-zero craftable / cache entries during brew-load WarmHave.
 local function WarmSpecHaveCache(specs)
     if type(specs) ~= "table" then
@@ -336,17 +342,12 @@ local function WarmSpecHaveCache(specs)
     for i = 1, #list do
         local spec = list[i]
         local key = SpecKey(spec)
-        if key ~= nil and cache[key] == nil then
-            local bound = SpecBoundUid(spec)
-            if bound > 0 and Inv and Inv.CountByUid then
-                cache[key] = tonumber(Inv.CountByUid(bound)) or 0
-                filled = filled + 1
-            elseif pendingKeys[key] ~= true then
-                pendingKeys[key] = true
-                local entry = { key = key, spec = spec }
-                pending[#pending + 1] = entry
-                keyIndex[key] = entry
-            end
+        if key ~= nil and cache[key] == nil and pendingKeys[key] ~= true then
+            -- Incomplete+boundUid used to CountByUid-only; that skipped butcher twins.
+            pendingKeys[key] = true
+            local entry = { key = key, spec = spec }
+            pending[#pending + 1] = entry
+            keyIndex[key] = entry
         end
     end
     if #pending == 0 then
@@ -467,17 +468,12 @@ local function BeginWarmHaveSlice()
     for i = 1, #specs do
         local spec = specs[i]
         local key = SpecKey(spec)
-        if key ~= nil and cache[key] == nil then
-            local bound = SpecBoundUid(spec)
-            if bound > 0 and Inv and Inv.CountByUid then
-                cache[key] = tonumber(Inv.CountByUid(bound)) or 0
-                filled = filled + 1
-            elseif pendingKeys[key] ~= true then
-                pendingKeys[key] = true
-                local entry = { key = key, spec = spec }
-                pending[#pending + 1] = entry
-                keyIndex[key] = entry
-            end
+        if key ~= nil and cache[key] == nil and pendingKeys[key] ~= true then
+            -- Bag-pass all specs (incl. incomplete) so fingerprint twins count.
+            pendingKeys[key] = true
+            local entry = { key = key, spec = spec }
+            pending[#pending + 1] = entry
+            keyIndex[key] = entry
         end
     end
     if #pending == 0 then
@@ -590,10 +586,6 @@ local function CountItemsMatchingSpec(spec, opts)
     end
     local MS = MaterialSpec()
     local Inv = StockPiler3.Inventory
-    local bound = SpecBoundUid(spec)
-    if bound > 0 and Inv and Inv.CountByUid then
-        return tonumber(Inv.CountByUid(bound)) or 0
-    end
     local total = 0
     if Inv and Inv.ForEachItem and MS and MS.ProductMatches then
         Inv.ForEachItem(function(item)
@@ -641,22 +633,55 @@ local function CountCraftsPossibleMemo(recipe)
     return n
 end
 
-local function RecipeYield(recipe)
+local function OptimisticOutcomeEstimate()
+    local Watch = StockPiler3.Watch
+    if Watch and Watch.IsOptimisticOutcomeEstimate then
+        return Watch.IsOptimisticOutcomeEstimate() ~= false
+    end
+    return true
+end
+
+local function RecipeYield(recipe, potionUid)
+    local RS = RecipeSpec()
+    if RS and RS.RecipeOutputYield then
+        local y = tonumber(RS.RecipeOutputYield(recipe, potionUid)) or 0
+        if y >= 1 then
+            return y
+        end
+    end
     return math.max(1, tonumber(recipe and recipe.recipeYield) or 1)
 end
 
-local function CraftsNeededForDeficit(deficit, recipe)
-    local yield = RecipeYield(recipe)
+local function CraftsNeededForDeficit(deficit, recipe, potionUid)
     deficit = tonumber(deficit) or 0
     if deficit <= 0 then
         return 0
     end
+    local RS = RecipeSpec()
+    if not OptimisticOutcomeEstimate() and RS and RS.ExpectedCraftsForDeficit then
+        local n = RS.ExpectedCraftsForDeficit(deficit, recipe, potionUid)
+        return tonumber(n) or 0
+    end
+    if RS and RS.CraftsNeededForDeficit then
+        return tonumber(RS.CraftsNeededForDeficit(deficit, recipe, potionUid)) or 0
+    end
+    local yield = RecipeYield(recipe, potionUid)
     return math.ceil(deficit / yield)
 end
 
-local function CountPotionsCraftable(recipe)
+local function CountPotionsCraftable(recipe, potionUid)
+    local RS = RecipeSpec()
+    if not OptimisticOutcomeEstimate() and RS and RS.ExpectedCraftableBottles then
+        local expected, rate, best = RS.ExpectedCraftableBottles(recipe, potionUid)
+        if expected ~= nil then
+            return math.max(0, math.floor((tonumber(expected) or 0) + 0.5))
+        end
+        if best ~= nil then
+            return math.max(0, math.floor((tonumber(best) or 0) + 0.5))
+        end
+    end
     local crafts = CountCraftsPossibleMemo(recipe)
-    return math.max(0, math.floor((crafts * RecipeYield(recipe)) + 0.5))
+    return math.max(0, math.floor((crafts * RecipeYield(recipe, potionUid)) + 0.5))
 end
 
 ----------------------------------------------------------------
@@ -999,7 +1024,7 @@ local function BuildBalancedSpecDemand(opts)
         local target = group.maxTarget
         local have = group.have
         local deficit = math.max(0, target - have)
-        local craftsNeeded = CraftsNeededForDeficit(deficit, recipe)
+        local craftsNeeded = CraftsNeededForDeficit(deficit, recipe, group.uid)
         local slots = recipe.slots or {}
         for j = 1, #slots do
             local slot = slots[j]
@@ -1094,10 +1119,11 @@ local function BuildBalancedSpecDemand(opts)
                 local resolved = ResolveWatchPotion(watchKey)
                 local potion = resolved and resolved.potion
                 local target = tonumber(watch.targetStock) or 0
-                local havePot = PotionHave(resolved, potion, potion and potion.outputUid)
+                local outUid = potion and tonumber(potion.outputUid) or 0
+                local havePot = PotionHave(resolved, potion, outUid)
                 local deficitPot = math.max(0, target - havePot)
                 if deficitPot > 0 and target > 0 then
-                    local craftsNeeded = CraftsNeededForDeficit(deficitPot, recipe)
+                    local craftsNeeded = CraftsNeededForDeficit(deficitPot, recipe, outUid)
                     local byproductItemsShort = 0
                     local preferredKey = nil
                     local preferredRank = 99
@@ -1236,6 +1262,7 @@ local function CollectFocus(mode)
                             statusKey = statusKey,
                             craftableShared = row.craftableShared == true,
                             priorityTier = tonumber(priorityTier) or 1,
+                            uniqueID = tonumber(row.uniqueID) or 0,
                         }
                         if focus.maxBottleGap == nil or gap > focus.maxBottleGap then
                             focus.maxBottleGap = gap
@@ -1256,10 +1283,11 @@ local function CollectFocus(mode)
                     local recipe = RS.RecipeSpecForPotion and RS.RecipeSpecForPotion(watchKey)
                     if type(potion) == "table" and type(recipe) == "table" then
                         local target = tonumber(watch.targetStock) or 0
-                        local stock = PotionHave(resolved, potion, potion.outputUid)
+                        local outUid = tonumber(potion.outputUid) or 0
+                        local stock = PotionHave(resolved, potion, outUid)
                         local deficit = math.max(0, target - stock)
                         if deficit > 0 and target > 0 then
-                            local craftable = CountPotionsCraftable(recipe)
+                            local craftable = CountPotionsCraftable(recipe, outUid)
                             local gap = BottleGap(target, stock, craftable)
                             local still = gap > 0
                             if not still then
@@ -1284,6 +1312,7 @@ local function CollectFocus(mode)
                                     bottleGap = gap,
                                     recipe = recipe,
                                     priorityTier = tonumber(priorityTier) or 1,
+                                    uniqueID = outUid,
                                 }
                                 if focus.maxBottleGap == nil or gap > focus.maxBottleGap then
                                     focus.maxBottleGap = gap
@@ -1417,12 +1446,13 @@ local function WatchStillNeedsGrow(potion, recipe, target, watchKey)
             end
         end
     end
-    local have = PotionHave(nil, potion, potion.outputUid)
+    local outUid = tonumber(potion.outputUid) or 0
+    local have = PotionHave(nil, potion, outUid)
     local deficit = math.max(0, target - have)
     if deficit <= 0 then
         return false
     end
-    local craftable = CountPotionsCraftable(recipe)
+    local craftable = CountPotionsCraftable(recipe, outUid)
     return have + craftable < target
 end
 
@@ -1471,13 +1501,19 @@ local function CollectAutoGrowSeedLines()
                                 local seedUid = 0
                                 local seed = nil
                                 -- Prefer skill-matched link (owned L1 must not become the buffer seed).
+                                local plantKnownNoSeed = false
                                 if plantUid > 0 and SM.ResolveSeedUidForPlant then
                                     seedUid = tonumber(SM.ResolveSeedUidForPlant(plantUid, spec)) or 0
                                     if seedUid > 0 then
                                         seed = { uniqueID = seedUid, plantUid = plantUid }
+                                    else
+                                        -- Cult-max s0 (Savage Marshroot): do not ResolveSeedForSpec /
+                                        -- GetSeedUidsForPlant[1] — those prefer bag lower-tier seeds
+                                        -- and drop the plant cushion from AutoGrow seed lines.
+                                        plantKnownNoSeed = true
                                     end
                                 end
-                                if seedUid <= 0 and SM.ResolveSeedForSpec then
+                                if seedUid <= 0 and not plantKnownNoSeed and SM.ResolveSeedForSpec then
                                     seed = SM.ResolveSeedForSpec(spec)
                                     if type(seed) == "table" then
                                         seedUid = tonumber(seed.uniqueID) or 0
@@ -1486,13 +1522,15 @@ local function CollectAutoGrowSeedLines()
                                         end
                                     end
                                 end
-                                if seedUid <= 0 and plantUid > 0 and SM.PickBestSeedUid then
+                                if seedUid <= 0 and not plantKnownNoSeed and plantUid > 0
+                                    and SM.PickBestSeedUid
+                                then
                                     local seedUids = SM.GetSeedUidsForPlant and SM.GetSeedUidsForPlant(plantUid) or {}
                                     seedUid = tonumber(SM.PickBestSeedUid(plantUid, seedUids, spec)) or 0
                                 end
-                                -- Same fallback as GrowReserveForSpec: linked seed even when
-                                -- not in bags (PickBestSeedUid requires a bag sample).
-                                if seedUid <= 0 and plantUid > 0 and SM.GetSeedUidsForPlant then
+                                if seedUid <= 0 and not plantKnownNoSeed and plantUid > 0
+                                    and SM.GetSeedUidsForPlant
+                                then
                                     local seedUids = SM.GetSeedUidsForPlant(plantUid)
                                     seedUid = type(seedUids) == "table" and (tonumber(seedUids[1]) or 0) or 0
                                 end
@@ -1504,6 +1542,17 @@ local function CollectAutoGrowSeedLines()
                                         seedUid = seedUid,
                                         plantUid = plantUid,
                                         seed = seed or { uniqueID = seedUid, plantUid = plantUid },
+                                    }
+                                elseif plantUid > 0 and seedUid <= 0 then
+                                    -- Plant-only cushion (ladder 200:s0/p84348).
+                                    seen[productKey] = true
+                                    lines[#lines + 1] = {
+                                        spec = spec,
+                                        specKey = productKey,
+                                        seedUid = 0,
+                                        plantUid = plantUid,
+                                        seed = nil,
+                                        plantOnly = true,
                                     }
                                 end
                             end
@@ -1612,7 +1661,9 @@ local function ApplyDeficitCraftableShared(rows)
                 local slots = recipe.slots
                 if type(slots) == "table" then
                     local craftsPossible = tonumber(row.craftsPossible) or 0
-                    local craftsNeeded = tonumber(row.craftsNeeded) or CraftsNeededForDeficit(deficit, recipe)
+                    local outUid = tonumber(row.uniqueID) or 0
+                    local craftsNeeded = tonumber(row.craftsNeeded)
+                        or CraftsNeededForDeficit(deficit, recipe, outUid)
                     local crafts = math.min(craftsPossible, craftsNeeded)
                     row.craftsClaim = crafts
                     for s = 1, #slots do
@@ -1952,10 +2003,16 @@ local function PlantSeedBufferShort(seedUid, plantUid, spec)
             seedUid = tonumber(SM.ResolveSeedUidForPlant(plantUid, spec)) or 0
         end
     end
-    if seedUid <= 0 then
-        return false
-    end
     local buffer = Watch.GetSeedBufferMin and tonumber(Watch.GetSeedBufferMin()) or 5
+    local Inv = StockPiler3.Inventory
+    if seedUid <= 0 then
+        -- Plant-only cushion (no known seed), e.g. Savage Marshroot s0.
+        if plantUid <= 0 then
+            return false
+        end
+        local have = Inv and Inv.CountByUid and tonumber(Inv.CountByUid(plantUid)) or 0
+        return have < buffer
+    end
     local Refine = StockPiler3.Refine
     if Refine and Refine.GetSeedBudget then
         local b = Refine.GetSeedBudget(seedUid)
@@ -1967,7 +2024,6 @@ local function PlantSeedBufferShort(seedUid, plantUid, spec)
             return credit < buffer
         end
     end
-    local Inv = StockPiler3.Inventory
     local have = Inv and Inv.CountByUid and tonumber(Inv.CountByUid(seedUid)) or 0
     return have < buffer
 end
@@ -2194,14 +2250,24 @@ StampRowSeedBufferUids = function(row)
     end
     local snapGen = CurrentSnapGen()
     local prior = row.seedBufferSeedUids
-    if type(prior) == "table" and #prior > 0
+    local priorPlants = row.seedBufferPlantUids
+    -- Seeds alone OR plants alone are enough to skip restamp. Requiring both
+    -- tables (0.3.348) forced FindPlantUid storms when plantUids was still nil.
+    local priorSeedN = type(prior) == "table" and #prior or 0
+    local priorPlantN = type(priorPlants) == "table" and #priorPlants or 0
+    if (priorSeedN > 0 or priorPlantN > 0)
         and snapGen > 0
         and tonumber(row._seedBufferUidSnapGen) == snapGen
     then
+        if type(row.seedBufferPlantUids) ~= "table" then
+            row.seedBufferPlantUids = {}
+        end
         return
     end
     local uids = {}
+    local plantUids = {}
     local seen = {}
+    local seenPlant = {}
     local function add(uid)
         uid = tonumber(uid) or 0
         if uid > 0 and seen[uid] ~= true then
@@ -2209,18 +2275,33 @@ StampRowSeedBufferUids = function(row)
             uids[#uids + 1] = uid
         end
     end
-    -- Prefer plan tip seedUids (already resolved during status tip build).
+    local function addPlant(uid)
+        uid = tonumber(uid) or 0
+        if uid > 0 and seenPlant[uid] ~= true and seen[uid] ~= true then
+            seenPlant[uid] = true
+            plantUids[#plantUids + 1] = uid
+        end
+    end
+    -- Prefer plan tip seed/plant uids (already resolved during status tip build).
     local tips = row.statusTipSlots
     if type(tips) == "table" then
         for i = 1, #tips do
             local tip = tips[i]
             if type(tip) == "table" then
-                add(tip.seedUid)
+                local sUid = tonumber(tip.seedUid) or 0
+                local pUid = tonumber(tip.plantUid) or 0
+                if sUid > 0 then
+                    add(sUid)
+                elseif pUid > 0 then
+                    -- Orphan high plant (Savage s0): cushion is plant stock.
+                    addPlant(pUid)
+                end
             end
         end
     end
-    -- Cold miss only: ResolveSeed when tips did not yield any seed UIDs.
-    if #uids == 0 then
+    -- Cold miss: tip plantUid / bound spec uid only — never FindPlantUidForSpec
+    -- (full bag/Items ProductMatches walk) on the Watch status hot path.
+    if #uids == 0 and #plantUids == 0 then
         local RS = RecipeSpec()
         local SM = StockPiler3.SeedMap
         local recipe = row.recipe or row.specRecipe
@@ -2239,15 +2320,40 @@ StampRowSeedBufferUids = function(row)
                             local seed = SM.ResolveSeedForSpec(spec)
                             if type(seed) == "table" then
                                 seedUid = tonumber(seed.uniqueID or seed.uid) or 0
+                                if seedUid <= 0 then
+                                    local pFromSeed = tonumber(seed.plantUid) or 0
+                                    if pFromSeed > 0 then
+                                        addPlant(pFromSeed)
+                                    end
+                                end
                             end
                         end
-                        add(seedUid)
+                        if seedUid > 0 then
+                            add(seedUid)
+                        else
+                            local plantUid = tonumber(spec.uid) or tonumber(spec.uniqueID)
+                                or tonumber(spec.boundUid) or 0
+                            addPlant(plantUid)
+                        end
                     end
+                end
+            end
+        end
+    elseif #plantUids == 0 and type(tips) == "table" then
+        -- Tips already gave seeds; still pick up plant-only stimulant tips.
+        for i = 1, #tips do
+            local tip = tips[i]
+            if type(tip) == "table" then
+                local sUid = tonumber(tip.seedUid) or 0
+                local pUid = tonumber(tip.plantUid) or 0
+                if sUid <= 0 and pUid > 0 then
+                    addPlant(pUid)
                 end
             end
         end
     end
     row.seedBufferSeedUids = uids
+    row.seedBufferPlantUids = plantUids
     row._seedBufferUidSnapGen = snapGen
 end
 
@@ -2268,15 +2374,23 @@ local function SeedBufferShort(recipe, potionKey, row)
         if type(row) == "table" then
             local snapGen = CurrentSnapGen()
             local prior = row.seedBufferSeedUids
-            local stamped = type(prior) == "table" and #prior > 0
-                and snapGen > 0
+            local priorPlants = row.seedBufferPlantUids
+            local stamped = snapGen > 0
                 and tonumber(row._seedBufferUidSnapGen) == snapGen
+                and (
+                    (type(prior) == "table" and #prior > 0)
+                    or (type(priorPlants) == "table" and #priorPlants > 0)
+                )
             if not stamped then
                 StampRowSeedBufferUids(row)
             end
         end
         local seedUids = type(row) == "table" and row.seedBufferSeedUids or nil
-        return RS.WatchHasSeedBufferShort(recipe, { seedUids = seedUids }) == true
+        local plantUids = type(row) == "table" and row.seedBufferPlantUids or nil
+        return RS.WatchHasSeedBufferShort(recipe, {
+            seedUids = seedUids,
+            plantUids = plantUids,
+        }) == true
     end
     return false
 end
@@ -2324,6 +2438,22 @@ local function PropagateSharedSeedBufferStatus(rows)
                         end
                     end
                 end
+                local pUids = row.seedBufferPlantUids
+                if type(pUids) == "table" then
+                    local Inv = StockPiler3.Inventory
+                    for u = 1, #pUids do
+                        local uid = tonumber(pUids[u]) or 0
+                        if uid > 0 and shortUids[uid] == nil then
+                            local credit = Inv and Inv.CountByUid and tonumber(Inv.CountByUid(uid)) or 0
+                            if credit < buffer then
+                                shortUids[uid] = true
+                                anyShort = true
+                            else
+                                shortUids[uid] = false
+                            end
+                        end
+                    end
+                end
             end
         end
     end
@@ -2343,6 +2473,17 @@ local function PropagateSharedSeedBufferStatus(rows)
                         if shortUids[tonumber(uids[u]) or 0] == true then
                             hit = true
                             break
+                        end
+                    end
+                end
+                if not hit then
+                    local pUids = row.seedBufferPlantUids
+                    if type(pUids) == "table" then
+                        for u = 1, #pUids do
+                            if shortUids[tonumber(pUids[u]) or 0] == true then
+                                hit = true
+                                break
+                            end
                         end
                     end
                 end
@@ -2481,11 +2622,12 @@ local function ApplySpecPlanStatus(row, target, recipe, demand)
         end
         return
     end
-    local craftsNeeded = CraftsNeededForDeficit(target.deficit, recipe)
+    local outUid = tonumber(target.uniqueID) or 0
+    local craftsNeeded = CraftsNeededForDeficit(target.deficit, recipe, outUid)
     row.craftsNeeded = craftsNeeded
-    row.recipeYield = RecipeYield(recipe)
+    row.recipeYield = RecipeYield(recipe, outUid)
 
-    local craftable = CountPotionsCraftable(recipe)
+    local craftable = CountPotionsCraftable(recipe, outUid)
     local covered = (tonumber(target.have) or 0) + craftable >= (tonumber(target.min) or 0)
     if covered then
         if SeedBufferShort(recipe, target.potionKey, row) then
@@ -2658,7 +2800,7 @@ local function ApplyLiveWatchStatus(row, recipe, deficit, have, craftable, targe
         local slots = type(recipe) == "table" and recipe.slots or nil
         local craftsNeeded = tonumber(row.craftsNeeded) or 0
         if craftsNeeded <= 0 and deficit > 0 then
-            craftsNeeded = CraftsNeededForDeficit(deficit, recipe)
+            craftsNeeded = CraftsNeededForDeficit(deficit, recipe, tonumber(row.uniqueID) or 0)
         end
         if craftsNeeded < 1 then
             craftsNeeded = 1
@@ -2825,8 +2967,9 @@ local function BuildSeedBufferTipData(opts)
             local specKey = tostring(line.specKey or SpecKey(spec) or seedUid or i)
             if byKey[specKey] == nil then
                 local live, ground, planned, credit = 0, 0, 0, 0
+                local plantUid = tonumber(line.plantUid) or 0
                 local Refine = StockPiler3.Refine
-                if Refine and Refine.GetSeedBudgetForSpec then
+                if seedUid > 0 and Refine and Refine.GetSeedBudgetForSpec then
                     local budget = Refine.GetSeedBudgetForSpec(spec, seedUid)
                     live = tonumber(budget and budget.live) or 0
                     ground = tonumber(budget and budget.ground) or 0
@@ -2837,12 +2980,18 @@ local function BuildSeedBufferTipData(opts)
                     if seedUid > 0 and Inv and Inv.CountByUid then
                         live = tonumber(Inv.CountByUid(seedUid)) or 0
                         credit = live
+                    elseif seedUid <= 0 and plantUid > 0 and Inv and Inv.CountByUid then
+                        -- Plant-only cushion credit (Savage Marshroot s0).
+                        live = tonumber(Inv.CountByUid(plantUid)) or 0
+                        credit = live
                     end
                 end
                 local rec = {
                     key = specKey,
                     spec = spec,
                     seedUid = seedUid,
+                    plantUid = plantUid,
+                    plantOnly = seedUid <= 0 and plantUid > 0,
                     live = live,
                     ground = ground,
                     planned = planned,
@@ -3077,8 +3226,9 @@ local function FillWatchRowCraftable(row, ctx)
         return
     end
     local recipe = row.recipe
+    local outUid = tonumber(row.uniqueID) or 0
     local craftsPossible = CountCraftsPossibleMemo(recipe)
-    local craftable = math.max(0, math.floor((craftsPossible * RecipeYield(recipe)) + 0.5))
+    local craftable = CountPotionsCraftable(recipe, outUid)
     row.craftable = craftable
     row.craftsPossible = craftsPossible
     row.craftableShared = false
@@ -3089,6 +3239,7 @@ local function FillWatchRowCraftable(row, ctx)
     local snapGen = type(ctx) == "table" and tonumber(ctx.snapGen) or CurrentSnapGen()
     if snapGen > 0 then
         row._craftableSnapGen = snapGen
+        row._craftableStructKey = RecipeStructuralKey(type(ctx) == "table" and ctx or ReadGens())
     end
 end
 
@@ -3820,6 +3971,9 @@ local function RefreshSkillUpWatchRows(rows, opts)
     return dirty
 end
 
+-- Forward declare: PatchWatchRowsLiveCounts calls this before the definition below.
+local SyncTipSlotNeeds
+
 local function PatchWatchRowsLiveCounts(rows, opts)
     opts = type(opts) == "table" and opts or {}
     local syncSnapshot = opts.syncSnapshot ~= false
@@ -3856,14 +4010,20 @@ local function PatchWatchRowsLiveCounts(rows, opts)
         allowWarmHave = false
     end
     local snapGen = CurrentSnapGen()
+    local structKey = RecipeStructuralKey(ReadGens())
     local needCraftable = false
+    local structDirty = false
     for i = 1, #rows do
         local row = rows[i]
-        if type(row) == "table" and type(row.recipe or row.specRecipe) == "table"
-            and (tonumber(row._craftableSnapGen) or -1) ~= snapGen
-        then
-            needCraftable = true
-            break
+        if type(row) == "table" and type(row.recipe or row.specRecipe) == "table" then
+            local snapMiss = (tonumber(row._craftableSnapGen) or -1) ~= snapGen
+            local structMiss = tostring(row._craftableStructKey or "") ~= tostring(structKey)
+            if structMiss then
+                structDirty = true
+                needCraftable = true
+            elseif snapMiss then
+                needCraftable = true
+            end
         end
     end
     local haveWarm = IsHaveCacheWarmForSnap()
@@ -3886,7 +4046,8 @@ local function PatchWatchRowsLiveCounts(rows, opts)
     end
     local selectiveCraftable = false
     local deltaUids, deltaKeys
-    if recountCraftable and Inv.GetLastNetUidDelta then
+    -- Settings / knowledge / watch-gen changes must full-recount (not bag-delta).
+    if recountCraftable and structDirty ~= true and Inv.GetLastNetUidDelta then
         local delta = Inv.GetLastNetUidDelta()
         if type(delta) == "table" then
             -- Any spend or restore: full craftable recount. Selective touch-sets
@@ -3975,13 +4136,19 @@ local function PatchWatchRowsLiveCounts(rows, opts)
                     end
                 end
                 local craftable = tonumber(row.craftable) or 0
+                local outUid = tonumber(row.uniqueID) or 0
                 if type(recipe) == "table" then
-                    row.craftsNeeded = CraftsNeededForDeficit(deficit, recipe)
-                    if recountCraftable and (tonumber(row._craftableSnapGen) or -1) ~= snapGen then
-                        local doRecount = not selectiveCraftable
+                    local prevCraftsNeeded = tonumber(row.craftsNeeded) or 0
+                    local craftsNeeded = CraftsNeededForDeficit(deficit, recipe, outUid)
+                    row.craftsNeeded = craftsNeeded
+                    local snapMiss = (tonumber(row._craftableSnapGen) or -1) ~= snapGen
+                    local structMiss = tostring(row._craftableStructKey or "") ~= tostring(structKey)
+                    if recountCraftable and (snapMiss or structMiss) then
+                        local doRecount = structMiss
+                            or (not selectiveCraftable)
                             or RowTouchesCraftDelta(row, deltaUids, deltaKeys)
                         if doRecount then
-                            craftable = CountPotionsCraftable(recipe)
+                            craftable = CountPotionsCraftable(recipe, outUid)
                             row.craftable = craftable
                             row.craftsPossible = CountCraftsPossibleMemo(recipe)
                             row.craftableText = towstring(tostring(craftable))
@@ -3989,25 +4156,11 @@ local function PatchWatchRowsLiveCounts(rows, opts)
                             -- Only stamp when recounted. Stamping on a selective miss
                             -- locked Restocking until /sp3 dumpall force-built.
                             row._craftableSnapGen = snapGen
-                            -- Keep tip slot have in sync with WarmHave (CheapRebuild
-                            -- otherwise leaves FillWatchRowTips early-return stale).
-                            local tips = row.statusTipSlots
-                            if type(tips) == "table" then
-                                for t = 1, #tips do
-                                    local entry = tips[t]
-                                    if type(entry) == "table" and type(entry.spec) == "table" then
-                                        local live = CountItemsMatchingSpec(entry.spec, { cacheOnly = true })
-                                        if live ~= nil then
-                                            entry.have = live
-                                            entry.deficit = math.max(0, (tonumber(entry.need) or 0) - live)
-                                            entry.craftsHave = math.floor(
-                                                live / math.max(1, tonumber(entry.perCraft) or 1)
-                                            )
-                                        end
-                                    end
-                                end
-                            end
+                            row._craftableStructKey = structKey
+                            SyncTipSlotNeeds(row, craftsNeeded)
                         end
+                    elseif craftsNeeded ~= prevCraftsNeeded then
+                        SyncTipSlotNeeds(row, craftsNeeded)
                     end
                 end
                 StampBottleGap(row)
@@ -4244,10 +4397,14 @@ local function RefreshStaleCtx(stale)
     return FormatCacheKey(stale.ctx)
 end
 
---- Potion rows with a recipe must have craftable stamped for this snap before any
---- cheap/garden publish advances the plan cache key (else Build early-returns stale).
-local function RowsCraftableCurrentForSnap(rows, snapGen)
+--- Potion rows with a recipe must have craftable stamped for this snap + recipe-
+--- structural key (watch/knowledge/settings) before cheap/garden publish advances
+--- the plan cache key (else Build early-returns stale). Settings-only changes
+--- (Optimistic mode) used to leave craftable stamped for the bag snap while
+--- counts were still best-case until /sp3 dumpall force-built.
+local function RowsCraftableCurrentForSnap(rows, snapGen, structKey)
     snapGen = tonumber(snapGen) or CurrentSnapGen()
+    structKey = structKey or RecipeStructuralKey(ReadGens())
     if type(rows) ~= "table" then
         return true
     end
@@ -4263,9 +4420,42 @@ local function RowsCraftableCurrentForSnap(rows, snapGen)
             if (tonumber(row._craftableSnapGen) or -1) ~= snapGen then
                 return false
             end
+            if tostring(row._craftableStructKey or "") ~= tostring(structKey) then
+                return false
+            end
         end
     end
     return true
+end
+
+--- Keep tip Have/Need aligned when craftsNeeded changes without a full Build
+--- (Optimistic off / rate samples / deficit edits).
+function SyncTipSlotNeeds(row, craftsNeeded)
+    local tips = row and row.statusTipSlots
+    if type(tips) ~= "table" then
+        return
+    end
+    craftsNeeded = tonumber(craftsNeeded) or 0
+    for t = 1, #tips do
+        local entry = tips[t]
+        if type(entry) == "table" then
+            local per = math.max(1, tonumber(entry.perCraft) or 1)
+            local need = craftsNeeded * per
+            entry.need = need
+            entry.craftsNeeded = craftsNeeded
+            local have = tonumber(entry.have) or 0
+            if type(entry.spec) == "table" then
+                local live = CountItemsMatchingSpec(entry.spec, { cacheOnly = true })
+                if live ~= nil then
+                    have = tonumber(live) or have
+                    entry.have = have
+                end
+            end
+            entry.deficit = math.max(0, need - have)
+            entry.craftsHave = math.floor(have / per)
+            entry.stocked = entry.deficit <= 0
+        end
+    end
 end
 
 local function TryCheapRebuild()
@@ -4460,6 +4650,7 @@ function Planner.InvalidateHaveCacheAfterQuiet()
             local row = plan.rows[i]
             if type(row) == "table" then
                 row._craftableSnapGen = -1
+                row._craftableStructKey = nil
             end
         end
     end
@@ -4467,6 +4658,30 @@ function Planner.InvalidateHaveCacheAfterQuiet()
     if PS and PS.Invalidate then
         PS.Invalidate()
     end
+end
+
+--- Bust live craftable stamps so Watch recounts without waiting on a bag snap
+--- (Optimistic / seed-buffer / skill toggles). Used by Watch settings UI.
+function Planner.InvalidateCraftableStamps(extraRows)
+    local function clearRows(rows)
+        if type(rows) ~= "table" then
+            return
+        end
+        for i = 1, #rows do
+            local row = rows[i]
+            if type(row) == "table" then
+                row._craftableSnapGen = -1
+                row._craftableStructKey = nil
+            end
+        end
+    end
+    local PS = StockPiler3.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    if type(plan) == "table" then
+        clearRows(plan.rows)
+    end
+    clearRows(extraRows)
+    Planner._demandCacheKey = nil
 end
 
 function Planner.BottleGap(target, stock, craftable)
@@ -4608,7 +4823,8 @@ function Planner.CollectVendorBuyJobs(opts)
                 if RS and RS.HydrateRecipeSlots then
                     RS.HydrateRecipeSlots(recipe)
                 end
-                local craftsNeeded = CraftsNeededForDeficit(deficit, recipe)
+                local outUid = tonumber(fw and fw.uniqueID) or tonumber(fw and fw.outputUid) or 0
+                local craftsNeeded = CraftsNeededForDeficit(deficit, recipe, outUid)
                 local slots = recipe.slots or {}
                 for j = 1, #slots do
                     local slot = slots[j]
@@ -4853,6 +5069,17 @@ local function DumpWatchRows(emit, rows, planMeta)
                     parts[#parts + 1] = tostring(uid) .. "@" .. tostring(credit)
                 end
                 emit("      seedBufferUids=" .. table.concat(parts, ","))
+            end
+            local plantBuf = row.seedBufferPlantUids
+            if type(plantBuf) == "table" and #plantBuf > 0 then
+                local parts = {}
+                local Inv = StockPiler3.Inventory
+                for u = 1, #plantBuf do
+                    local uid = tonumber(plantBuf[u]) or 0
+                    local credit = Inv and Inv.CountByUid and tonumber(Inv.CountByUid(uid)) or 0
+                    parts[#parts + 1] = tostring(uid) .. "@" .. tostring(credit)
+                end
+                emit("      seedBufferPlantUids=" .. table.concat(parts, ","))
             end
             local tips = row.statusTipSlots
             if type(tips) == "table" then
@@ -5159,16 +5386,27 @@ function Planner.DumpGrowPlan(emit)
             for i = 1, #watched do
                 local rec = watched[i]
                 if type(rec) == "table" then
-                    emit(string.format(
-                        "    seed uid=%s live=%s ground=%s planned=%s total=%s shortBy=%s key=%s",
-                        tostring(rec.seedUid or 0),
-                        tostring(rec.live or 0),
-                        tostring(rec.ground or 0),
-                        tostring(rec.planned or 0),
-                        tostring(rec.total or 0),
-                        tostring(rec.shortBy or 0),
-                        tostring(rec.key or "")
-                    ))
+                    if rec.plantOnly == true then
+                        emit(string.format(
+                            "    plant uid=%s live=%s total=%s shortBy=%s key=%s",
+                            tostring(rec.plantUid or 0),
+                            tostring(rec.live or 0),
+                            tostring(rec.total or 0),
+                            tostring(rec.shortBy or 0),
+                            tostring(rec.key or "")
+                        ))
+                    else
+                        emit(string.format(
+                            "    seed uid=%s live=%s ground=%s planned=%s total=%s shortBy=%s key=%s",
+                            tostring(rec.seedUid or 0),
+                            tostring(rec.live or 0),
+                            tostring(rec.ground or 0),
+                            tostring(rec.planned or 0),
+                            tostring(rec.total or 0),
+                            tostring(rec.shortBy or 0),
+                            tostring(rec.key or "")
+                        ))
+                    end
                 end
             end
         end

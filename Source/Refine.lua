@@ -480,13 +480,18 @@ local function LineBufferShort(line)
         return false
     end
     local seedUid = tonumber(line.seedUid) or 0
-    -- Plant-only lines (seed not resolved yet) cannot measure seed credit - do not
-    -- treat as buffer-short or brew stays blocked forever.
+    local buffer = StockPiler3.Watch and StockPiler3.Watch.GetSeedBufferMin and StockPiler3.Watch.GetSeedBufferMin() or 5
     if seedUid <= 0 then
-        return false
+        -- Plant-only cushion (Savage Marshroot s0): bag plant count is the credit.
+        local plantUid = tonumber(line.plantUid) or 0
+        if plantUid <= 0 then
+            return false
+        end
+        local Inv = StockPiler3.Inventory
+        local have = Inv and Inv.CountByUid and tonumber(Inv.CountByUid(plantUid)) or 0
+        return have < buffer
     end
     local budget = Refine.GetSeedBudget(seedUid)
-    local buffer = StockPiler3.Watch and StockPiler3.Watch.GetSeedBufferMin and StockPiler3.Watch.GetSeedBufferMin() or 5
     return (tonumber(budget.credit) or 0) < buffer
 end
 
@@ -495,6 +500,10 @@ local function LineConvertiblePending(line)
         return false
     end
     local seedUid = tonumber(line.seedUid) or 0
+    -- Plant-only cushion (s0): no refine→seed path; Upgrade Seeds owns SM fishing.
+    if seedUid <= 0 then
+        return false
+    end
     if IsSeedBufferOnCooldown(seedUid) then
         return false
     end

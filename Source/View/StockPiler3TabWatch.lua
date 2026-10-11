@@ -15,7 +15,7 @@ local ENABLE_WIN = "SP3TabWatchEnable"
 local ADDITIVES_WIN = "SP3TabWatchAdditives"
 local AUTOBUY_WIN = "SP3TabWatchAutoBuy"
 local SEED_BUFFER_ENABLE_WIN = "SP3TabWatchSeedBufferEnable"
-local COMBAT_PAUSE_WIN = "SP3TabWatchCombatPause"
+local OPTIMISTIC_MODE_WIN = "SP3TabWatchOptimisticMode"
 local SKILLUP_SKILLS_WIN = "SP3TabWatchSkillUpSkills"
 local UPGRADE_SEEDS_WIN = "SP3TabWatchUpgradeSeeds"
 
@@ -434,9 +434,14 @@ local function BumpWatch()
     end
 end
 
---- Soft demand change: Bump + immediate AutoGrow status reconcile + coalesced PlanRebuild.
+--- Soft demand change: Bump + immediate AutoGrow status reconcile + urgent PlanRebuild.
+--- Craftable/status must recount on this click (Optimistic / seed buffer / AG) — a
+--- coalesced nudge left Watch on stale craftable until /sp3 dumpall force-built.
 local function AfterWatchSettingsChanged()
     BumpWatch()
+    if StockPiler3.Planner and StockPiler3.Planner.InvalidateCraftableStamps then
+        StockPiler3.Planner.InvalidateCraftableStamps(StockPiler3TabWatch.listData)
+    end
     -- Flip Enable AutoGrow <-> Restocking now (UI throttle / plan gap must not leave stale status).
     if StockPiler3.Planner and StockPiler3.Planner.ReconcileAutoGrowStatusesNow then
         StockPiler3.Planner.ReconcileAutoGrowStatusesNow(StockPiler3TabWatch.listData)
@@ -448,7 +453,7 @@ local function AfterWatchSettingsChanged()
     end
     local Sch = StockPiler3.Scheduler
     if Sch and Sch.EnqueuePlanRebuild then
-        Sch.EnqueuePlanRebuild({ nudge = true })
+        Sch.EnqueuePlanRebuild({ urgent = true })
     end
     if StockPiler3.Ui then
         -- Bypass 5s Watch flush throttle so status text updates on this click.
@@ -693,15 +698,15 @@ local function UpdateAutoBuyCheckbox()
     syncingUi = false
 end
 
-local function UpdateCombatPauseCheckbox()
-    if not DoesWindowExist(COMBAT_PAUSE_WIN) then
+local function UpdateOptimisticModeCheckbox()
+    if not DoesWindowExist(OPTIMISTIC_MODE_WIN) then
         return
     end
     local row = CharRow(false)
-    local on = type(row) ~= "table" or row.autoGrowPauseCombat ~= false
+    local on = type(row) ~= "table" or row.watchOptimisticOutcomeEstimate ~= false
     syncingUi = true
-    ButtonSetCheckButtonFlag(COMBAT_PAUSE_WIN, true)
-    ButtonSetPressedFlag(COMBAT_PAUSE_WIN, on)
+    ButtonSetCheckButtonFlag(OPTIMISTIC_MODE_WIN, true)
+    ButtonSetPressedFlag(OPTIMISTIC_MODE_WIN, on)
     syncingUi = false
 end
 
@@ -1016,7 +1021,7 @@ function StockPiler3TabWatch.Initialize()
     LabelSetText("SP3TabWatchAdditivesLabel", T("watch.use_additives"))
     LabelSetText("SP3TabWatchSeedBufferLabel", T("watch.seed_buffer_label"))
     LabelSetText("SP3TabWatchAutoBuyLabel", T("watch.autobuy_label"))
-    LabelSetText("SP3TabWatchCombatPauseLabel", T("watch.combat_pause_label"))
+    LabelSetText("SP3TabWatchOptimisticModeLabel", T("watch.optimistic_mode_label"))
     LabelSetText("SP3TabWatchReserveLabel", T("watch.reserve_label"))
     LabelSetText("SP3TabWatchBudgetLabel", T("watch.budget_label"))
     if DoesWindowExist("SP3TabWatchBudgetReset") then
@@ -1055,7 +1060,7 @@ function StockPiler3TabWatch.RefreshSkillGates()
     local autoGrow = canGrow and type(row) == "table" and row.autoGrowEnabled == true
     local additives = canGrow and type(row) == "table" and row.autoGrowAdditives == true
     local autoBuy = canBuy and type(row) == "table" and row.autoBuyEnabled == true
-    local combatPause = type(row) ~= "table" or row.autoGrowPauseCombat ~= false
+    local optimistic = type(row) ~= "table" or row.watchOptimisticOutcomeEstimate ~= false
     local seedBufOn = canGrow and (type(row) ~= "table" or row.growSeedBufferEnabled ~= false)
     local seedBuf = StockPiler3.Watch and StockPiler3.Watch.GetSeedBufferMin and StockPiler3.Watch.GetSeedBufferMin() or 5
     local reserve = type(row) == "table" and tonumber(row.autoBuyReserveGold) or 10
@@ -1070,7 +1075,7 @@ function StockPiler3TabWatch.RefreshSkillGates()
     local upgradeOn = UpgradeSeed and UpgradeSeed.IsEnabled and UpgradeSeed.IsEnabled() == true
     local gatesKey = table.concat({
         tostring(canGrow), tostring(canBuy), tostring(autoGrow), tostring(additives),
-        tostring(autoBuy), tostring(combatPause), tostring(seedBufOn), tostring(seedBuf),
+        tostring(autoBuy), tostring(optimistic), tostring(seedBufOn), tostring(seedBuf),
         tostring(reserve), tostring(budget), tostring(spent),
         tostring(cultVis), tostring(apoVis), tostring(skillUpCult), tostring(skillUpApo),
         tostring(upgradeOn),
@@ -1084,7 +1089,7 @@ function StockPiler3TabWatch.RefreshSkillGates()
     UpdateEnableCheckbox()
     UpdateAdditivesCheckbox()
     UpdateAutoBuyCheckbox()
-    UpdateCombatPauseCheckbox()
+    UpdateOptimisticModeCheckbox()
     UpdateSeedBufferEnableCheckbox()
     UpdateUpgradeSeedsCheckbox()
     UpdateSeedBufferLabel()
@@ -1129,6 +1134,41 @@ local function ApplyOptimisticWatchRowFilter(filterRows)
     return listChanged or snapChanged
 end
 
+local function RowMatchesPotionKey(row, potionKey)
+    if type(row) ~= "table" or potionKey == nil or potionKey == "" then
+        return false
+    end
+    local keys = {
+        row.potionRecipeKey,
+        row.id,
+        row.potionKey,
+        row.potionBaseKey,
+    }
+    for i = 1, #keys do
+        if keys[i] ~= nil and tostring(keys[i]) == potionKey then
+            return true
+        end
+    end
+    return false
+end
+
+local function RowMatchesPlantKey(row, plantKey)
+    if type(row) ~= "table" or plantKey == nil or plantKey == "" then
+        return false
+    end
+    local keys = {
+        row.plantKey,
+        row.id,
+        row.potionKey,
+    }
+    for i = 1, #keys do
+        if keys[i] ~= nil and tostring(keys[i]) == plantKey then
+            return true
+        end
+    end
+    return false
+end
+
 --- Drop a disabled potion/plant watch from live Watch listData (+ plan rows if shared).
 local function OptimisticRemoveWatchRow(opts)
     opts = type(opts) == "table" and opts or {}
@@ -1148,15 +1188,9 @@ local function OptimisticRemoveWatchRow(opts)
             local drop = false
             if type(row) == "table" then
                 if plantKey ~= nil and (row.kind == "plant" or row.isPlantWatch == true) then
-                    local rk = tostring(row.plantKey or row.id or "")
-                    if rk == plantKey then
-                        drop = true
-                    end
+                    drop = RowMatchesPlantKey(row, plantKey)
                 elseif potionKey ~= nil and row.kind ~= "plant" and row.isPlantWatch ~= true then
-                    local rk = tostring(row.potionRecipeKey or row.id or row.potionKey or "")
-                    if rk == potionKey then
-                        drop = true
-                    end
+                    drop = RowMatchesPotionKey(row, potionKey)
                 end
             end
             if drop then
@@ -1170,6 +1204,165 @@ local function OptimisticRemoveWatchRow(opts)
         end
         return rows, false
     end)
+end
+
+--- Stub row so Watch keeps the new eye-on entry while plan rebuild is in flight.
+--- (Disable already had OptimisticRemove; enable used to wait on PLAN_UPDATED.)
+local function BuildOptimisticPotionWatchRow(potionKey)
+    potionKey = tostring(potionKey or "")
+    if potionKey == "" then
+        return nil
+    end
+    local RS = StockPiler3.RecipeSpec
+    local resolved = RS and RS.ResolveWatchPotion and RS.ResolveWatchPotion(potionKey) or nil
+    local potion = resolved and resolved.potion
+    local outputUid = (type(resolved) == "table" and tonumber(resolved.outputUid)) or 0
+    if outputUid <= 0 then
+        outputUid = tonumber(string.match(potionKey, "^uid:(%d+)")) or 0
+    end
+    local watch = StockPiler3.Watch and StockPiler3.Watch.GetWatch
+        and StockPiler3.Watch.GetWatch(potionKey) or nil
+    local have = 0
+    if StockPiler3.Catalog and StockPiler3.Catalog.PotionHaveCombined and type(potion) == "table" then
+        have = tonumber(StockPiler3.Catalog.PotionHaveCombined(potion)) or 0
+    elseif StockPiler3.Inventory and StockPiler3.Inventory.CountByUid and outputUid > 0 then
+        have = tonumber(StockPiler3.Inventory.CountByUid(outputUid)) or 0
+    end
+    local min = tonumber(watch and watch.targetStock) or 40
+    local prio = 1
+    if StockPiler3.Watch and StockPiler3.Watch.GetPriorityTier then
+        prio = tonumber(StockPiler3.Watch.GetPriorityTier(potionKey)) or 1
+    else
+        prio = tonumber(watch and watch.priorityTier) or 1
+    end
+    local name = (type(potion) == "table" and potion.name)
+        or towstring(tostring(outputUid > 0 and outputUid or potionKey))
+    local iconNum = (type(potion) == "table" and tonumber(potion.iconNum)) or 0
+    local recipeSpecKey = type(resolved) == "table" and resolved.recipeSpecKey or nil
+    return {
+        id = potionKey,
+        potionKey = potionKey,
+        potionRecipeKey = potionKey,
+        potionBaseKey = (type(resolved) == "table" and resolved.potionKey)
+            or ("uid:" .. tostring(outputUid)),
+        recipeSpecKey = recipeSpecKey,
+        uniqueID = outputUid,
+        name = name,
+        iconNum = iconNum,
+        potionHave = have,
+        stockText = towstring(tostring(have)),
+        potionMin = min,
+        target = min,
+        targetText = towstring(tostring(min)),
+        potionDeficit = math.max(0, min - have),
+        craftable = 0,
+        craftableText = T("ui.dash"),
+        autoGrow = type(watch) == "table" and watch.autoGrow == true,
+        priorityTier = prio,
+        priorityTierText = towstring(tostring(prio)),
+        hasRecipe = recipeSpecKey ~= nil and recipeSpecKey ~= "",
+        statusText = T("ui.dash"),
+        statusKey = "",
+        _optimisticWatch = true,
+    }
+end
+
+local function BuildOptimisticPlantWatchRow(plantKey)
+    plantKey = tostring(plantKey or "")
+    if plantKey == "" then
+        return nil
+    end
+    local Watch = StockPiler3.Watch
+    local plantUid = Watch and Watch.ParsePlantKey and Watch.ParsePlantKey(plantKey) or 0
+    plantUid = tonumber(plantUid) or 0
+    if plantUid <= 0 then
+        plantUid = tonumber(string.match(plantKey, "^plant:(%d+)")) or 0
+    end
+    local watch = Watch and Watch.GetPlantWatch and Watch.GetPlantWatch(plantKey) or nil
+    local have = 0
+    if StockPiler3.Inventory and StockPiler3.Inventory.CountByUid and plantUid > 0 then
+        have = tonumber(StockPiler3.Inventory.CountByUid(plantUid)) or 0
+    end
+    local target = tonumber(watch and watch.targetStock) or 40
+    local name = towstring(tostring(plantUid > 0 and plantUid or plantKey))
+    local iconNum = 0
+    local itemData = nil
+    if StockPiler3.Items and StockPiler3.Items.AsItemData and plantUid > 0 then
+        itemData = StockPiler3.Items.AsItemData(plantUid)
+    end
+    if type(itemData) == "table" then
+        if itemData.name ~= nil then
+            name = itemData.name
+        end
+        iconNum = tonumber(itemData.iconNum) or 0
+    end
+    return {
+        kind = "plant",
+        isPlantWatch = true,
+        id = plantKey,
+        plantKey = plantKey,
+        potionKey = plantKey,
+        potionRecipeKey = plantKey,
+        plantUid = plantUid,
+        uniqueID = plantUid,
+        name = name,
+        iconNum = iconNum,
+        itemData = itemData,
+        potionHave = have,
+        stockText = towstring(tostring(have)),
+        potionMin = target,
+        target = target,
+        targetText = towstring(tostring(target)),
+        potionDeficit = math.max(0, target - have),
+        craftable = 0,
+        craftableText = L"",
+        autoGrow = type(watch) == "table" and watch.autoGrow == true,
+        priorityTierText = L"-",
+        plantPrioSentinel = true,
+        hideBrew = true,
+        statusText = T("ui.dash"),
+        statusKey = "",
+        _optimisticWatch = true,
+    }
+end
+
+local function OptimisticAddWatchRow(opts)
+    opts = type(opts) == "table" and opts or {}
+    local potionKey = opts.potionKey ~= nil and tostring(opts.potionKey) or nil
+    local plantKey = opts.plantKey ~= nil and tostring(opts.plantKey) or nil
+    local stub = nil
+    if plantKey ~= nil and plantKey ~= "" then
+        stub = BuildOptimisticPlantWatchRow(plantKey)
+    elseif potionKey ~= nil and potionKey ~= "" then
+        stub = BuildOptimisticPotionWatchRow(potionKey)
+    end
+    if type(stub) ~= "table" then
+        return false
+    end
+    -- Mutate listData only (PlanSnapshot.Invalidate follows and drops snap.rows).
+    local list = StockPiler3TabWatch.listData
+    if type(list) ~= "table" then
+        list = {}
+        StockPiler3TabWatch.listData = list
+    end
+    for i = 1, #list do
+        local row = list[i]
+        if type(row) == "table" then
+            if plantKey ~= nil and IsPlantWatchRow(row) and RowMatchesPlantKey(row, plantKey) then
+                return false
+            end
+            if potionKey ~= nil and not IsPlantWatchRow(row) and RowMatchesPotionKey(row, potionKey) then
+                return false
+            end
+        end
+    end
+    list[#list + 1] = stub
+    StockPiler3TabWatch.displayOrder = {}
+    for i = 1, #list do
+        StockPiler3TabWatch.displayOrder[i] = i
+    end
+    StockPiler3TabWatch._rowPaintKey = nil
+    return true
 end
 
 local function IsEphemeralPlanRow(row)
@@ -1213,20 +1406,26 @@ function StockPiler3TabWatch.OptimisticClearWatchKind(kind)
     end)
 end
 
---- Potions/Plants eye toggle / clear: urgent rebuild, throttle bypass, optimistic remove,
---- footer Clear-Watches nudge. Call after Watch.SetEnabled / SetPlantEnabled succeeds.
+--- Potions/Plants eye toggle / clear: urgent rebuild, throttle bypass, optimistic
+--- add/remove, footer Clear-Watches nudge. Call after Watch.SetEnabled /
+--- SetPlantEnabled succeeds.
 function StockPiler3TabWatch.AfterCatalogWatchToggle(opts)
     opts = type(opts) == "table" and opts or {}
     local enabled = opts.enabled == true
+    -- Mutate live listData before soft-invalidate so Watch (or a later tab open)
+    -- does not keep a prevList that is missing the new eye / still has a removed one.
+    local listTouched = false
+    if enabled == true then
+        listTouched = OptimisticAddWatchRow(opts) == true
+    else
+        listTouched = OptimisticRemoveWatchRow(opts) == true
+    end
     if StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Invalidate then
         StockPiler3.PlanSnapshot.Invalidate()
     end
     local Sch = StockPiler3.Scheduler
     if Sch and Sch.EnqueuePlanRebuild then
         Sch.EnqueuePlanRebuild({ urgent = true })
-    end
-    if enabled ~= true then
-        OptimisticRemoveWatchRow(opts)
     end
     if StockPiler3.Ui then
         StockPiler3.Ui._watchUiLastKey = nil
@@ -1235,16 +1434,23 @@ function StockPiler3TabWatch.AfterCatalogWatchToggle(opts)
             StockPiler3.Ui.MarkWatchUiDirty()
         end
     end
-    -- Keep Watch listData/paint fresh even when another tab is active.
-    if StockPiler3Window and StockPiler3Window.SelectedTab == StockPiler3Window.TABS_WATCH then
-        if StockPiler3TabWatch.Refresh then
+    -- Only paint/rebind Watch while that tab is selected. forceRebind used to
+    -- KickListBoxLayout (hide/show SP3TabWatch) from Potions/Plants and stack
+    -- both tabs' headers/rows on screen.
+    local onWatch = StockPiler3Window
+        and StockPiler3Window.SelectedTab == StockPiler3Window.TABS_WATCH
+    if onWatch == true and DoesWindowExist("SP3TabWatchList") then
+        if listTouched == true and StockPiler3TabWatch.Refresh then
+            -- Optimistic add/remove changes list length; force ListBoxSetDisplayOrder.
+            StockPiler3TabWatch.Refresh({ forcePlan = false, forceRebind = true })
+        elseif StockPiler3TabWatch.Refresh then
             StockPiler3TabWatch.Refresh({ forcePlan = false })
         end
-    elseif type(StockPiler3TabWatch.listData) == "table"
-        and DoesWindowExist("SP3TabWatchList")
-        and StockPiler3TabWatch.UpdateRows
-    then
-        StockPiler3TabWatch.UpdateRows({ keepVisible = true })
+    end
+    -- Off Watch: listData already patched; MarkWatchUiDirty paints when Watch opens.
+    -- Restore tab visibility if a prior KickListBoxLayout left Watch stacked.
+    if StockPiler3Window and StockPiler3Window.EnsureSelectedTabShowing then
+        StockPiler3Window.EnsureSelectedTabShowing()
     end
     -- Clear Watches enable state must flip with the eye, not wait for PLAN_UPDATED.
     if StockPiler3Window and StockPiler3Window.SyncActionReadiness then
@@ -1315,6 +1521,12 @@ function StockPiler3TabWatch.KickListBoxLayout()
     if not DoesWindowExist(TAB_ROOT) or not DoesWindowExist("SP3TabWatchList") then
         return false
     end
+    -- Never force-show Watch over Potions/Plants (eye-clear forceRebind path).
+    if not (StockPiler3Window
+        and StockPiler3Window.SelectedTab == StockPiler3Window.TABS_WATCH)
+    then
+        return false
+    end
     -- Child tab is SetShowing(true) during Initialize while the parent is hidden.
     -- WAR ListBox does not lay out until a hidden->shown edge after the parent is up.
     WindowSetShowing(TAB_ROOT, false)
@@ -1377,6 +1589,16 @@ function StockPiler3TabWatch.Refresh(opts)
     end
 
     local forceRebind = opts.forceRebind == true
+    -- Stale PopulatorIndices after optimistic eye-clear (indices past #listData).
+    if not forceRebind and hasPopulated and type(indices) == "table" then
+        for _, dataIndex in pairs(indices) do
+            local di = tonumber(dataIndex) or 0
+            if di > listCount then
+                forceRebind = true
+                break
+            end
+        end
+    end
 
     -- Empty PopulatorIndices mid-brew: keepVisible + defer one SetDisplayOrder
     -- until hold ends (avoids ListBox flash every ForceBrew; chips rebind once).
@@ -1562,7 +1784,10 @@ function StockPiler3TabWatch.UpdateRows(opts)
                     ApplyRowBrewButton(rowName .. "Load", data)
                 end
             else
-                if keepVisible ~= true then
+                -- keepVisible preserves mid-rebuild flashes, but never leave a
+                -- ghost slot when listData shrank (eye-clear / Forget / Clear).
+                local pastEnd = dataIndex == nil or dataIndex > listCount
+                if keepVisible ~= true or pastEnd then
                     WindowSetShowing(rowName, false)
                     StockPiler3TabWatch._rowPaintKey[rowIndex] = nil
                 end
@@ -1679,7 +1904,7 @@ function StockPiler3TabWatch.OnToggleAutoBuy()
     end
 end
 
-function StockPiler3TabWatch.OnToggleCombatPause()
+function StockPiler3TabWatch.OnToggleOptimisticMode()
     if syncingUi then
         return
     end
@@ -1687,9 +1912,10 @@ function StockPiler3TabWatch.OnToggleCombatPause()
     if type(row) ~= "table" then
         return
     end
-    row.autoGrowPauseCombat = ButtonGetPressedFlag(COMBAT_PAUSE_WIN) == true
-    NotifySettings(T("watch.combat_pause", { state = OnOff(row.autoGrowPauseCombat) }))
-    AfterSoftMoneySetting()
+    row.watchOptimisticOutcomeEstimate = ButtonGetPressedFlag(OPTIMISTIC_MODE_WIN) == true
+    NotifySettings(T("watch.optimistic_mode", { state = OnOff(row.watchOptimisticOutcomeEstimate) }))
+    AfterWatchSettingsChanged()
+    UpdateOptimisticModeCheckbox()
 end
 
 function StockPiler3TabWatch.OnToggleSkillUpSkills()
@@ -2669,8 +2895,8 @@ function StockPiler3TabWatch.OnMouseOverAutoBuy()
     Tip(T("tip.watch.autobuy"))
 end
 
-function StockPiler3TabWatch.OnMouseOverCombatPause()
-    Tip(T("tip.watch.combat_pause"))
+function StockPiler3TabWatch.OnMouseOverOptimisticMode()
+    Tip(T("tip.watch.optimistic_mode"))
 end
 
 function StockPiler3TabWatch.OnMouseOverSkillUpSkills()

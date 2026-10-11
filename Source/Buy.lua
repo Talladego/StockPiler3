@@ -980,7 +980,6 @@ function Buy.FindStoreMatch(job)
     local MS = StockPiler3.MaterialSpec
     local uid = tonumber(job.uid) or tonumber(job.uniqueID) or 0
     local spec = job.spec
-    local incomplete = type(spec) == "table" and spec.incomplete == true
 
     local function RowCost(row, item)
         local cost = tonumber(row and row.cost) or tonumber(item and item.cost) or 0
@@ -990,22 +989,8 @@ function Buy.FindStoreMatch(job)
         return cost
     end
 
-    -- Incomplete: exact uid only.
-    if incomplete and uid > 0 and VA.FindStoreRowsByUid then
-        local rows = VA.FindStoreRowsByUid(uid)
-        if type(rows) == "table" then
-            for i = 1, #rows do
-                local row = rows[i]
-                local item = row and row.item or row
-                if type(item) == "table" and not HasAltCurrency(item) then
-                    return item, RowCost(row, item)
-                end
-            end
-        end
-        return nil, 0
-    end
-
-    -- Prefer fingerprint match across store (Artisan's vs Fabricated vials, etc.).
+    -- Prefer fingerprint match across store (Artisan's vs Fabricated vials,
+    -- incomplete main stubs vs preserved butcher twins, etc.).
     local index = VA.GetMatchIndex and VA.GetMatchIndex()
     if type(spec) == "table" and type(index) == "table" and type(index.rows) == "table"
         and MS and MS.Matches

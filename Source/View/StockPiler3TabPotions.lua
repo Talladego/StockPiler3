@@ -116,14 +116,23 @@ local function BuildRecipeDataForPotion(potionName, recipe, potionLevel, potionU
         return nil
     end
     local uid = tonumber(potionUid) or tonumber(recipe.outputUid) or 0
+    local RS = StockPiler3.RecipeSpec
     local attempts = tonumber(recipe.brewAttempts) or 0
     local successes = tonumber(recipe.brewSuccesses) or 0
     local successRate = nil
-    if attempts > 0 then
+    -- Prefer per-outcome rate so Potent / good siblings on one fingerprint
+    -- show distinct odds (outcome.successes / brewAttempts).
+    if RS and RS.OutcomeSuccessStats then
+        local ocStats = RS.OutcomeSuccessStats(recipe, uid)
+        if type(ocStats) == "table" then
+            attempts = tonumber(ocStats.brewAttempts) or attempts
+            successes = tonumber(ocStats.brewSuccesses) or successes
+            successRate = ocStats.successRate
+        end
+    elseif attempts > 0 then
         successRate = successes / attempts
     end
     local recipeYield = tonumber(recipe.recipeYield) or 0
-    local RS = StockPiler3.RecipeSpec
     if RS and RS.RecipeFingerprintStats then
         local stats = RS.RecipeFingerprintStats(recipe, uid)
         if type(stats) == "table" and tonumber(stats.yield) and tonumber(stats.yield) > 0 then
@@ -685,7 +694,9 @@ function StockPiler3TabPotions.OnToggleWatch()
     if not data then
         return
     end
-    local potionKey = data.potionKey or data.id
+    -- Prefer composite recipe key so sibling recipes for the same output uid
+    -- do not share one Watch.SetEnabled / GetWatch alias.
+    local potionKey = data.potionRecipeKey or data.potionKey or data.id
     local win = SystemData.ActiveWindow.name
     local enabled = ButtonGetPressedFlag(win) == true
     if enabled then

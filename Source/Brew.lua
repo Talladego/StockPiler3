@@ -123,14 +123,25 @@ local function PotionOutputUid(rowOrSession)
     return uid
 end
 
---- Live bag count for the watch potion (nil if uid unknown / no inventory).
+--- Live bag count for the watch potion (nil if uid unknown / inventory not ready).
+--- CountByUid returns 0 while Inv is not ready — that must not look like "0 stock"
+--- or PickReadyWatch / auto-load will brew already-stocked watches mid bag-flush.
 local function LivePotionHave(rowOrSession)
     local uid = PotionOutputUid(rowOrSession)
     if uid <= 0 then
         return nil
     end
     local Inv = StockPiler3.Inventory
-    if Inv and Inv.CountByUid then
+    if not Inv then
+        return nil
+    end
+    if Inv.IsReady and Inv.IsReady() ~= true then
+        return nil
+    end
+    if Inv._snapPending == true then
+        return nil
+    end
+    if Inv.CountByUid then
         return tonumber(Inv.CountByUid(uid)) or 0
     end
     return nil
@@ -342,21 +353,32 @@ local function PatchPlanRowTargetMet(session, liveHave)
                         and RS.ShouldAutoGrowPotion(row.potionKey or row.potionRecipeKey or row.id, nil) == true
                     then
                         local seedUids = row.seedBufferSeedUids
+                        local plantUids = row.seedBufferPlantUids
                         if type(seedUids) ~= "table" or #seedUids == 0 then
                             seedUids = {}
+                            plantUids = type(plantUids) == "table" and plantUids or {}
                             local tips = row.statusTipSlots
                             if type(tips) == "table" then
                                 local seen = {}
+                                local seenPlant = {}
                                 for t = 1, #tips do
-                                    local uid = tonumber(tips[t] and tips[t].seedUid) or 0
+                                    local tip = tips[t]
+                                    local uid = tonumber(tip and tip.seedUid) or 0
+                                    local pUid = tonumber(tip and tip.plantUid) or 0
                                     if uid > 0 and seen[uid] ~= true then
                                         seen[uid] = true
                                         seedUids[#seedUids + 1] = uid
+                                    elseif uid <= 0 and pUid > 0 and seenPlant[pUid] ~= true then
+                                        seenPlant[pUid] = true
+                                        plantUids[#plantUids + 1] = pUid
                                     end
                                 end
                             end
                         end
-                        bufferShort = RS.WatchHasSeedBufferShort(recipe, { seedUids = seedUids }) == true
+                        bufferShort = RS.WatchHasSeedBufferShort(recipe, {
+                            seedUids = seedUids,
+                            plantUids = plantUids,
+                        }) == true
                     end
                     if bufferShort then
                         row.statusKey = "need_seeds"
@@ -525,7 +547,7 @@ end
 
 --- Find bag item matching recipe slot spec. Prefer non-growable (butcher twins)
 --- over cult plants, then craft bag, then smaller stacks.
---- Incomplete mains: exact boundUid only. Rejects seeds/spores for apo load.
+--- Incomplete mains: prefer boundUid, else ProductMatches twins. Rejects seeds.
 --- `reserved` tracks qty already claimed by earlier load steps (same bag slot).
 --- Future UI toggle: Persistence brewPreferNonGrowableFirst (default on).
 local function FindCraftingBagItemBySpec(wantSpec, exemplarUid, reserved)
@@ -580,6 +602,8 @@ local function FindCraftingBagItemBySpec(wantSpec, exemplarUid, reserved)
         return SM.IsGrowableSpec(probe) == true
     end
 
+    -- Incomplete mains: prefer the bound exemplar, then fall through so
+    -- fingerprint twins (Preserved Glossy vs Supple Scale stub) can load.
     if type(wantSpec) == "table" and wantSpec.incomplete == true then
         local bound = tonumber(wantSpec.boundUid) or tonumber(exemplarUid) or tonumber(wantSpec.uid) or 0
         if bound > 0 and BA and BA.FindSeedSlot then
@@ -592,7 +616,6 @@ local function FindCraftingBagItemBySpec(wantSpec, exemplarUid, reserved)
                 end
             end
         end
-        return 0, nil, nil, bound
     end
 
     local bestSlot, bestItem, bestType, bestUid = 0, nil, nil, 0
@@ -608,15 +631,25 @@ local function FindCraftingBagItemBySpec(wantSpec, exemplarUid, reserved)
             return
         end
         local match = false
-        if type(wantSpec) == "table" and MS and MS.Matches then
-            match = MS.Matches(item, wantSpec) == true
+        if type(wantSpec) == "table" and MS then
+            if MS.ProductMatches then
+                match = MS.ProductMatches(item, wantSpec) == true
+            end
+            if not match and MS.Matches then
+                match = MS.Matches(item, wantSpec) == true
+            end
             -- Bag AsItemData is often bonus-thin; enrich from learned Items.
             if not match and StockPiler3.Items and StockPiler3.Items.ToSpec then
                 local iuid = tonumber(item.uniqueID) or 0
                 if iuid > 0 then
                     local learned = StockPiler3.Items.ToSpec(iuid)
                     if type(learned) == "table" then
-                        match = MS.Matches(learned, wantSpec) == true
+                        if MS.ProductMatches then
+                            match = MS.ProductMatches(learned, wantSpec) == true
+                        end
+                        if not match and MS.Matches then
+                            match = MS.Matches(learned, wantSpec) == true
+                        end
                     end
                 end
             end
@@ -689,7 +722,16 @@ local function FindCraftingBagItemBySpec(wantSpec, exemplarUid, reserved)
             if MS and MS.IsSeedOrSpore and MS.IsSeedOrSpore(item) == true then
                 return
             end
-            if type(wantSpec) == "table" and MS and MS.Matches and MS.Matches(item, wantSpec) == true then
+            local match = false
+            if type(wantSpec) == "table" and MS then
+                if MS.ProductMatches then
+                    match = MS.ProductMatches(item, wantSpec) == true
+                end
+                if not match and MS.Matches then
+                    match = MS.Matches(item, wantSpec) == true
+                end
+            end
+            if match then
                 local uid = tonumber(item.uniqueID) or 0
                 if uid > 0 and BA and BA.FindSeedSlot then
                     local s, it, bt = BA.FindSeedSlot(uid)
@@ -697,16 +739,23 @@ local function FindCraftingBagItemBySpec(wantSpec, exemplarUid, reserved)
                         consider(s, it or item, bt or craftType, bt == craftType)
                     end
                 end
-            elseif type(wantSpec) == "table" and MS and MS.Matches and StockPiler3.Items and StockPiler3.Items.ToSpec then
+            elseif type(wantSpec) == "table" and MS and StockPiler3.Items and StockPiler3.Items.ToSpec then
                 local iuid = tonumber(item.uniqueID) or 0
                 if iuid > 0 then
                     local learned = StockPiler3.Items.ToSpec(iuid)
-                    if type(learned) == "table" and MS.Matches(learned, wantSpec) == true then
-                        if BA and BA.FindSeedSlot then
-                            local s, it, bt = BA.FindSeedSlot(iuid)
-                            if s and s > 0 then
-                                consider(s, it or item, bt or craftType, bt == craftType)
-                            end
+                    local learnedMatch = false
+                    if type(learned) == "table" then
+                        if MS.ProductMatches then
+                            learnedMatch = MS.ProductMatches(learned, wantSpec) == true
+                        end
+                        if not learnedMatch and MS.Matches then
+                            learnedMatch = MS.Matches(learned, wantSpec) == true
+                        end
+                    end
+                    if learnedMatch and BA and BA.FindSeedSlot then
+                        local s, it, bt = BA.FindSeedSlot(iuid)
+                        if s and s > 0 then
+                            consider(s, it or item, bt or craftType, bt == craftType)
                         end
                     end
                 end

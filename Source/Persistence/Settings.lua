@@ -21,6 +21,7 @@ local ACCOUNT_LEAKED_SETTINGS_KEYS = {
     "growSeedBufferMin",
     "growSeedBufferEnabled",
     "autoGrowPauseCombat",
+    "watchOptimisticOutcomeEstimate",
     "brewMacroEnabled",
     "brewRespectGrowReserve",
     "brewPreferNonGrowableFirst",
@@ -100,7 +101,10 @@ StockPiler3.DefaultCharacterSettings = {
     autoBuySpentBrass = 0,
     growSeedBufferMin = 5,
     growSeedBufferEnabled = true,
-    autoGrowPauseCombat = true,
+    -- Hidden/legacy: no Watch UI. Off by default (was on).
+    autoGrowPauseCombat = false,
+    -- Watch: assume every brew yields the watched potion (off = rate-based).
+    watchOptimisticOutcomeEstimate = true,
     brewMacroEnabled = false,
     brewRespectGrowReserve = true,
     -- Brew load: spend butcher/vendor twins before cult plants. Future UI toggle.
@@ -261,7 +265,8 @@ function P.EnsureCharacterBucketShape(char)
     char.brewRespectGrowReserve = char.brewRespectGrowReserve ~= false
     char.brewPreferNonGrowableFirst = char.brewPreferNonGrowableFirst ~= false
     char.growSeedBufferEnabled = char.growSeedBufferEnabled ~= false
-    char.autoGrowPauseCombat = char.autoGrowPauseCombat ~= false
+    char.autoGrowPauseCombat = char.autoGrowPauseCombat == true
+    char.watchOptimisticOutcomeEstimate = char.watchOptimisticOutcomeEstimate ~= false
     char.skillUpCultEnabled = char.skillUpCultEnabled == true
     char.skillUpApoEnabled = char.skillUpApoEnabled == true
     char.lastCultSkill = math.max(0, math.floor(tonumber(char.lastCultSkill) or 0))

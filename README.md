@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.335** — Assist-safe hotbar hooks; cached macro ids require name+text match; `ButtonIsOurs` uses the rebuilt id set instead of rescanning every paint.
+**Version 0.3.354** - Watch craftable/status recount on settings/knowledge (no /sp3 dumpall needed).
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -48,20 +48,23 @@ Catalog of harvested plants that refine back to a seed (resin/byproducts exclude
 
 Toggle **Upgrade seeds** on the Watch tab (default off; needs Cultivation + AutoGrow).
 
-When a watched growable mat is missing at its skillReq, climb that family:
+Climb watched / short growable genera toward **Cult floor** (200 at max Cult), using the same plant→crit→refine loop as **Level up skills**. Idle gate matches Level up skills (watches stocked / progress-blocked + seed buffer OK).
 
 1. AutoBuy the lowest **vendor** rung (L1 only — intermediate rungs are not sold)
 2. Plant the best owned rung ≤ Cult floor
 3. Harvest (normal yield, crit upgrades, **Special Moment** tier-ups)
 4. Refine upgraded plants back to seeds
-5. Repeat until the watch’s tier seed exists, then grow for stock / seed buffer
+5. Repeat until a Cult-floor seed exists (plant watches also fill that seed buffer)
 
-**Behaviour notes (verified on a single L200 Draught watch):**
+**Sources:** potion / balanced demand mats that are short, plus **enabled** plant watches (arrive at watched tier, then Cult-max + buffer). Unwatching a plant stops that genus climb unless a potion still needs it.
 
-- Multi-family recipes (e.g. Spumepetal main + Fusk multiplier) climb both genera; tip Have/Need notes show per-slot climb (row status lists all genera when more than one is climbing).
+**Behaviour notes:**
+
+- Multi-family recipes climb both genera; tip Have/Need notes show per-slot climb.
 - Prefer the behind genus for plots; do not let one family’s refine starve the other’s plant jobs.
-- Never plant or buffer a lower-tier seed once the plant’s skill-matched seed is known (owned L1 Dusty/Glossy must not beat missing L200).
+- Never plant or buffer a lower-tier seed once the plant’s skill-matched seed is known.
 - Intermediate climb seeds keep 0 cushion; L1 vendor seeds may keep the seed buffer.
+- Incomplete ladders (e.g. marshroot only L1+L25 discovered) still climb toward Cult floor via Special Moment fishing while watched.
 - Status flips to Restocking when climb targets are done and AutoGrow is stocking the watch.
 
 Diagnose: `/sp3 families`, `/sp3 upgradeplan`, `/sp3 dumpall`.
@@ -136,6 +139,18 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.348 | Seed buffer / Upgrade Seeds: Cult-max plant stock fills buffer when seed uid is unknown (Savage Marshroot s0); Draught stimulant no longer skipped by seed-only hot path |
+| 0.3.347 | Potions: composite recipe watches no longer alias sibling recipes for the same output uid; legacy plain uid:N migrates onto the toggled recipe key |
+| 0.3.346 | Upgrade Seeds: HaveTargetRung counts same-or-higher rung (L200 satisfies L50 watch arrive); CollectBuyJobs scans owned seeds to Cult floor so mid watches do not AutoBuy L1 |
+| 0.3.345 | Upgrade Seeds: destination-tier plants no longer block planting best owned lower seeds while Cult-max seed buffer is short (SM / fail insurance); mid-ladder no-backslide (L1 vs Cloudy) unchanged |
+| 0.3.344 | Brew: LivePotionHave returns nil while Inv not ready / snap pending (CountByUid 0 no longer arms Ready on stocked watches) |
+| 0.3.343 | UI: eye-clear / Clear Watches no longer KickListBoxLayout-show Watch over Potions/Plants; EnsureSelectedTabShowing restores single-tab chrome |
+| 0.3.342 | Upgrade Seeds: unwatch stops that plant's climb (no bag-wide Phase C); clear active + invalidate targets on SetPlantEnabled |
+| 0.3.341 | Upgrade Seeds: bag seeds below Cult floor climb to Cult max (idle gate matches Level up skills); Watch status rows for bag climbs; plant-watch buffer-full still applies |
+| 0.3.340 | Upgrade Seeds: plant-watch climb destination is Cult floor when the known ladder tops below it (marshroot Fretting L25 no longer ends climb); missing Cult-floor rung is not "buffer full" via lower-tier fallback |
+| 0.3.339 | Watch: eye-clear / Forget / Clear Watches force ListBox rebind so rows leave immediately
+| 0.3.338 | Fingerprint twins: Planner/RecipeSpec Have, brew bag pick, and vendor AutoBuy use ProductMatches for incomplete mains (no boundUid-only short-circuit) |
+| 0.3.337 | Incomplete mains match fingerprint twins (Supple Scale ↔ Preserved Glossy); TYPE/CRAFTING_FAMILY omitted from ProductKey |
 | 0.3.334 | Hotbar: `ActionButton.OnLButtonUp` hook passes foreign buttons through with field reads and a tail call only, so hotbar `/assist` macros work |
 | 0.3.333 | Macros: verify cached macro ids against name/text; restore DO_MACRO (not NONE) when dropping Craft/Brew Action overrides; stop treating unknown "ours" buttons as Craft |
 | 0.3.332 | Macros: keep new occupant's bind when Craft/Brew is replaced on a hotbar slot; drop cached macro ids on MACRO_UPDATED/MACROS_LOADED and release rewritten slots; no longer hijack the Macro window's active slot when flipping the Craft icon |

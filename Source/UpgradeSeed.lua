@@ -1,6 +1,9 @@
 ----------------------------------------------------------------
--- StockPiler3 UpgradeSeed - watch-driven family climb
--- buy L1 -> plant -> crit harvest -> refine -> repeat toward watch skillReq.
+-- StockPiler3 UpgradeSeed - watch/demand genus climb to Cult floor
+-- buy L1 -> plant -> crit harvest -> refine -> repeat.
+-- Sources: potion mat shorts + enabled plant watches (unwatch stops that
+-- genus). Idle gate matches Level-up skills. Destination is Cult floor
+-- even when the known ladder tops early (Special Moment fishing).
 -- Shared seed economy (SeedDeficit / PlantableSurplus / GetSeedBudget) and
 -- ladder scan helpers also used by SkillUp (mains-only, TargetMaxSkill cap).
 ----------------------------------------------------------------
@@ -70,7 +73,7 @@ function US.FloorCultTier(cultSkill)
         return SkillUp.FloorCultTier(cultSkill)
     end
     cultSkill = tonumber(cultSkill) or 0
-    local tiers = { 1, 25, 50, 75, 100, 125, 150, 175 }
+    local tiers = { 1, 25, 50, 75, 100, 125, 150, 175, 200 }
     local best = 0
     for i = 1, #tiers do
         if cultSkill >= tiers[i] then
@@ -273,6 +276,13 @@ function US.ResolvePlantWatchTarget(watchPlantUid, watchSpec)
         local cultMax = US.CultMaxNeedReq(ladder)
         if cultMax >= 1 then
             climbNeedReq = cultMax
+        end
+        -- Cult-usable destination is Cult floor. When the known ladder tops
+        -- below that (marshroot L1+L25 only; Angry/Savage not yet discovered),
+        -- keep climbNeed at floor so Upgrade Seeds keeps Special-Moment fishing.
+        local cultFloor = US.FloorCultTier(US.GetCultSkill())
+        if cultFloor > climbNeedReq then
+            climbNeedReq = cultFloor
         end
     end
     local seedUid = 0
@@ -537,32 +547,70 @@ local function RungUidsAtNeed(ladder, needReq, fallbackPlantUid, fallbackSeedUid
 end
 
 --- Plant-watch climb done: Cult-max tier seed buffer is full (credit >= buffer).
---- Buffer off: at least one Cult-max seed.
---- Rung with plant but no known seed (Cross s0) is NOT done - keep climbing via
---- lower plantable rungs / refine until a plantable seed exists and its buffer fills.
+--- Buffer off: at least one Cult-max seed (or Cult-max plant when seed unknown).
+--- Mid-ladder orphans (Cross@75 s0 while needReq=200) are a different rung and
+--- do not satisfy Cult-max. Cult-max plant with s0 (Savage Marshroot) uses plant
+--- bag count as the cushion so seed buffer / Upgrade Seeds stop SM-fishing.
+--- Missing needReq rung on a known ladder (aspirational Cult-floor destination
+--- before higher tiers are discovered) is NOT done - do not treat a lower-tier
+--- fallback seed buffer as arrival.
 CultMaxTierBufferFull = function(ladder, needReq, fallbackPlantUid, fallbackSeedUid)
     needReq = tonumber(needReq) or 0
     if needReq < 1 then
         return false
     end
-    local seedUid = RungUidsAtNeed(ladder, needReq, fallbackPlantUid, fallbackSeedUid)
+    local hasLadder = type(ladder) == "table" and type(ladder.rungs) == "table" and #ladder.rungs > 0
+    if hasLadder then
+        local rungFound = false
+        for i = 1, #ladder.rungs do
+            if (tonumber(ladder.rungs[i].skillReq) or 0) == needReq then
+                rungFound = true
+                break
+            end
+        end
+        if not rungFound then
+            -- Family known but this Cult-floor tier is not on the ladder yet.
+            return false
+        end
+    end
+    local seedUid, plantUid = RungUidsAtNeed(ladder, needReq, fallbackPlantUid, fallbackSeedUid)
     seedUid = tonumber(seedUid) or 0
-    if seedUid <= 0 then
-        -- Orphan high plant must not end the climb (Fretting→Cross with s0).
-        return false
+    plantUid = tonumber(plantUid) or 0
+    local buffer = 0
+    local Watch = StockPiler3.Watch
+    if Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true
+        and Watch.GetSeedBufferMin
+    then
+        buffer = tonumber(Watch.GetSeedBufferMin()) or 5
     end
-    local budget = US.GetSeedBudget(seedUid)
-    local credit = tonumber(budget.credit) or 0
-    local buffer = tonumber(budget.bufferMin) or 0
-    if buffer < 1 then
-        return credit >= 1
+    if seedUid > 0 then
+        local budget = US.GetSeedBudget(seedUid)
+        local credit = tonumber(budget.credit) or 0
+        local bMin = tonumber(budget.bufferMin) or 0
+        if bMin > buffer then
+            buffer = bMin
+        end
+        if buffer < 1 then
+            return credit >= 1
+        end
+        return credit >= buffer
     end
-    return credit >= buffer
+    if plantUid > 0 then
+        local Inv = StockPiler3.Inventory
+        local have = Inv and Inv.CountByUid and tonumber(Inv.CountByUid(plantUid)) or 0
+        if buffer < 1 then
+            return have >= 1
+        end
+        return have >= buffer
+    end
+    return false
 end
 
 --- Have the target-tier seed/plant for this climb need?
---- Only the needReq rung counts - owned lower-tier seeds must not end the climb
---- (ResolveSeedForSpec prefers bag seeds and would falsely "arrive" at L25).
+--- Owned lower-tier seeds must not end the climb (ResolveSeedForSpec prefers bag
+--- seeds and would falsely "arrive" at L25). Same-or-higher rung DOES count:
+--- watching a mid plant while L200 seeds/plants sit in bag must not restart
+--- Phase A arrive (needReq=watched) and AutoBuy L1 under a low ClimbCap.
 --- In-ground target seeds count: bag-only checks left "Upgrading fusk 0->200 /
 --- need_buy" after AutoGrow planted L200 for the seed buffer.
 --- Orphan high plant with no known plantable seed on the rung does NOT count
@@ -621,8 +669,10 @@ HaveTargetRung = function(ladder, needReq, plantUid, seedUid, opts)
     if type(ladder) == "table" and type(ladder.rungs) == "table" and needReq >= 1 then
         for i = 1, #ladder.rungs do
             local rung = ladder.rungs[i]
-            if (tonumber(rung.skillReq) or 0) == needReq then
-                return rungArrived(rung.seedUid, rung.plantUid)
+            local req = tonumber(rung.skillReq) or 0
+            -- At-or-above: L200 stock satisfies a L50 watch arrive.
+            if req >= needReq and rungArrived(rung.seedUid, rung.plantUid) then
+                return true
             end
         end
         return false
@@ -695,6 +745,11 @@ function US.DescribePlantWatchClimb(watchPlantUid)
         local lowerCap = math.max(1, watchedReq - 1)
         local lowerBest = BestOwnedReqOnLadder(ladder, lowerCap)
         out.haveLower = lowerBest >= 1
+    elseif not out.stocked and haveWatched then
+        -- Higher-tier stock already covers watched arrive (e.g. L200 vs L50 watch).
+        -- Still note lower seeds for UI; do not force Phase A climbNeedReq=watchedReq.
+        local lowerCap = math.max(1, watchedReq - 1)
+        out.haveLower = BestOwnedReqOnLadder(ladder, lowerCap) >= 1
     end
     if not out.stocked and type(ladder) == "table" and type(ladder.rungs) == "table"
         and Inv and Inv.CountByUid
@@ -827,16 +882,23 @@ local function PlantsStockedForUpgradeIdle()
     return true
 end
 
---- Idle gate for ephemeral plant-watch Cult-max climb (and SkillUp plant check).
---- Shares SkillUp.WatchesDone (potions + plants + seed buffer); owned mid-climb
---- plants count as stocked via IsPlantWatchOwnedByUpgrade.
+--- Idle gate for Cult-max / bag climbs (and SkillUp plant yield check).
+--- Matches Level-up skills: WatchesDone, or all shorts progress-blocked with
+--- seed buffer OK. Does not call SkillUp.WatchesAllowIdleSkillUp (that calls
+--- IsActivelyClimbingPlantWatches and would recurse).
 function US.WatchesAllowUpgradeClimb()
     if US.IsEnabled() ~= true then
         return false
     end
     local SkillUp = StockPiler3.SkillUp
-    if SkillUp and SkillUp.WatchesDone then
-        return SkillUp.WatchesDone() == true
+    if SkillUp and SkillUp.WatchesDone and SkillUp.WatchesDone() == true then
+        return true
+    end
+    if SeedBufferOkForIdle() ~= true then
+        return false
+    end
+    if SkillUp and SkillUp.AllShortWatchesProgressBlocked then
+        return SkillUp.AllShortWatchesProgressBlocked() == true
     end
     local Watch = StockPiler3.Watch
     if Watch and Watch.AllEnabledPotionWatchesStocked
@@ -847,7 +909,7 @@ function US.WatchesAllowUpgradeClimb()
     if PlantsStockedForUpgradeIdle() ~= true then
         return false
     end
-    return SeedBufferOkForIdle()
+    return true
 end
 
 --- Shared: scan bags for a refinable upgrade plant (any main family when no ladder).
@@ -990,7 +1052,7 @@ function US.PickBestOwnedSeed(opts)
     return nil
 end
 
---- Collect short growable demand + plant watches that need a genus climb.
+--- Collect climb targets: potion mat shorts + enabled plant watches.
 local function CollectUpgradeTargets()
     local RS = StockPiler3.RecipeSpec
     local SM = StockPiler3.SeedMap
@@ -1178,27 +1240,44 @@ local function UpgradeTargetsCacheKey()
         watchGen = tonumber(Watch.GetGen()) or 0
     end
     -- Cult floor gates ClimbCap; include so skill-ups invalidate without bag churn.
+    -- Do NOT key on WatchesAllowUpgradeClimb(): that calls IsSeedBufferSatisfied /
+    -- AllShortWatchesProgressBlocked and re-entered CollectUpgradeTargets (stack overflow).
     local cult = 0
     if US.GetCultSkill then
         cult = math.floor((tonumber(US.GetCultSkill()) or 0) / 25)
     end
     return tostring(snapGen) .. ":" .. tostring(watchGen) .. ":" .. tostring(cult)
         .. ":" .. tostring(US.IsEnabled() == true)
-        .. ":" .. tostring(US.WatchesAllowUpgradeClimb() == true)
 end
 
 function US.InvalidateUpgradeTargetsCache()
     US._upgradeTargetsCache = nil
     US._upgradeTargetsKey = nil
+    US._activelyClimbingFrame = nil
+    US._activelyClimbingCached = nil
 end
 
 --- Snap/watch-keyed cache over CollectUpgradeTargets (NeedsRefineFirst / PickPlantJob / status).
 local function GetUpgradeTargets()
+    -- Re-entrancy: cache is only published after Collect finishes. GrowReserve →
+    -- ShouldCultGrow → WatchesAllowIdle → IsActivelyClimbing used to call here while
+    -- Collect was already running and blew the C stack (uilog 0.3.348).
+    if US._upgradeTargetsBuilding == true then
+        if type(US._upgradeTargetsCache) == "table" then
+            return US._upgradeTargetsCache
+        end
+        return {}
+    end
     local key = UpgradeTargetsCacheKey()
     if US._upgradeTargetsKey == key and type(US._upgradeTargetsCache) == "table" then
         return US._upgradeTargetsCache
     end
-    local out = CollectUpgradeTargets()
+    US._upgradeTargetsBuilding = true
+    local ok, out = pcall(CollectUpgradeTargets)
+    US._upgradeTargetsBuilding = false
+    if ok ~= true or type(out) ~= "table" then
+        out = type(US._upgradeTargetsCache) == "table" and US._upgradeTargetsCache or {}
+    end
     US._upgradeTargetsCache = out
     US._upgradeTargetsKey = key
     return out
@@ -1339,6 +1418,17 @@ function US.PickPlantJob()
                 -- Do not plant a lower rung while higher-tier plants sit in bag
                 -- (L1 Fusk 3010030 filled all plots while Cloudy Fusk waited to refine).
                 local plantGoesBackward = upgradePlantReq > ownedReq
+                -- Exception: destination-tier plants in bag but Cult-max / needReq
+                -- seed buffer still short — keep planting the best owned plantable
+                -- rung (SM fishing / refine-fail insurance). Mid-climb already felt
+                -- fine because higher plants were below needReq; a few L200 plants
+                -- used to stall all L175 planting via no-backslide alone.
+                if plantGoesBackward
+                    and upgradePlantReq >= needReq
+                    and CultMaxTierBufferFull(t.ladder, needReq, t.plantUid, t.seedUid) ~= true
+                then
+                    plantGoesBackward = false
+                end
                 local plotCredit = 0
                 local Grow = StockPiler3.Grow
                 if Grow and Grow.CountSeedPlotCredit then
@@ -1558,7 +1648,10 @@ function US.PickPlantJob()
     end
     if stallActive then
         US._active = stallActive
+        return nil
     end
+    -- No targets (e.g. plant watch unmarked): drop stale active so UI/orch stop.
+    US._active = nil
     return nil
 end
 
@@ -1681,9 +1774,16 @@ function US.CollectBuyJobs()
                 if buyReq < 1 then
                     buyReq = 1
                 end
+                -- Scan owned seeds up to Cult floor, not only t.needReq. A mid-tier
+                -- plant-watch arrive (needReq=50) used to miss bag L200 and AutoBuy L1.
+                local ownedCap = US.ClimbCap(t.needReq)
+                local cultFloor = US.FloorCultTier(US.GetCultSkill())
+                if cultFloor > ownedCap then
+                    ownedCap = cultFloor
+                end
                 local owned = US.PickBestOwnedSeed({
                     ladder = t.ladder,
-                    climbCap = US.ClimbCap(t.needReq),
+                    climbCap = ownedCap,
                 })
                 local ownedReq = type(owned) == "table" and (tonumber(owned.skillReq) or 0) or 0
                 if ownedReq > buyReq then
@@ -2117,29 +2217,52 @@ local function TUpgrade(key, tokens)
     return towstring(tostring(key))
 end
 
---- True when any plant-watch Cult-max climb job may run (idle gate + pending).
+--- True when Upgrade Seeds has climb work (potions, plant watches, or bag seeds).
+--- SkillUp yields Cult plots while this is true.
+--- Never sync-builds GetUpgradeTargets here: GrowReserve → ShouldCultGrow →
+--- WatchesAllowIdleSkillUp calls this on every CountCraftsPossible slot.
 function US.IsActivelyClimbingPlantWatches()
-    if US.WatchesAllowUpgradeClimb() ~= true then
+    if US.IsEnabled() ~= true then
         return false
     end
-    local Watch = StockPiler3.Watch
-    local plantWatches = Watch and Watch.GetPlantWatches and Watch.GetPlantWatches() or {}
-    if type(plantWatches) ~= "table" then
-        return false
+    local frame = tonumber(StockPiler3.FrameCounter) or 0
+    if US._activelyClimbingFrame == frame and US._activelyClimbingCached ~= nil then
+        return US._activelyClimbingCached == true
     end
-    for plantKey, watch in pairs(plantWatches) do
-        if type(watch) == "table" and watch.enabled == true then
-            local uid = Watch.ParsePlantKey and Watch.ParsePlantKey(plantKey) or 0
-            uid = tonumber(uid) or 0
-            if uid > 0 then
-                local d = US.DescribePlantWatchClimb(uid)
-                if d.eligible == true and d.pending == true then
-                    return true
+    local active = false
+    -- Prefer last Collect / status rebuild (no CollectUpgradeTargets).
+    if type(US._upgradeTargetsCache) == "table" and #US._upgradeTargetsCache >= 1 then
+        active = true
+    elseif type(US._active) == "table" then
+        local why = tostring(US._active.why or "")
+        if why == "planting" or why == "refining" or why == "need_buy"
+            or why == "climbing" or why == "need_cult" or why == "no_family"
+        then
+            active = true
+        end
+    end
+    if not active then
+        local Watch = StockPiler3.Watch
+        local plantWatches = Watch and Watch.GetPlantWatches and Watch.GetPlantWatches() or {}
+        if type(plantWatches) == "table" then
+            for plantKey, watch in pairs(plantWatches) do
+                if type(watch) == "table" and watch.enabled == true then
+                    local uid = Watch.ParsePlantKey and Watch.ParsePlantKey(plantKey) or 0
+                    uid = tonumber(uid) or 0
+                    if uid > 0 then
+                        local d = US.DescribePlantWatchClimb(uid)
+                        if d.eligible == true and d.pending == true then
+                            active = true
+                            break
+                        end
+                    end
                 end
             end
         end
     end
-    return false
+    US._activelyClimbingFrame = frame
+    US._activelyClimbingCached = active
+    return active
 end
 
 function US.ShouldShowWatchStatus()

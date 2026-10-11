@@ -21,6 +21,9 @@ Ui._watchUiLastKey = nil
 Ui._watchUiLastKnowledgeGen = 0
 Ui._watchUiLastPlanGen = 0
 Ui._watchUiLastBrewKey = nil
+-- True after Knowledge.Touch structural learn (new potion/recipe). PatchLiveHave
+-- only updates Have on existing rows; the Potions list needs a full Refresh.
+Ui._catalogStructureDirty = false
 
 local function IsWatchTabVisible()
     if not DoesWindowExist("StockPiler3Window") then
@@ -303,9 +306,42 @@ local function TryWatchLiveCatchup(opts)
     end
 end
 
+--- Rebuild Potions/Plants list after a structural knowledge learn.
+--- Brew-hold / plan-defer flushes used to clear dirty after PatchLiveHave only,
+--- so a newly learned potion stayed invisible until the user flipped tabs.
+local function FlushCatalogIfStructureDirty()
+    if Ui._catalogStructureDirty ~= true then
+        return false
+    end
+    if not IsCatalogTabVisible() then
+        return false
+    end
+    local selected = StockPiler3Window and StockPiler3Window.SelectedTab
+    if selected == StockPiler3Window.TABS_POTIONS
+        and StockPiler3TabPotions
+        and StockPiler3TabPotions.Refresh
+    then
+        StockPiler3TabPotions.Refresh()
+        Ui._catalogStructureDirty = false
+        return true
+    end
+    if selected == StockPiler3Window.TABS_PLANTS
+        and StockPiler3TabPlants
+        and StockPiler3TabPlants.Refresh
+    then
+        StockPiler3TabPlants.Refresh()
+        Ui._catalogStructureDirty = false
+        return true
+    end
+    return false
+end
+
 --- Potions/Plants Have from L0 CountByUid — does not need Have-warm or plan rebuild.
 --- Run even while plan/prewarm defers Watch craftable paint.
 local function TryCatalogLiveCatchup()
+    if FlushCatalogIfStructureDirty() then
+        return
+    end
     if not IsCatalogTabVisible() then
         return
     end
@@ -442,6 +478,8 @@ function Ui.FlushWatchUiIfDirty()
     -- (stuck session / scenario load). planGen bumps every brew cycle otherwise
     -- caused SkillUp / watch row flicker/disappear via ListBoxSetDisplayOrder.
     if brewSessionActive then
+        -- Manual/apo learn can land during Watch brew-hold; still rebuild Potions.
+        FlushCatalogIfStructureDirty()
         local listData = StockPiler3TabWatch and StockPiler3TabWatch.listData
         local listEmpty = type(listData) ~= "table" or #listData == 0
         local planGen = CurrentPlanGen()
@@ -538,9 +576,11 @@ function Ui.FlushWatchUiIfDirty()
     local brewKey = BrewChromeKey()
     local contentKey = WatchContentKey()
     local planChanged = planGen ~= (tonumber(Ui._watchUiLastPlanGen) or 0)
+    local knowledgeChanged = knowledgeGen ~= (tonumber(Ui._watchUiLastKnowledgeGen) or 0)
+        or Ui._catalogStructureDirty == true
     local openPaint = OpenPaintActive()
-    -- Plan status can change without stock/craftable deltas; never skip when planGen moved.
-    if not openPaint and Ui._watchUiLastKey == contentKey and not planChanged then
+    -- Plan/knowledge can change without stock/craftable deltas; never skip those.
+    if not openPaint and Ui._watchUiLastKey == contentKey and not planChanged and not knowledgeChanged then
         if WatchMissingSkillUpRows() then
             -- SkillUp rows never made it into listData; Flatten again.
         else
@@ -553,7 +593,6 @@ function Ui.FlushWatchUiIfDirty()
         now = tonumber(GetGameTime()) or 0
     end
     local last = tonumber(Ui._watchUiFlushedAt) or 0
-    local knowledgeChanged = knowledgeGen ~= (tonumber(Ui._watchUiLastKnowledgeGen) or 0)
     local brewChanged = brewKey ~= tostring(Ui._watchUiLastBrewKey or "")
     local interval = Ui.WATCH_UI_MIN_INTERVAL_SEC
     if IsAnyTabVisible() then
@@ -584,6 +623,10 @@ function Ui.FlushWatchUiIfDirty()
     Ui._watchUiLastBrewKey = brewKey
     if StockPiler3Window and StockPiler3Window.RefreshActiveTab then
         StockPiler3Window.RefreshActiveTab()
+    end
+    -- RefreshActiveTab rebuilt the visible catalog tab when selected.
+    if IsCatalogTabVisible() then
+        Ui._catalogStructureDirty = false
     end
     if OpenPaintActive() then
         local watchVisible = IsWatchTabVisible()
@@ -659,6 +702,8 @@ function Ui.RegisterEventRefresh()
             -- Knowledge can land after an inventory flush already painted Potions.
             -- Bypass Watch throttle for the next coalesced flush - never sync paint
             -- (WarmHave used to hide inside WatchRows on the same frame as CultivationUpdated).
+            -- Structural learn needs a full catalog list rebuild, not PatchLiveHave.
+            Ui._catalogStructureDirty = true
             Ui._watchUiLastKey = nil
             Ui._watchUiLastKnowledgeGen = 0
             Ui._watchUiFlushedAt = 0
