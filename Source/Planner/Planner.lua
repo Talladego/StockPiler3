@@ -839,11 +839,22 @@ local function BottleGap(target, stock, craftable)
     return math.max(0, (tonumber(target) or 0) - (tonumber(stock) or 0) - (tonumber(craftable) or 0))
 end
 
+--- Stable store lookup key for a plan/list row (matches Watch tab toggles).
+local function RowWatchKey(row)
+    if type(row) ~= "table" then
+        return nil
+    end
+    return row.potionRecipeKey or row.id or row.potionKey
+end
+
 local function ResolveWatchRow(watchKey, watch)
     if type(watch) == "table" then
         return watch
     end
     local Watch = StockPiler3.Watch
+    if Watch and Watch.ResolveWatchEntry then
+        return select(1, Watch.ResolveWatchEntry(watchKey))
+    end
     local watches = Watch and Watch.GetWatches and Watch.GetWatches() or nil
     if type(watches) ~= "table" then
         return nil
@@ -1884,11 +1895,14 @@ local function SetMaterialsShortStatus(row, growable, buyLabel)
         local key = nil
         local watch = nil
         if type(row) == "table" then
-            key = row.potionKey or row.potionRecipeKey or row.id
+            key = RowWatchKey(row)
             -- Keep row.autoGrow aligned with the watch store (live rows can drift).
             watch = ResolveWatchRow(key, nil)
             if type(watch) == "table" then
                 row.autoGrow = watch.autoGrow == true
+            else
+                -- Missed lookup must not leave a checked AutoGrow + Enable AutoGrow status.
+                row.autoGrow = false
             end
         end
         -- Single source of truth: master + per-watch + enabled.
@@ -2019,10 +2033,12 @@ local function ReconcileAutoGrowStatus(row)
     if not CanAutoGrowSkill() then
         return false
     end
-    local potionKey = row.potionKey or row.potionRecipeKey or row.id
+    local potionKey = RowWatchKey(row)
     local watch = ResolveWatchRow(potionKey, nil)
     if type(watch) == "table" then
         row.autoGrow = watch.autoGrow == true
+    else
+        row.autoGrow = false
     end
     local armed = WatchWantsAutoGrow(potionKey, watch)
     local prev = key
@@ -2394,7 +2410,7 @@ local function ApplyNeedSkillStatus(row)
 end
 
 local function ApplyReadyStatus(row)
-    local pk = type(row) == "table" and (row.potionKey or row.potionRecipeKey or row.id) or nil
+    local pk = RowWatchKey(row)
     -- With Cultivation: covered but AutoGrow off -> Enable AutoGrow (not Ready).
     -- Apo-only: Ready whenever bags cover the craft (manual + AutoBrew).
     if CanAutoGrowSkill() and not WatchWantsAutoGrow(pk, nil) then
@@ -2598,7 +2614,7 @@ end
 
 local function ApplyLiveWatchStatus(row, recipe, deficit, have, craftable, target)
     local key = tostring(row.statusKey or "")
-    local potionKey = row.potionRecipeKey or row.id or row.potionKey
+    local potionKey = RowWatchKey(row)
     -- Heal stale Learn recipe when bags/recipe resolve again after brew learn/scrub.
     if key == "no_recipe" and type(recipe) == "table" then
         ApplySpecPlanStatus(row, {
@@ -3132,7 +3148,7 @@ local function PolishWatchRowsStatus(rows)
             if CanAutoGrowSkill()
                 and (key == "ready_to_craft" or key == "ready_to_craft_shared")
             then
-                local pk = tostring(row.potionKey or row.potionRecipeKey or row.id or "")
+                local pk = tostring(RowWatchKey(row) or "")
                 if not WatchWantsAutoGrow(pk, nil) then
                     ApplyReadyStatus(row)
                     key = tostring(row.statusKey or "")
@@ -4154,7 +4170,7 @@ local function RowIsReadyToCraft(row)
     if tostring(row.statusKey or "") ~= "ready_to_craft" then
         return false
     end
-    local pk = row.potionKey or row.potionRecipeKey or row.id
+    local pk = RowWatchKey(row)
     if not WatchWantsAutoGrow(pk, nil) then
         return false
     end

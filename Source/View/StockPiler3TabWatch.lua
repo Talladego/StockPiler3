@@ -1097,6 +1097,38 @@ function StockPiler3TabWatch.RefreshSkillGates()
     end
 end
 
+local function ApplyOptimisticWatchRowFilter(filterRows)
+    if type(filterRows) ~= "function" then
+        return false
+    end
+    local list = StockPiler3TabWatch.listData
+    local newList, listChanged = filterRows(list)
+    local snap = StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Get
+        and StockPiler3.PlanSnapshot.Get()
+    local snapChanged = false
+    if type(snap) == "table" and type(snap.rows) == "table" then
+        if snap.rows == list and listChanged then
+            snap.rows = newList
+            snapChanged = true
+        else
+            local newSnap, ch = filterRows(snap.rows)
+            if ch then
+                snap.rows = newSnap
+                snapChanged = true
+            end
+        end
+    end
+    if listChanged then
+        StockPiler3TabWatch.listData = newList
+        StockPiler3TabWatch.displayOrder = {}
+        for i = 1, #newList do
+            StockPiler3TabWatch.displayOrder[i] = i
+        end
+        StockPiler3TabWatch._rowPaintKey = nil
+    end
+    return listChanged or snapChanged
+end
+
 --- Drop a disabled potion/plant watch from live Watch listData (+ plan rows if shared).
 local function OptimisticRemoveWatchRow(opts)
     opts = type(opts) == "table" and opts or {}
@@ -1105,7 +1137,7 @@ local function OptimisticRemoveWatchRow(opts)
     if potionKey == nil and plantKey == nil then
         return false
     end
-    local function filterRows(rows)
+    return ApplyOptimisticWatchRowFilter(function(rows)
         if type(rows) ~= "table" then
             return rows, false
         end
@@ -1137,33 +1169,48 @@ local function OptimisticRemoveWatchRow(opts)
             return out, true
         end
         return rows, false
+    end)
+end
+
+local function IsEphemeralPlanRow(row)
+    return type(row) == "table"
+        and (row.skillUp == true or row.addonOwned == true or row.upgradeWatch == true)
+end
+
+--- Strip all saved potion or plant watch rows from live list/plan (keep SkillUp / Upgrade).
+function StockPiler3TabWatch.OptimisticClearWatchKind(kind)
+    kind = tostring(kind or "")
+    if kind ~= "potion" and kind ~= "plant" then
+        return false
     end
-    local list = StockPiler3TabWatch.listData
-    local newList, listChanged = filterRows(list)
-    local snap = StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Get
-        and StockPiler3.PlanSnapshot.Get()
-    local snapChanged = false
-    if type(snap) == "table" and type(snap.rows) == "table" then
-        if snap.rows == list and listChanged then
-            snap.rows = newList
-            snapChanged = true
-        else
-            local newSnap, ch = filterRows(snap.rows)
-            if ch then
-                snap.rows = newSnap
-                snapChanged = true
+    return ApplyOptimisticWatchRowFilter(function(rows)
+        if type(rows) ~= "table" then
+            return rows, false
+        end
+        local out = {}
+        local changed = false
+        for i = 1, #rows do
+            local row = rows[i]
+            local drop = false
+            if type(row) == "table" and not IsEphemeralPlanRow(row) then
+                local isPlant = row.kind == "plant" or row.isPlantWatch == true
+                if kind == "plant" then
+                    drop = isPlant
+                else
+                    drop = not isPlant
+                end
+            end
+            if drop then
+                changed = true
+            else
+                out[#out + 1] = row
             end
         end
-    end
-    if listChanged then
-        StockPiler3TabWatch.listData = newList
-        StockPiler3TabWatch.displayOrder = {}
-        for i = 1, #newList do
-            StockPiler3TabWatch.displayOrder[i] = i
+        if changed then
+            return out, true
         end
-        StockPiler3TabWatch._rowPaintKey = nil
-    end
-    return listChanged or snapChanged
+        return rows, false
+    end)
 end
 
 --- Potions/Plants eye toggle / clear: urgent rebuild, throttle bypass, optimistic remove,

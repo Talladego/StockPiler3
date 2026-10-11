@@ -217,9 +217,32 @@ local function IsLegacyMacroName(name)
     return false
 end
 
+local function MacroSlotMatches(slot, name, text)
+    slot = tonumber(slot) or 0
+    if slot <= 0 then
+        return false
+    end
+    local macros = GetMacroTable()
+    local macro = macros[slot]
+    if type(macro) ~= "table" or IsLegacyMacroName(macro.name) then
+        return false
+    end
+    -- Require name+text when both are known so a rewritten slot (e.g. old
+    -- Harvest slot now holding /assist) cannot keep our cached id.
+    local textMatch = MacroText(macro) == text
+    local nameMatch = macro.name == name
+    if text ~= nil and text ~= L"" and name ~= nil and name ~= L"" then
+        return textMatch or nameMatch
+    end
+    return textMatch or nameMatch
+end
+
 local function FindMacroSlot(name, text, cachedId)
     cachedId = tonumber(cachedId) or 0
-    if cachedId > 0 then
+    -- Never trust a cached id without re-checking the slot contents. A stale
+    -- id pointing at the player's Assist macro makes ButtonIsOurs true and
+    -- WindowSetGameActionData(NONE) turns WindowGameAction into a no-op.
+    if cachedId > 0 and MacroSlotMatches(cachedId, name, text) then
         return cachedId
     end
     local macros = GetMacroTable()
@@ -240,25 +263,19 @@ end
 
 function Macro.GetMacroId()
     local slot = FindMacroSlot(MACRO_NAME, MACRO_TEXT, Macro.MacroId)
-    if slot then
-        Macro.MacroId = slot
-    end
+    Macro.MacroId = slot or 0
     return slot
 end
 
 function Macro.GetBrewMacroId()
     local slot = FindMacroSlot(BREW_MACRO_NAME, BREW_MACRO_TEXT, Macro.BrewMacroId)
-    if slot then
-        Macro.BrewMacroId = slot
-    end
+    Macro.BrewMacroId = slot or 0
     return slot
 end
 
 function Macro.GetCraftMacroId()
     local slot = FindMacroSlot(CRAFT_MACRO_NAME, CRAFT_MACRO_TEXT, Macro.CraftMacroId)
-    if slot then
-        Macro.CraftMacroId = slot
-    end
+    Macro.CraftMacroId = slot or 0
     return slot
 end
 
@@ -288,12 +305,14 @@ local function ButtonIsOurs(button)
     if not button or not IsDoMacroAction(button.m_ActionType) then
         return false
     end
-    local ids = Macro._ourIds
-    if type(ids) ~= "table" then
-        RebuildOurMacroIds()
-        ids = Macro._ourIds
+    local id = button.m_ActionId
+    if id == nil then
+        return false
     end
-    return ids[button.m_ActionId] == true
+    -- Get*MacroId verifies cached slots against name/text before trusting them.
+    return id == Macro.GetCraftMacroId()
+        or id == Macro.GetBrewMacroId()
+        or id == Macro.GetMacroId()
 end
 
 --- m_Bars is keyed by page id or by window name once the id is past the
@@ -399,11 +418,12 @@ local function RememberSlotFingerprint()
     Macro._lastSlotFingerprint = SlotFingerprint()
 end
 
+--- Never call EA_Window_Macro.UpdateDetails here: it switches the Macro
+--- window's active slot and overwrites its edit boxes, so a pending edit of
+--- another macro (e.g. /assist <name>) would be lost or saved into our slot.
+--- Stock OnMacroUpdated already refreshes the icon and the open details.
 local function SetMacroSlot(slot, name, text, iconId, kind)
     SetMacroData(name, text, iconId, slot)
-    if EA_Window_Macro and EA_Window_Macro.UpdateDetails then
-        TryCall("EA_Window_Macro.UpdateDetails", EA_Window_Macro.UpdateDetails, slot)
-    end
     if kind == "brew" then
         Macro.BrewMacroId = slot
     elseif kind == "craft" then
@@ -625,13 +645,6 @@ local function PerformCraftingAction()
     return 8
 end
 
-local function NonePlayerAction()
-    if GameData and GameData.PlayerActions and GameData.PlayerActions.NONE ~= nil then
-        return GameData.PlayerActions.NONE
-    end
-    return 0
-end
-
 local function bindHarvestGameAction(button)
     if not button or not button.m_Name or WindowSetGameActionData == nil then
         return false
@@ -683,55 +696,57 @@ local function bindHarvestGameActionForButton(button, opts)
     return false
 end
 
-local function clearHarvestGameActionForButton(button)
+--- Put DO_MACRO back on the Action child. Clearing to NONE leaves
+--- WindowGameAction as a silent no-op (same failure mode as GCDsaver's
+--- WindowGameAction swap — see RoR forums / Talladego on GCDsaver 1.0.5).
+local function restoreDoMacroGameActionForButton(button)
     if not button or WindowSetGameActionData == nil then
+        return false
+    end
+    if not IsDoMacroAction(button.m_ActionType) then
+        return false
+    end
+    local macroId = tonumber(button.m_ActionId) or 0
+    if macroId <= 0 then
         return false
     end
     local actionName = ActionWindowName(button)
     if actionName == nil or not DoesWindowExist(actionName) then
         return false
     end
+    local doMacro = (GameData and GameData.PlayerActions and GameData.PlayerActions.DO_MACRO)
+        or 4
     local ok = TryCall(
-        "WindowSetGameActionData.clear", WindowSetGameActionData,
+        "WindowSetGameActionData.restoreDoMacro", WindowSetGameActionData,
         actionName,
-        NonePlayerAction(),
-        0,
+        doMacro,
+        macroId,
         L""
     )
     ForgetGameActionBind(button)
     return ok == true
 end
 
+local function clearHarvestGameActionForButton(button)
+    return restoreDoMacroGameActionForButton(button)
+end
+
 local function clearBrewGameActionForButton(button)
-    if not button or WindowSetGameActionData == nil then
-        return false
-    end
-    local actionName = ActionWindowName(button)
-    if actionName == nil or not DoesWindowExist(actionName) then
-        return false
-    end
-    local ok = TryCall(
-        "WindowSetGameActionData.clear", WindowSetGameActionData,
-        actionName,
-        NonePlayerAction(),
-        0,
-        L""
-    )
-    ForgetGameActionBind(button)
-    return ok == true
+    return restoreDoMacroGameActionForButton(button)
 end
 
 --- Stock UpdateEnabledState skips tint reset when iconType is USE_EMPTY_ICON and the
 --- slot is disabled - our forceGrey tint then sticks on Blank-Action-Bar-Icon-Slot
 --- after Harvest/Brew is dragged away. WarTriage only tints current macro slots and
 --- does not hook UpdateEnabledState, so it rarely leaves this residue.
+--- Stock SetActionData has already bound the new occupant (e.g. a player's
+--- /assist macro); clearing the Action window here would leave it dead.
 local function restoreVacatedMacroSlot(button)
     if not button then
         return
     end
     resetMacroIconTint(button)
-    clearHarvestGameActionForButton(button)
-    clearBrewGameActionForButton(button)
+    ForgetGameActionBind(button)
 end
 
 local function bindBrewGameAction(button)
@@ -1013,7 +1028,62 @@ local function committedWant(which)
     return h == true or b == true
 end
 
+--- Cached ids are trusted without rescanning, so a slot the player rewrote
+--- (e.g. old Harvest slot now holding /assist) must be dropped or that
+--- button keeps getting our enable/bind/click overrides.
+local function ForgetCachedMacroSlot(macroId)
+    macroId = tonumber(macroId)
+    local dropped = false
+    if macroId == nil then
+        Macro.MacroId = 0
+        Macro.BrewMacroId = 0
+        Macro.CraftMacroId = 0
+        dropped = true
+    else
+        if tonumber(Macro.MacroId) == macroId then
+            Macro.MacroId = 0
+            dropped = true
+        end
+        if tonumber(Macro.BrewMacroId) == macroId then
+            Macro.BrewMacroId = 0
+            dropped = true
+        end
+        if tonumber(Macro.CraftMacroId) == macroId then
+            Macro.CraftMacroId = 0
+            dropped = true
+        end
+    end
+    Macro._ourIds = nil
+    return dropped
+end
+
+--- Hand a no-longer-ours macro slot back to stock: rebind its Action window
+--- and drop our grey tint / forced enable state.
+local function ReleaseForeignMacroButtons(macroId)
+    RebuildOurMacroIds()
+    if Macro._ourIds[macroId] == true then
+        return
+    end
+    ForEachActionButton(function(button)
+        if IsDoMacroAction(button.m_ActionType) and button.m_ActionId == macroId
+            and type(button.SetActionData) == "function"
+        then
+            resetMacroIconTint(button)
+            ForgetGameActionBind(button)
+            button:SetActionData(button.m_ActionType, macroId)
+        end
+    end)
+end
+
+function Macro.OnMacrosLoaded()
+    ForgetCachedMacroSlot(nil)
+    Macro.RequestEnabledSync()
+end
+
 function Macro.OnMacroUpdated(macroId)
+    if ForgetCachedMacroSlot(macroId) and tonumber(macroId) then
+        ReleaseForeignMacroButtons(tonumber(macroId))
+    end
     local craftId = Macro.GetCraftMacroId()
     if craftId == nil or tonumber(macroId) ~= tonumber(craftId) then
         return
@@ -1398,11 +1468,9 @@ local function installUpdateEnabledStateHook()
         end
         local forced = false
         local want = false
-        local isCraft = Macro.IsCraftMacroButton(self) or (
-            ButtonIsOurs(self)
-            and not Macro.IsBrewMacroButton(self)
-            and not Macro.IsMacroButton(self)
-        )
+        -- Do not fall back to "ours but not harvest/brew ⇒ craft". A stale
+        -- _ourIds entry for Assist would then clear that slot's Action bind.
+        local isCraft = Macro.IsCraftMacroButton(self)
         if isCraft then
             forced = true
             if Macro._refreshingAppearance == true and Macro._refreshCraftCanUse ~= nil then
@@ -1487,9 +1555,7 @@ local function installUpdateIconHook()
         Macro._inIconRefresh = true
         local canHarvest = Macro._commitCanHarvest
         local canBrew = Macro._commitCanBrew
-        if Macro.IsCraftMacroButton(self)
-            or (not Macro.IsBrewMacroButton(self) and not Macro.IsMacroButton(self))
-        then
+        if Macro.IsCraftMacroButton(self) then
             if canHarvest == nil then
                 canHarvest = canHarvestMacro()
             end
@@ -1561,12 +1627,22 @@ local function installActionButtonHooks()
 
     local orgOnLButtonUp = ActionButton.OnLButtonUp
     orgOnLButtonUpFn = orgOnLButtonUp
+    if not orgOnLButtonUp then
+        return
+    end
+    RebuildOurMacroIds()
+    local DO_MACRO = GameData.PlayerActions.DO_MACRO
+    -- Foreign buttons must reach the tail call with field reads only: the
+    -- client drops /assist from a hotbar macro if addon code calls a Lua
+    -- function while the click is handled. Compare against the cached ids
+    -- here; ButtonIsOurs re-verifies them for our own buttons.
     hookedOnLButtonUpFn = function(self, flags, x, y)
+        local id = self and self.m_ActionType == DO_MACRO and self.m_ActionId
+        if not id or (id ~= Macro.MacroId and id ~= Macro.BrewMacroId and id ~= Macro.CraftMacroId) then
+            return orgOnLButtonUp(self, flags, x, y)
+        end
         if not ButtonIsOurs(self) then
-            if orgOnLButtonUp then
-                orgOnLButtonUp(self, flags, x, y)
-            end
-            return
+            return orgOnLButtonUp(self, flags, x, y)
         end
         if Macro.IsCraftMacroButton(self) then
             local snap = Macro.ResolveCraftMode()
@@ -1583,10 +1659,7 @@ local function installActionButtonHooks()
                 bindHarvestGameActionForButton(self, { force = true })
                 local result = handleMacroHarvestActivation(flags)
                 if result == "cursor" or result == "go" then
-                    if orgOnLButtonUp then
-                        orgOnLButtonUp(self, flags, x, y)
-                    end
-                    return
+                    return orgOnLButtonUp(self, flags, x, y)
                 end
                 if result == "blocked" then
                     return
@@ -1594,10 +1667,7 @@ local function installActionButtonHooks()
             elseif snap.mode == "brew" then
                 local result = handleMacroBrewActivation(flags)
                 if result == "cursor" then
-                    if orgOnLButtonUp then
-                        orgOnLButtonUp(self, flags, x, y)
-                    end
-                    return
+                    return orgOnLButtonUp(self, flags, x, y)
                 end
                 if result == "go" then
                     Macro._brewFired = true
@@ -1626,10 +1696,7 @@ local function installActionButtonHooks()
             bindHarvestGameActionForButton(self, { force = true })
             local result = handleMacroHarvestActivation(flags)
             if result == "cursor" or result == "go" then
-                if orgOnLButtonUp then
-                    orgOnLButtonUp(self, flags, x, y)
-                end
-                return
+                return orgOnLButtonUp(self, flags, x, y)
             end
             if result == "blocked" then
                 return
@@ -1637,10 +1704,7 @@ local function installActionButtonHooks()
         elseif Macro.IsBrewMacroButton(self) then
             local result = handleMacroBrewActivation(flags)
             if result == "cursor" then
-                if orgOnLButtonUp then
-                    orgOnLButtonUp(self, flags, x, y)
-                end
-                return
+                return orgOnLButtonUp(self, flags, x, y)
             end
             if result == "go" then
                 -- Suppress BrewClick if the engine also runs the macro script this frame.
@@ -1655,9 +1719,7 @@ local function installActionButtonHooks()
                 return
             end
         end
-        if orgOnLButtonUp then
-            orgOnLButtonUp(self, flags, x, y)
-        end
+        return orgOnLButtonUp(self, flags, x, y)
     end
     ActionButton.OnLButtonUp = hookedOnLButtonUpFn
 
@@ -1780,6 +1842,9 @@ function Macro.RegisterHotbarEventHandler()
     if SystemData.Events.MACRO_UPDATED then
         RegisterEventHandler(SystemData.Events.MACRO_UPDATED, "StockPiler3.Macro.OnMacroUpdated")
     end
+    if SystemData.Events.MACROS_LOADED then
+        RegisterEventHandler(SystemData.Events.MACROS_LOADED, "StockPiler3.Macro.OnMacrosLoaded")
+    end
 end
 
 function Macro.UnregisterHotbarEventHandler()
@@ -1791,6 +1856,9 @@ function Macro.UnregisterHotbarEventHandler()
     end
     if SystemData.Events.MACRO_UPDATED then
         UnregisterEventHandler(SystemData.Events.MACRO_UPDATED, "StockPiler3.Macro.OnMacroUpdated")
+    end
+    if SystemData.Events.MACROS_LOADED then
+        UnregisterEventHandler(SystemData.Events.MACROS_LOADED, "StockPiler3.Macro.OnMacrosLoaded")
     end
     hotbarEventRegistered = false
 end

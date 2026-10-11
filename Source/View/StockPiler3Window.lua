@@ -647,7 +647,13 @@ function StockPiler3Window.OnClose()
 end
 
 function StockPiler3Window.ConfirmClearWatches()
-    local onPlants = StockPiler3Window.SelectedTab == StockPiler3Window.TABS_PLANTS
+    -- Scope captured at dialog open (tab may change before Yes).
+    local kind = StockPiler3Window._pendingClearKind
+    StockPiler3Window._pendingClearKind = nil
+    if kind ~= "plant" and kind ~= "potion" then
+        kind = StockPiler3Window.SelectedTab == StockPiler3Window.TABS_PLANTS and "plant" or "potion"
+    end
+    local onPlants = kind == "plant"
     local n = 0
     if onPlants then
         if StockPiler3.Catalog and StockPiler3.Catalog.ClearPlantWatchList then
@@ -670,12 +676,32 @@ function StockPiler3Window.ConfirmClearWatches()
             StockPiler3TabPotions.Refresh()
         end
     end
+    if StockPiler3TabWatch and StockPiler3TabWatch.OptimisticClearWatchKind then
+        StockPiler3TabWatch.OptimisticClearWatchKind(kind)
+    end
+    if StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Invalidate then
+        StockPiler3.PlanSnapshot.Invalidate()
+    end
+    local Sch = StockPiler3.Scheduler
+    if Sch and Sch.EnqueuePlanRebuild then
+        Sch.EnqueuePlanRebuild({ urgent = true })
+    end
+    if StockPiler3.Ui then
+        StockPiler3.Ui._watchUiLastKey = nil
+        StockPiler3.Ui._watchUiFlushedAt = 0
+        if StockPiler3.Ui.ClearWatchTipCaches then
+            StockPiler3.Ui.ClearWatchTipCaches()
+        end
+        if StockPiler3.Ui.MarkWatchUiDirty then
+            StockPiler3.Ui.MarkWatchUiDirty()
+        end
+    end
     if StockPiler3TabWatch and StockPiler3TabWatch.Refresh then
-        StockPiler3TabWatch.Refresh({ forcePlan = true })
+        StockPiler3TabWatch.Refresh({ forcePlan = false })
     end
     -- Clear Watches must grey immediately after bulk clear.
     if StockPiler3Window.SyncActionReadiness then
-        StockPiler3Window.SyncActionReadiness()
+        StockPiler3Window.SyncActionReadiness({ immediate = true })
     else
         StockPiler3Window.RefreshFooterButtons()
     end
@@ -695,6 +721,7 @@ function StockPiler3Window.OnClearWatches()
             StockPiler3Window.RefreshFooterButtons()
             return
         end
+        StockPiler3Window._pendingClearKind = "plant"
         StockPiler3.ViewList.ConfirmTwoButton(
             T("ui.clear_plant_watches_confirm", { count = tostring(count) }),
             StockPiler3Window.ConfirmClearWatches
@@ -711,6 +738,7 @@ function StockPiler3Window.OnClearWatches()
         StockPiler3Window.RefreshFooterButtons()
         return
     end
+    StockPiler3Window._pendingClearKind = "potion"
     StockPiler3.ViewList.ConfirmTwoButton(
         T("ui.clear_watches_confirm", { count = tostring(count) }),
         StockPiler3Window.ConfirmClearWatches

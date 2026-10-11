@@ -161,6 +161,41 @@ local function ScrubWatchKey(key)
     end
 end
 
+local function ScrubPotionWatchForRecipe(outputUid, recipeSpecKey)
+    local Watch = StockPiler3.Watch
+    if not Watch then
+        return nil
+    end
+    outputUid = tonumber(outputUid) or 0
+    recipeSpecKey = tostring(recipeSpecKey or "")
+    local RS = StockPiler3.RecipeSpec
+    local watchKey = nil
+    if outputUid > 0 and recipeSpecKey ~= "" and RS and RS.PotionRecipeKey then
+        watchKey = RS.PotionRecipeKey(outputUid, recipeSpecKey)
+    end
+    local watches = Watch.GetWatches and Watch.GetWatches() or nil
+    if type(watches) ~= "table" then
+        return watchKey
+    end
+    local storeKey = nil
+    if watchKey ~= nil and type(watches[watchKey]) == "table" then
+        storeKey = watchKey
+    elseif Watch.ResolveWatchEntry then
+        local _, resolvedKey = Watch.ResolveWatchEntry(watchKey or ("uid:" .. tostring(outputUid)))
+        if resolvedKey ~= nil and type(watches[resolvedKey]) == "table" then
+            storeKey = resolvedKey
+            watchKey = resolvedKey
+        end
+    end
+    if storeKey ~= nil then
+        watches[storeKey] = nil
+        if Watch.BumpGen then
+            Watch.BumpGen()
+        end
+    end
+    return watchKey or storeKey
+end
+
 --- Unlink one potion fingerprint from its learned recipe. Shared recipes stay if other potions remain.
 function Catalog.ForgetPotionRecipeLink(outputUid, recipeSpecKey)
     local RS = StockPiler3.RecipeSpec
@@ -183,6 +218,8 @@ function Catalog.ForgetPotionRecipeLink(outputUid, recipeSpecKey)
                 StockPiler3.Items.RemoveByUid(outputUid)
             end
         end
+        -- Match plant Forget: drop the matching watch so Watch tab cannot keep a ghost.
+        ScrubPotionWatchForRecipe(outputUid, recipeSpecKey)
     end
     return removed
 end

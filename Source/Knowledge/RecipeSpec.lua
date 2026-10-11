@@ -2832,8 +2832,12 @@ function RS.ShouldAutoGrowPotion(potionKey, watch)
         return false
     end
     if type(watch) ~= "table" then
-        local watches = Watch and Watch.GetWatches and Watch.GetWatches() or {}
-        watch = type(watches) == "table" and watches[tostring(potionKey or "")] or nil
+        if Watch and Watch.ResolveWatchEntry then
+            watch = select(1, Watch.ResolveWatchEntry(potionKey))
+        else
+            local watches = Watch and Watch.GetWatches and Watch.GetWatches() or {}
+            watch = type(watches) == "table" and watches[tostring(potionKey or "")] or nil
+        end
     end
     return type(watch) == "table" and watch.enabled == true and watch.autoGrow == true
 end

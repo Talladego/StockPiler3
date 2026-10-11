@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.329** — Craft-only hotbar macro; row zebra gutter + mouseover highlight.
+**Version 0.3.334** — Fix `/assist` from hotbar macros: foreign hotbar clicks leave the click hook with field reads and a tail call only (the client drops `/assist` if addon code calls a Lua function while the click is handled).
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -136,6 +136,11 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.334 | Hotbar: `ActionButton.OnLButtonUp` hook passes foreign buttons through with field reads and a tail call only, so hotbar `/assist` macros work |
+| 0.3.333 | Macros: verify cached macro ids against name/text; restore DO_MACRO (not NONE) when dropping Craft/Brew Action overrides; stop treating unknown "ours" buttons as Craft |
+| 0.3.332 | Macros: keep new occupant's bind when Craft/Brew is replaced on a hotbar slot; drop cached macro ids on MACRO_UPDATED/MACROS_LOADED and release rewritten slots; no longer hijack the Macro window's active slot when flipping the Craft icon |
+| 0.3.331 | Clear/Forget: optimistic Watch strip + urgent rebuild; confirm clear kind; potion Forget scrubs watch; blocked eye stays checked |
+| 0.3.330 | Watch AutoGrow status: resolve watches by uid when recipe keys drift; keep row checkbox in sync with store |
 | 0.3.329 | Craft-only macro (stop creating Harvest/Brew); harvest fire Craft/footer-first; row zebra clears scrollbar + mouseover highlight |
 | 0.3.328 | Cleanup: dead Adapter/Core/Planner/Brew/Grow/View code, stale comments, nil guards, unused locale keys |
 | 0.3.327 | Headless Apo open (no cascade/backpack); defer refine while vendor open; AutoBuy resume after idle-no-jobs; Craft harvest timer + stay icon; chat item icons; combined buy status; live Craft tooltip times |

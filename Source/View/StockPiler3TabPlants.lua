@@ -641,10 +641,18 @@ function StockPiler3TabPlants.ConfirmForgetPlant()
     if StockPiler3.Catalog and StockPiler3.Catalog.ForgetPlant then
         StockPiler3.Catalog.ForgetPlant(uid)
     end
-    StockPiler3TabPlants.Refresh()
-    if StockPiler3TabWatch and StockPiler3TabWatch.Refresh then
+    local plantKey = StockPiler3.Watch and StockPiler3.Watch.PlantKeyFromUid
+        and StockPiler3.Watch.PlantKeyFromUid(uid) or ("plant:" .. tostring(uid))
+    if StockPiler3TabWatch and StockPiler3TabWatch.AfterCatalogWatchToggle then
+        StockPiler3TabWatch.AfterCatalogWatchToggle({
+            enabled = false,
+            plantKey = plantKey,
+            kind = "plant",
+        })
+    elseif StockPiler3TabWatch and StockPiler3TabWatch.Refresh then
         StockPiler3TabWatch.Refresh({ forcePlan = true })
     end
+    StockPiler3TabPlants.Refresh()
 end
 
 function StockPiler3TabPlants.OnForgetRow()

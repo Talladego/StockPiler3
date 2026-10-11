@@ -96,7 +96,8 @@ function VL.PaintWatchCheckbox(win, watched, blocked)
         return
     end
     blocked = blocked == true
-    watched = watched == true and not blocked
+    -- Keep checked when skill-blocked so UI matches store.enabled (Clear count / Forget).
+    watched = watched == true
     if ButtonSetCheckButtonFlag then
         ButtonSetCheckButtonFlag(win, true)
     end

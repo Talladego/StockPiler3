@@ -47,21 +47,62 @@ local function DefaultWatch()
     return { enabled = false, targetStock = 40, autoGrow = false, priorityTier = nil }
 end
 
---- Read-only watch peek (does not create SV stubs).
-function Watch.GetWatch(recipeKey)
+--- Resolve a watch by exact store key, or by unique uid:N / uid:N|rk:... match.
+--- Returns watch, storeKey (nil, nil when missing or ambiguous).
+function Watch.ResolveWatchEntry(recipeKey)
     local key = tostring(recipeKey or "")
     if key == "" then
-        return DefaultWatch()
+        return nil, nil
     end
-    local row = CharacterRow(false)
-    if type(row) ~= "table" or type(row.watches) ~= "table" then
-        return DefaultWatch()
+    local watches = Watch.GetWatches()
+    if type(watches) ~= "table" then
+        return nil, nil
     end
-    local watch = row.watches[key]
-    if type(watch) ~= "table" then
-        return DefaultWatch()
+    local direct = watches[key]
+    if type(direct) == "table" then
+        return direct, key
     end
-    return watch
+    local uidPrefix = string.match(key, "^(uid:%d+)")
+    if uidPrefix == nil then
+        local bare = tonumber(key)
+        if bare and bare > 0 then
+            uidPrefix = "uid:" .. tostring(math.floor(bare))
+        end
+    end
+    if uidPrefix == nil then
+        return nil, nil
+    end
+    local prefixPipe = uidPrefix .. "|"
+    local function scan(enabledOnly)
+        local found, foundKey, n = nil, nil, 0
+        for k, w in pairs(watches) do
+            if type(w) == "table" and (not enabledOnly or w.enabled == true) then
+                local ks = tostring(k)
+                if ks == uidPrefix or string.sub(ks, 1, #prefixPipe) == prefixPipe then
+                    n = n + 1
+                    found, foundKey = w, ks
+                end
+            end
+        end
+        if n == 1 then
+            return found, foundKey
+        end
+        return nil, nil
+    end
+    local watch, storeKey = scan(true)
+    if type(watch) == "table" then
+        return watch, storeKey
+    end
+    return scan(false)
+end
+
+--- Read-only watch peek (does not create SV stubs).
+function Watch.GetWatch(recipeKey)
+    local watch = select(1, Watch.ResolveWatchEntry(recipeKey))
+    if type(watch) == "table" then
+        return watch
+    end
+    return DefaultWatch()
 end
 
 --- Count watches with enabled==true (Clear watches / footer / priority N).
@@ -352,7 +393,13 @@ function Watch.SetTarget(recipeKey, targetStock)
 end
 
 function Watch.SetAutoGrow(recipeKey, enabled)
-    local watch = Watch.EnsureWatch(recipeKey)
+    -- Prefer an existing store row (uid fallback) so toggles do not orphan a new key.
+    local watch, storeKey = Watch.ResolveWatchEntry(recipeKey)
+    if type(watch) ~= "table" then
+        watch = Watch.EnsureWatch(recipeKey)
+    elseif storeKey ~= nil and storeKey ~= tostring(recipeKey or "") then
+        -- keep mutating the resolved store entry
+    end
     watch.autoGrow = enabled == true
     Watch.BumpGen()
     return watch

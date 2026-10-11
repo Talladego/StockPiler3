@@ -775,6 +775,7 @@ end
 function StockPiler3TabPotions.ConfirmForgetRecipe()
     local outputUid = StockPiler3TabPotions._pendingForgetOutputUid
     local recipeSpecKey = StockPiler3TabPotions._pendingForgetRecipeKey
+    local potionKey = StockPiler3TabPotions._pendingForgetKey
     local label = StockPiler3TabPotions._pendingForgetLabel or recipeSpecKey
     StockPiler3TabPotions._pendingForgetOutputUid = nil
     StockPiler3TabPotions._pendingForgetRecipeKey = nil
@@ -785,9 +786,20 @@ function StockPiler3TabPotions.ConfirmForgetRecipe()
         forgot = StockPiler3.Catalog.ForgetPotionRecipeLink(outputUid, recipeSpecKey) == true
     end
     if forgot then
+        if potionKey == nil or potionKey == "" then
+            local RS = StockPiler3.RecipeSpec
+            if RS and RS.PotionRecipeKey and tonumber(outputUid) and recipeSpecKey then
+                potionKey = RS.PotionRecipeKey(outputUid, recipeSpecKey)
+            end
+        end
         if StockPiler3.Ui and StockPiler3.Ui.Print then
             StockPiler3.Ui.Print(T("ui.forgot_recipe", { name = label }))
         end
+        AfterWatchToggle({
+            enabled = false,
+            potionKey = potionKey,
+            kind = "potion",
+        })
         StockPiler3TabPotions.Refresh()
     end
 end
@@ -802,7 +814,7 @@ function StockPiler3TabPotions.OnForgetRow()
     local label = data.name or T("ui.potion_fallback")
     StockPiler3TabPotions._pendingForgetOutputUid = outputUid
     StockPiler3TabPotions._pendingForgetRecipeKey = recipeSpecKey
-    StockPiler3TabPotions._pendingForgetKey = data.potionKey
+    StockPiler3TabPotions._pendingForgetKey = data.potionRecipeKey or data.potionKey
     StockPiler3TabPotions._pendingForgetLabel = label
     StockPiler3.ViewList.ConfirmTwoButton(
         T("potions.forget_confirm", { name = label }),

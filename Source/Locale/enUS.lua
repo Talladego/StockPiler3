@@ -86,7 +86,7 @@ StockPiler3.Locale.Packs[LANG] = {
     ["ui.potion_fallback"] = L"Potion",
     ["ui.item_fallback"] = L"Item",
     ["ui.plant_fallback"] = L"Plant",
-    ["ui.watches_cleared"] = L"Cleared {count} watch(es) for this character.",
+    ["ui.watches_cleared"] = L"Cleared {count} potion watch(es) for this character.",
     ["ui.no_watches"] = L"No watches to clear.",
     ["ui.forgot_recipe"] = L"Forgot learned potion recipe: {name}",
 
