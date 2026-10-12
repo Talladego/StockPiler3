@@ -1,0 +1,70 @@
+# Build an installable StockPiler3 zip (not full repo source) and publish it.
+# - Push to main / manual run → updates the rolling "Latest" prerelease
+# - Tag v* → versioned GitHub Release
+name: Release addon zip
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Pack addon zip
+        id: pack
+        shell: pwsh
+        run: ./scripts/pack.ps1 -OutDir dist
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: StockPiler3-addon
+          path: dist/StockPiler3-*.zip
+          if-no-files-found: error
+
+      - name: Publish Latest prerelease
+        if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build
+          body: |
+            Installable addon zip (not the full git tree).
+
+            Unzip into `Interface/AddOns/` so you get `Interface/AddOns/StockPiler3/`.
+
+            - Version (from `StockPiler3.mod`): see zip filename
+            - Commit: ${{ github.sha }}
+            - Ref: `${{ github.ref_name }}`
+          prerelease: true
+          make_latest: true
+          files: dist/StockPiler3-*.zip
+          fail_on_unmatched_files: true
+          overwrite_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish versioned release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: StockPiler3 ${{ github.ref_name }}
+          body: |
+            Installable addon zip for `${{ github.ref_name }}`.
+
+            Unzip into `Interface/AddOns/` so you get `Interface/AddOns/StockPiler3/`.
+          prerelease: false
+          make_latest: true
+          files: dist/StockPiler3-*.zip
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

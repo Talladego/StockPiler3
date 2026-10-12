@@ -8,9 +8,12 @@ Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macr
 
 ## Quick start
 
-1. Install under `Interface/AddOns/StockPiler3/`
-2. Optional: LibSlash (`/sp3`), LibPerf (`/libperf StockPiler3 on 250`)
-3. Reload UI; open with `/sp3`
+1. Prefer **[Releases](https://github.com/Talladego/StockPiler3/releases)** → download `StockPiler3-*.zip` (addon only). Do not use Code → Download ZIP (full repo).
+2. Unzip into `Interface/AddOns/` so you have `Interface/AddOns/StockPiler3/`
+3. Optional: LibSlash (`/sp3`), LibPerf (`/libperf StockPiler3 on 250`)
+4. Reload UI; open with `/sp3`
+
+Local pack (same layout as Releases): `powershell -File ./scripts/pack.ps1` → `dist/StockPiler3-<version>.zip`.
 
 ## Slash
 

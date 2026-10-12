@@ -8,6 +8,8 @@ tools/out/
 tools/__pycache__/
 GameData.Sound.txt
 Sound.txt
-
-
 tools/_wake_timeline.txt
+
+# Pack output / local release zips (CI uploads from dist/)
+dist/
+StockPiler3-*.zip
