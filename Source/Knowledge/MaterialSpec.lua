@@ -190,6 +190,13 @@ function MS.EffectKeyFromEffectId(effectId)
     return EFFECT_ID_TO_KEY[effectId]
 end
 
+function MS.EffectIdFromKey(key)
+    if type(key) ~= "string" or key == "" then
+        return nil
+    end
+    return EFFECT_KEY_TO_ID[string.lower(key)]
+end
+
 local function SlotTypeConstants()
     if GameData and GameData.CraftingItemType then
         return GameData.CraftingItemType
@@ -414,6 +421,10 @@ local DESC_EFFECT_PATTERNS = {
     { "absorb", "shabs" },
     { "barrier", "shabs" },
     { "flame breath", "dmgcone" },
+    { "glue bomb", "snare" },
+    { "slows targets", "snare" },
+    { "slow targets", "snare" },
+    { "snare", "snare" },
 }
 
 local function EffectIdFromDescription(description)
@@ -756,6 +767,8 @@ end
 
 --- When Items has not completed the bound uid yet, still accept a bag main that
 --- shares slot/skill/stab/power with the incomplete stub (twin preserved forms).
+--- EFFECT must also agree when either side knows it — otherwise L175 stab/power
+--- twins (WP / armor / snare) collide on the same incomplete fingerprint.
 local function IncompleteMainStatsMatch(itemData, spec)
     if type(itemData) ~= "table" or type(spec) ~= "table" then
         return false
@@ -783,6 +796,35 @@ local function IncompleteMainStatsMatch(itemData, spec)
         return false
     end
     if not BonusMatch(otherBonuses, specBonuses, B.POWER) then
+        return false
+    end
+    local productEffect = tonumber(FirstBonus(otherBonuses, B.EFFECT)) or tonumber(product.effectId) or 0
+    if productEffect <= 0 then
+        productEffect = tonumber(ResolveMainEffectId(itemData, otherBonuses)) or 0
+    end
+    local specEffect = tonumber(FirstBonus(specBonuses, B.EFFECT)) or tonumber(spec.effectId) or 0
+    if specEffect <= 0 then
+        local boundUid = tonumber(spec.boundUid) or tonumber(spec.uid) or 0
+        local probe = nil
+        if boundUid > 0 and StockPiler3.Items and StockPiler3.Items.GetByUid then
+            probe = StockPiler3.Items.GetByUid(boundUid)
+        end
+        if type(probe) ~= "table" then
+            probe = {
+                uniqueID = boundUid,
+                description = spec.description or spec.descriptionNarrow,
+                descriptionNarrow = spec.descriptionNarrow,
+            }
+        end
+        specEffect = tonumber(ResolveMainEffectId(probe, specBonuses)) or 0
+    end
+    if productEffect > 0 and specEffect > 0 then
+        return productEffect == specEffect
+    end
+    -- Spec still effect-blind: do not accept a complete main that already has
+    -- EFFECT (would teach WP/armor onto a snare stub). Bound-uid equality is
+    -- handled before this helper in Matches / ProductMatches.
+    if productEffect > 0 and specEffect <= 0 then
         return false
     end
     return true
@@ -1048,6 +1090,15 @@ function MS.ProductMatches(itemData, spec)
     end
     if MS.IsCultivationAdditive(spec) then
         return false
+    end
+    -- Server chat "Bad seed data / it has been lost" for this uid. Stat twins
+    -- can still match the fingerprint; this one cannot be slotted.
+    local itemUid = tonumber(itemData.uniqueID) or tonumber(itemData.uid) or 0
+    if itemUid > 0 then
+        local Brew = StockPiler3.Brew
+        if Brew and Brew.IsRejectedCraftUid and Brew.IsRejectedCraftUid(itemUid) == true then
+            return false
+        end
     end
     if spec.incomplete == true then
         local boundUid = tonumber(spec.boundUid) or tonumber(spec.uid) or 0

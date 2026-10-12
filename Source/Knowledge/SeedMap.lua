@@ -182,6 +182,7 @@ end
 
 local function LooksButcher(nameNarrow)
     local n = string.lower(nameNarrow or "")
+    -- Animal / vendor butcher apo mains (spittle = glue-bomb / snare family).
     return string.find(n, "tooth", 1, true)
         or string.find(n, "scale", 1, true)
         or string.find(n, "chitin", 1, true)
@@ -190,6 +191,16 @@ local function LooksButcher(nameNarrow)
         or string.find(n, "squig", 1, true)
         or string.find(n, "daemonic", 1, true)
         or string.find(n, "khornish", 1, true)
+        or string.find(n, "spittle", 1, true)
+        or string.find(n, "bile", 1, true)
+        or string.find(n, "ichor", 1, true)
+        or string.find(n, "feather", 1, true)
+        or string.find(n, "flesh", 1, true)
+        or string.find(n, "tongue", 1, true)
+        or string.find(n, "claw", 1, true)
+        or string.find(n, "humor", 1, true)
+        or string.find(n, "wing", 1, true)
+        or string.find(n, "shard", 1, true)
 end
 
 local function DescLooksInfertileSeed(description)
@@ -1230,16 +1241,36 @@ end
 local function SpecLooksButchering(spec)
     local n = string.lower(ToNarrow(spec and spec.name))
     if n == "" then
-        local uid = tonumber(spec and spec.uid) or tonumber(spec and spec.uniqueID) or 0
+        local uid = tonumber(spec and spec.uid) or tonumber(spec and spec.uniqueID)
+            or tonumber(spec and spec.boundUid) or 0
         if uid > 0 and StockPiler3.Items and StockPiler3.Items.GetByUid then
             local row = StockPiler3.Items.GetByUid(uid)
             n = string.lower(ToNarrow(row and row.name))
         end
     end
-    if n == "" then
+    if n ~= "" and LooksButcher(n) then
+        return true
+    end
+    -- Fingerprint-only mains (no name/uid): any learned isRefinable==false twin.
+    local MS = StockPiler3.MaterialSpec
+    local items = StockPiler3.Account and StockPiler3.Account.items
+    if type(spec) ~= "table" or type(items) ~= "table" or not (MS and MS.ProductMatches) then
         return false
     end
-    return LooksButcher(n)
+    for uidKey, row in pairs(items) do
+        if type(row) == "table" and row.isRefinable == false then
+            local rowUid = tonumber(row.uniqueID) or tonumber(uidKey) or 0
+            local probe = row
+            if rowUid > 0 and StockPiler3.Items and StockPiler3.Items.AsItemData then
+                probe = StockPiler3.Items.AsItemData(rowUid) or row
+            end
+            -- isRefinable==false + ProductMatch: butcher/vendor twin (scales, spittle, …).
+            if MS.ProductMatches(probe, spec) == true then
+                return true
+            end
+        end
+    end
+    return false
 end
 
 --- Goldweed-class stabilizer fingerprint: MULTIPLIER bonus present (SP2 SpecHasGoldweedMultiplier).
@@ -1337,6 +1368,23 @@ function SM.IsGrowableSpec(spec)
     end
     if refinable == true then
         return true
+    end
+    -- Fingerprint specs often omit uid/isRefinable; resolve via plant twin.
+    -- Bottled Rat Spittle / scales match as "plants" until LooksButcher runs —
+    -- their learned isRefinable==false must win over the cult-role heuristic.
+    local plantUid = SM.FindPlantUidForSpec and tonumber(SM.FindPlantUidForSpec(spec)) or 0
+    if plantUid > 0 then
+        local plantRef = SM.ResolveIsRefinable({
+            uid = plantUid,
+            uniqueID = plantUid,
+            role = role,
+        })
+        if plantRef == false then
+            return false
+        end
+        if plantRef == true then
+            return true
+        end
     end
     -- Unknown isRefinable: cult-role heuristic so unlearned fingerprints still AutoGrow.
     if role == "main" or role == "extender" or role == "multiplier"

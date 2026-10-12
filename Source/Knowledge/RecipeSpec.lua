@@ -276,6 +276,259 @@ local function SlimSlotsForStorage(slots)
     return slim
 end
 
+local function PotionEffectIdForUid(uid)
+    uid = tonumber(uid) or 0
+    if uid <= 0 then
+        return 0
+    end
+    local MS = StockPiler3.MaterialSpec
+    local effectKey = nil
+    if RS.GetPotion then
+        local potion = RS.GetPotion(uid)
+        if type(potion) == "table" and type(potion.effectKey) == "string" then
+            effectKey = potion.effectKey
+        end
+    end
+    if (type(effectKey) ~= "string" or effectKey == "") and StockPiler3.Classify and StockPiler3.Classify.GetEffectKey then
+        local probe = nil
+        if StockPiler3.Items and StockPiler3.Items.AsItemData then
+            probe = StockPiler3.Items.AsItemData(uid)
+        end
+        if type(probe) ~= "table" then
+            probe = { uniqueID = uid }
+        end
+        effectKey = StockPiler3.Classify.GetEffectKey(probe)
+    end
+    if type(effectKey) ~= "string" or effectKey == "" or not (MS and MS.EffectIdFromKey) then
+        return 0
+    end
+    local norm = effectKey
+    if RS.NormalizeEffectKeyForUi then
+        norm = RS.NormalizeEffectKeyForUi(effectKey) or effectKey
+    end
+    return tonumber(MS.EffectIdFromKey(norm)) or 0
+end
+
+local function RecipeOutcomeEffectIdSet(recipe)
+    local ids = {}
+    local n = 0
+    if type(recipe) ~= "table" or type(recipe.outcomes) ~= "table" then
+        return ids, n
+    end
+    for uidKey in pairs(recipe.outcomes) do
+        local eid = PotionEffectIdForUid(uidKey)
+        if eid > 0 and ids[eid] ~= true then
+            ids[eid] = true
+            n = n + 1
+        end
+    end
+    return ids, n
+end
+
+local function UnlinkPotionRecipeKey(potionUid, recipeKey)
+    recipeKey = tostring(recipeKey or "")
+    potionUid = tonumber(potionUid) or 0
+    if potionUid <= 0 or recipeKey == "" or not RS.GetPotion then
+        return
+    end
+    local potion = RS.GetPotion(potionUid)
+    if type(potion) ~= "table" then
+        return
+    end
+    local function scrubList(list)
+        if type(list) ~= "table" then
+            return
+        end
+        local nextList = {}
+        for i = 1, #list do
+            local k = tostring(list[i] or "")
+            if k ~= "" and k ~= recipeKey then
+                nextList[#nextList + 1] = k
+            end
+        end
+        return nextList
+    end
+    if type(potion.recipeKeys) == "table" then
+        potion.recipeKeys = scrubList(potion.recipeKeys)
+    end
+    if type(potion.alternateRecipeSpecKeys) == "table" then
+        potion.alternateRecipeSpecKeys = scrubList(potion.alternateRecipeSpecKeys)
+    end
+    for _, field in ipairs({ "activeRecipeKey", "activeRecipeSpecKey", "recipeSpecKey" }) do
+        if tostring(potion[field] or "") == recipeKey then
+            local keys = potion.recipeKeys
+            potion[field] = (type(keys) == "table" and keys[1]) or nil
+        end
+    end
+end
+
+--- Drop outcomes whose potion EFFECT disagrees with the stamped main EFFECT.
+--- Fixes incomplete-fingerprint pollution (WP Conviction / armor Unguent on snare).
+local function PruneOutcomesMismatchedToMainEffect(recipe)
+    if type(recipe) ~= "table" or type(recipe.outcomes) ~= "table" or type(recipe.slots) ~= "table" then
+        return 0
+    end
+    local mainEffectId = 0
+    for i = 1, #recipe.slots do
+        local spec = ResolveSlotSpec(recipe.slots[i])
+        if type(spec) == "table" and tostring(spec.role or "") == "main" then
+            mainEffectId = tonumber(spec.effectId) or 0
+            if mainEffectId <= 0 and type(spec.bonuses) == "table" then
+                local MS = StockPiler3.MaterialSpec
+                local B = MS and MS.CraftBonusRefs and MS.CraftBonusRefs()
+                local effectRef = (B and B.EFFECT) or 6
+                mainEffectId = tonumber(spec.bonuses[effectRef]) or 0
+            end
+            if mainEffectId > 0 then
+                break
+            end
+        end
+    end
+    if mainEffectId <= 0 then
+        return 0
+    end
+    local recipeKey = tostring(recipe.recipeSpecKey or "")
+    local pruned = 0
+    local drop = {}
+    for uidKey in pairs(recipe.outcomes) do
+        local eid = PotionEffectIdForUid(uidKey)
+        if eid > 0 and eid ~= mainEffectId then
+            drop[#drop + 1] = uidKey
+        end
+    end
+    for i = 1, #drop do
+        local uidKey = drop[i]
+        recipe.outcomes[uidKey] = nil
+        UnlinkPotionRecipeKey(uidKey, recipeKey)
+        pruned = pruned + 1
+        local uidNum = tonumber(uidKey) or 0
+        if uidNum > 0 then
+            if tonumber(recipe.activeOutcomeUid) == uidNum then
+                recipe.activeOutcomeUid = nil
+            end
+            if tonumber(recipe.outputUid) == uidNum then
+                recipe.outputUid = nil
+            end
+        end
+    end
+    if recipe.activeOutcomeUid == nil or recipe.outputUid == nil then
+        for uidKey, oc in pairs(recipe.outcomes) do
+            if type(oc) == "table" then
+                local uidNum = tonumber(uidKey) or 0
+                if uidNum > 0 then
+                    if recipe.activeOutcomeUid == nil then
+                        recipe.activeOutcomeUid = uidNum
+                    end
+                    if recipe.outputUid == nil then
+                        recipe.outputUid = uidNum
+                    end
+                    break
+                end
+            end
+        end
+    end
+    return pruned
+end
+
+--- Stamp EFFECT onto incomplete main slots.
+--- Prefer bound-main description (Viscous Rat Spittle → snare). Potion Use/name is
+--- fallback only when outcomes are not multi-effect polluted.
+local function StampIncompleteMainEffect(recipe)
+    if type(recipe) ~= "table" or type(recipe.slots) ~= "table" then
+        return
+    end
+    local MS = StockPiler3.MaterialSpec
+    local B = MS and MS.CraftBonusRefs and MS.CraftBonusRefs()
+    local effectRef = (B and B.EFFECT) or 6
+    local effectId = 0
+
+    -- 1) Bound main item (description / Items) — authoritative for glue/snare stubs.
+    if MS and MS.ResolveMainEffectId then
+        for i = 1, #recipe.slots do
+            local slot = recipe.slots[i]
+            local spec = ResolveSlotSpec(slot)
+            if type(spec) == "table" and tostring(spec.role or slot.role or "") == "main" then
+                local boundUid = tonumber(spec.boundUid) or tonumber(spec.uid) or tonumber(slot and slot.uid) or 0
+                local probe = nil
+                if boundUid > 0 and StockPiler3.Items then
+                    if StockPiler3.Items.GetByUid then
+                        probe = StockPiler3.Items.GetByUid(boundUid)
+                    end
+                    if type(probe) ~= "table" and StockPiler3.Items.AsItemData then
+                        probe = StockPiler3.Items.AsItemData(boundUid)
+                    end
+                end
+                if type(probe) ~= "table" and boundUid > 0 then
+                    probe = { uniqueID = boundUid }
+                end
+                if type(probe) == "table" then
+                    effectId = tonumber(MS.ResolveMainEffectId(probe, spec.bonuses)) or 0
+                    if effectId > 0 then
+                        break
+                    end
+                end
+            end
+        end
+    end
+
+    -- 2) Potion fallback — skip when outcomes disagree on EFFECT (collision fingerprint).
+    if effectId <= 0 then
+        local _, outcomeEffectCount = RecipeOutcomeEffectIdSet(recipe)
+        local effectKey = recipe.effectKey
+        if outcomeEffectCount <= 1 and (type(effectKey) ~= "string" or effectKey == "") then
+            local outUid = tonumber(recipe.activeOutcomeUid) or tonumber(recipe.outputUid) or 0
+            if outUid > 0 then
+                effectId = PotionEffectIdForUid(outUid)
+            end
+        elseif outcomeEffectCount <= 1 and type(effectKey) == "string" and effectKey ~= "" and MS and MS.EffectIdFromKey then
+            local norm = effectKey
+            if RS.NormalizeEffectKeyForUi then
+                norm = RS.NormalizeEffectKeyForUi(effectKey) or effectKey
+            end
+            effectId = tonumber(MS.EffectIdFromKey(norm)) or 0
+        end
+    end
+
+    if effectId <= 0 then
+        return
+    end
+    for i = 1, #recipe.slots do
+        local slot = recipe.slots[i]
+        local spec = ResolveSlotSpec(slot)
+        if type(spec) == "table"
+            and tostring(spec.role or slot.role or "") == "main"
+            and (spec.incomplete == true or (tonumber(spec.effectId) or 0) <= 0)
+        then
+            spec.effectId = effectId
+            spec.bonuses = type(spec.bonuses) == "table" and spec.bonuses or {}
+            spec.bonuses[effectRef] = effectId
+            spec.incomplete = false
+            if spec.isRefinable == nil then
+                -- Prefer learned vendor/butcher twin refinable flag at this fingerprint.
+                local items = StockPiler3.Account and StockPiler3.Account.items
+                if type(items) == "table" and MS.ProductMatches then
+                    for uidKey, row in pairs(items) do
+                        if type(row) == "table" and row.isRefinable == false then
+                            local rowUid = tonumber(row.uniqueID) or tonumber(uidKey) or 0
+                            local probe = row
+                            if rowUid > 0 and StockPiler3.Items and StockPiler3.Items.AsItemData then
+                                probe = StockPiler3.Items.AsItemData(rowUid) or row
+                            end
+                            if MS.ProductMatches(probe, spec) == true then
+                                spec.isRefinable = false
+                                break
+                            end
+                        end
+                    end
+                end
+            end
+            if type(slot) == "table" then
+                slot.spec = spec
+            end
+        end
+    end
+end
+
 local function HydrateRecipeSlots(recipe)
     if type(recipe) ~= "table" or type(recipe.slots) ~= "table" then
         return
@@ -283,6 +536,7 @@ local function HydrateRecipeSlots(recipe)
     for i = 1, #recipe.slots do
         ResolveSlotSpec(recipe.slots[i])
     end
+    StampIncompleteMainEffect(recipe)
 end
 
 --- Order-independent recipe identity: multiset of (role, SpecFingerprint) with summed perCraft.
@@ -2608,48 +2862,86 @@ end
 --- Rematerialize Account.recipes under current SlotsFingerprint / RecipeIdentityKey.
 --- Merges collisions, drops empty/irreparable recipes, remaps potion + watch keys.
 --- Idempotent. Returns { keyMap, merged, dropped, remapped, watchesDropped, potionsDropped }.
+local function RepairQuarantine()
+    local acct = StockPiler3.Account
+    if type(acct) ~= "table" then
+        return nil
+    end
+    if type(acct._repairQuarantine) ~= "table" then
+        acct._repairQuarantine = { recipes = {}, potions = {}, watches = {} }
+    end
+    local q = acct._repairQuarantine
+    if type(q.recipes) ~= "table" then
+        q.recipes = {}
+    end
+    if type(q.potions) ~= "table" then
+        q.potions = {}
+    end
+    if type(q.watches) ~= "table" then
+        q.watches = {}
+    end
+    return q
+end
+
 local function RematerializeRecipeFingerprints()
     local report = {
         keyMap = {},
         merged = 0,
         dropped = 0,
         remapped = 0,
+        outcomesPruned = 0,
         watchesDropped = 0,
         potionsDropped = 0,
+        droppedRecipeKeys = {},
+        droppedPotionKeys = {},
+        droppedWatchKeys = {},
     }
     local recipes = RecipesTable()
     if type(recipes) ~= "table" then
         return report
     end
+    local quarantine = RepairQuarantine()
 
     local keyMap = report.keyMap
     local rebuilt = {}
     for oldKey, recipe in pairs(recipes) do
         if type(recipe) ~= "table" then
             report.dropped = report.dropped + 1
+            report.droppedRecipeKeys[#report.droppedRecipeKeys + 1] = tostring(oldKey)
         else
             HydrateRecipeSlots(recipe)
+            local oldKeyStr = tostring(oldKey)
+            -- Unlink polluted potion keys under the key they currently reference.
+            recipe.recipeSpecKey = oldKeyStr
+            report.outcomesPruned = (tonumber(report.outcomesPruned) or 0)
+                + (PruneOutcomesMismatchedToMainEffect(recipe) or 0)
             local slots = recipe.slots
             local newKey = ""
             if type(slots) == "table" and #slots > 0 then
                 newKey = tostring(SlotsFingerprint(slots) or "")
             end
-            local oldKeyStr = tostring(oldKey)
             if newKey == "" then
-                -- Irreparable: no usable slot fingerprint — drop.
+                -- Irreparable: no usable slot fingerprint — quarantine then drop.
                 report.dropped = report.dropped + 1
+                report.droppedRecipeKeys[#report.droppedRecipeKeys + 1] = oldKeyStr
+                if quarantine then
+                    quarantine.recipes[oldKeyStr] = recipe
+                end
             else
                 keyMap[oldKeyStr] = newKey
                 if newKey ~= oldKeyStr then
                     report.remapped = report.remapped + 1
                 end
+                recipe.recipeSpecKey = newKey
                 local dest = rebuilt[newKey]
                 if type(dest) ~= "table" then
-                    recipe.recipeSpecKey = newKey
                     recipe.slots = SlimSlotsForStorage(slots)
                     rebuilt[newKey] = recipe
                 else
                     MergeRecipeStats(dest, recipe)
+                    dest.recipeSpecKey = newKey
+                    report.outcomesPruned = (tonumber(report.outcomesPruned) or 0)
+                        + (PruneOutcomesMismatchedToMainEffect(dest) or 0)
                     report.merged = report.merged + 1
                 end
             end
@@ -2704,14 +2996,19 @@ local function RematerializeRecipeFingerprints()
             end
         end
         for i = 1, #dropPotionKeys do
-            potions[dropPotionKeys[i]] = nil
+            local pk = dropPotionKeys[i]
+            if quarantine and type(potions[pk]) == "table" then
+                quarantine.potions[tostring(pk)] = potions[pk]
+            end
+            potions[pk] = nil
             report.potionsDropped = report.potionsDropped + 1
+            report.droppedPotionKeys[#report.droppedPotionKeys + 1] = tostring(pk)
         end
     end
 
     local settings = StockPiler3.Settings
     if type(settings) == "table" and type(settings.characters) == "table" then
-        for _, char in pairs(settings.characters) do
+        for charKey, char in pairs(settings.characters) do
             if type(char) == "table" and type(char.watches) == "table" then
                 local nextWatches = {}
                 for watchKey, watch in pairs(char.watches) do
@@ -2726,6 +3023,11 @@ local function RematerializeRecipeFingerprints()
                             if type(recipes[neuRk]) ~= "table" then
                                 keep = false
                                 report.watchesDropped = report.watchesDropped + 1
+                                report.droppedWatchKeys[#report.droppedWatchKeys + 1] =
+                                    tostring(charKey) .. "|" .. tostring(watchKey)
+                                if quarantine then
+                                    quarantine.watches[tostring(charKey) .. "|" .. tostring(watchKey)] = watch
+                                end
                             elseif RS.PotionRecipeKey and outUid > 0 then
                                 newWatchKey = RS.PotionRecipeKey(outUid, neuRk)
                             end

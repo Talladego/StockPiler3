@@ -29,6 +29,23 @@ local ICON_SCALE = 0.34
 local TARGET_MAX = 200
 local syncingUi = false
 
+--- Checkbox labels use handleinput=true (stock EA_LabelCheckButton pattern).
+--- Label clicks do not auto-toggle EA_Button_DefaultCheckBox; flip when ActiveWindow
+--- is not the button itself, then let OnToggle* read ButtonGetPressedFlag.
+local function SyncCheckFromActive(buttonWin)
+    if type(buttonWin) ~= "string" or buttonWin == "" or not DoesWindowExist(buttonWin) then
+        return false
+    end
+    if ButtonGetDisabledFlag and ButtonGetDisabledFlag(buttonWin) == true then
+        return false
+    end
+    local active = tostring(SystemData.ActiveWindow.name or "")
+    if active ~= buttonWin then
+        ButtonSetPressedFlag(buttonWin, not (ButtonGetPressedFlag(buttonWin) == true))
+    end
+    return true
+end
+
 local SORT_IDS = {
     [1] = "prio",
     [2] = "name",
@@ -346,6 +363,7 @@ local function SortWatchRows(rows)
 end
 
 --- Bind display list without mutating Planner snapshot row order.
+--- Tracks `_boundPlanRows` so brew-hold catch-up can tell a sorted copy from a stale plan.
 local function BindSortedList(rows)
     if type(rows) ~= "table" then
         rows = {}
@@ -353,11 +371,18 @@ local function BindSortedList(rows)
     local list = rows
     local plan = StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Get
         and StockPiler3.PlanSnapshot.Get()
-    if type(plan) == "table" and rows == plan.rows then
+    local planRows = type(plan) == "table" and plan.rows or nil
+    if type(planRows) == "table" and rows == planRows then
         list = {}
         for i = 1, #rows do
             list[i] = rows[i]
         end
+        StockPiler3TabWatch._boundPlanRows = planRows
+    elseif type(planRows) == "table" and StockPiler3TabWatch._boundPlanRows == planRows then
+        -- Re-sorting the existing display copy; still bound to this plan.rows.
+        StockPiler3TabWatch._boundPlanRows = planRows
+    else
+        StockPiler3TabWatch._boundPlanRows = nil
     end
     SortWatchRows(list)
     StockPiler3TabWatch.listData = list
@@ -365,6 +390,16 @@ local function BindSortedList(rows)
     for i = 1, #list do
         StockPiler3TabWatch.displayOrder[i] = i
     end
+end
+
+--- Public rebind for brew-hold catch-up (keeps user sort; never assign plan.rows raw).
+function StockPiler3TabWatch.BindSortedList(rows)
+    BindSortedList(rows)
+end
+
+--- True when listData is a sorted copy of the given plan.rows table (shared row objects).
+function StockPiler3TabWatch.IsBoundToPlanRows(planRows)
+    return type(planRows) == "table" and StockPiler3TabWatch._boundPlanRows == planRows
 end
 
 local function UpdateSortHeaderLabels()
@@ -2026,6 +2061,10 @@ function StockPiler3TabWatch.OnToggleEnabled()
     if syncingUi then
         return
     end
+    if not SyncCheckFromActive(ENABLE_WIN) then
+        UpdateEnableCheckbox()
+        return
+    end
     if not CanAutoGrowUi() then
         UpdateEnableCheckbox()
         return
@@ -2049,6 +2088,10 @@ function StockPiler3TabWatch.OnToggleAdditives()
     if syncingUi then
         return
     end
+    if not SyncCheckFromActive(ADDITIVES_WIN) then
+        UpdateAdditivesCheckbox()
+        return
+    end
     if not CanAutoGrowUi() then
         UpdateAdditivesCheckbox()
         return
@@ -2064,6 +2107,10 @@ end
 
 function StockPiler3TabWatch.OnToggleSeedBuffer()
     if syncingUi then
+        return
+    end
+    if not SyncCheckFromActive(SEED_BUFFER_ENABLE_WIN) then
+        UpdateSeedBufferEnableCheckbox()
         return
     end
     if not CanAutoGrowUi() then
@@ -2082,6 +2129,10 @@ end
 
 function StockPiler3TabWatch.OnToggleUpgradeSeeds()
     if syncingUi then
+        return
+    end
+    if not SyncCheckFromActive(UPGRADE_SEEDS_WIN) then
+        UpdateUpgradeSeedsCheckbox()
         return
     end
     if not CanAutoGrowUi() then
@@ -2107,6 +2158,10 @@ function StockPiler3TabWatch.OnToggleAutoBuy()
     if syncingUi then
         return
     end
+    if not SyncCheckFromActive(AUTOBUY_WIN) then
+        UpdateAutoBuyCheckbox()
+        return
+    end
     if not CanAutoBuyUi() then
         UpdateAutoBuyCheckbox()
         return
@@ -2128,6 +2183,10 @@ end
 
 function StockPiler3TabWatch.OnToggleAutoBrew()
     if syncingUi then
+        return
+    end
+    if not SyncCheckFromActive(AUTOBREW_WIN) then
+        UpdateAutoBrewCheckbox()
         return
     end
     if not CanAutoBrewUi() then
@@ -2156,6 +2215,10 @@ function StockPiler3TabWatch.OnToggleOptimisticMode()
     if syncingUi then
         return
     end
+    if not SyncCheckFromActive(OPTIMISTIC_MODE_WIN) then
+        UpdateOptimisticModeCheckbox()
+        return
+    end
     local row = CharRow(true)
     if type(row) ~= "table" then
         return
@@ -2168,6 +2231,10 @@ end
 
 function StockPiler3TabWatch.OnToggleSkillUpSkills()
     if syncingUi then
+        return
+    end
+    if not SyncCheckFromActive(SKILLUP_SKILLS_WIN) then
+        UpdateSkillUpCheckboxes()
         return
     end
     local SkillUp = StockPiler3.SkillUp

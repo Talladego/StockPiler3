@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.360** - Idempotent saved-data ValidateAndRepair (stamp mains, collapse fingerprint twins, drop irreparable recipes/watches).
+**Version 0.3.395** - AutoBrew wait-confirmed board load; crafting-chat "Bad seed data" aborts and blacklists the refused main uid.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -139,6 +139,13 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.395 | Crafting chat: Bad seed / add-main-before abort load; blacklist refused main uid (false ProductMatches twins); CloseWindow on load/clear aborts |
+| 0.3.393 | AutoBrew load: reserve bag slots only after StepLanded; no ReleaseAllLocks mid-add; abort backoff (stops flask flicker) |
+| 0.3.392 | AutoBrew load: wait-confirm each AddCraftingItem (SP1 StepSatisfied) before next step |
+| 0.3.382 | Craft bag: Ready when free≥1 (potion output is main bag); AutoBrew preflight aborts when inventory pulls exceed free slots |
+| 0.3.381 | AutoBrew: unload vial-only / bad-craft-state partial loads (was stuck loaded; never retried main) |
+| 0.3.380 | Incomplete mains: EFFECT-aware bag twin match; stamp from bound main desc; rematerialize prunes wrong-effect outcomes (Conviction/Unguent on snare) |
+| 0.3.379 | AutoBuy: snare/glue-bomb mains (Bottled Rat Spittle) no longer misclassified as growable plants; stamp missing main EFFECT from potion Use/name |
 | 0.3.360 | Saved-data ValidateAndRepair on load + /sp3 audit (correct twins/mains; drop irreparable) |
 | 0.3.359 | Items: stamp main EFFECT from descriptionNarrow |
 | 0.3.358 | Recipe storage: UID-agnostic fingerprints (Scale/Chitin twins) |

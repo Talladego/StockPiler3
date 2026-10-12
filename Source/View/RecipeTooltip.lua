@@ -372,12 +372,95 @@ local function SortMatchList(list, exemplarUid)
     end)
 end
 
---- One pass over learned Items: fingerprint matches per material slot (exemplar first).
+--- Cache key: knowledge + bag snap + recipe fingerprint (bag butcher twins).
+local _matchCacheKey = nil
+local _matchCacheBySlot = nil
+
+local function KnownMatchesCacheKey(materials)
+    local knowGen = 0
+    if StockPiler3.Knowledge and StockPiler3.Knowledge.GetGen then
+        knowGen = tonumber(StockPiler3.Knowledge.GetGen()) or 0
+    end
+    local snapGen = 0
+    if StockPiler3.Inventory and StockPiler3.Inventory.GetSnapGen then
+        snapGen = tonumber(StockPiler3.Inventory.GetSnapGen()) or 0
+    end
+    local fp = ""
+    local RS = StockPiler3.RecipeSpec
+    if RS and RS.RecipeSpecKey then
+        fp = tostring(RS.RecipeSpecKey(materials) or "")
+    end
+    return tostring(knowGen) .. "|" .. tostring(snapGen) .. "|" .. fp
+end
+
+--- Prefer live bag sample (butcher twins match like Brew); else complete ToSpec / AsItemData.
+local function MatchProbeForUid(uid)
+    uid = tonumber(uid) or 0
+    if uid <= 0 then
+        return nil
+    end
+    local Inv = StockPiler3.Inventory
+    if Inv and Inv.GetSample then
+        local sample = Inv.GetSample(uid)
+        if type(sample) == "table" then
+            return sample
+        end
+    end
+    local Items = StockPiler3.Items
+    if Items and Items.ToSpec then
+        local spec = Items.ToSpec(uid)
+        if type(spec) == "table" and spec.incomplete ~= true then
+            return spec
+        end
+    end
+    if Items and Items.AsItemData then
+        return Items.AsItemData(uid)
+    end
+    return nil
+end
+
+--- Try one uid against all open slots; append display on first ProductMatches hit.
+local function ConsiderMatchUid(infos, uid, probeHint)
+    uid = tonumber(uid) or 0
+    if uid <= 0 or type(infos) ~= "table" then
+        return
+    end
+    local probe = probeHint
+    local display = nil
+    for i = 1, #infos do
+        local info = infos[i]
+        if type(info.slot) == "table" and type(info.spec) == "table" and not info.seen[uid] then
+            if probe == nil then
+                probe = MatchProbeForUid(uid)
+                if type(probe) ~= "table" then
+                    return
+                end
+            end
+            if ItemMatchesSpec(probe, info.spec) then
+                if display == nil then
+                    display = ResolveDisplayItem(uid) or probe
+                end
+                if type(display) == "table" then
+                    info.seen[uid] = true
+                    info.matches[#info.matches + 1] = display
+                end
+            end
+        end
+    end
+end
+
+--- Learned Items + bag samples: fingerprint matches per material slot (exemplar first).
+--- Bags matter for butcher/vendor twins that Brew accepts but Account.items never saw.
 local function CollectKnownMatchesBySlot(materials)
     local bySlot = {}
     if type(materials) ~= "table" then
         return bySlot
     end
+    local cacheKey = KnownMatchesCacheKey(materials)
+    if cacheKey ~= "" and cacheKey == _matchCacheKey and type(_matchCacheBySlot) == "table" then
+        return _matchCacheBySlot
+    end
+
     local infos = {}
     for i = 1, #materials do
         local slot, spec = ResolveSlot(materials[i])
@@ -403,42 +486,47 @@ local function CollectKnownMatchesBySlot(materials)
     end
 
     local store = ItemsStore()
-    local Items = StockPiler3.Items
-    if type(store) ~= "table" or not Items or not Items.AsItemData then
-        for i = 1, #infos do
-            SortMatchList(infos[i].matches, infos[i].exemplarUid)
-        end
-        return bySlot
-    end
-
-    for key, row in pairs(store) do
-        local uid = tonumber(key) or 0
-        if uid <= 0 and type(row) == "table" then
-            uid = tonumber(row.uniqueID) or 0
-        end
-        if uid > 0 then
-            local itemData = nil
-            for i = 1, #infos do
-                local info = infos[i]
-                if type(info.slot) == "table" and type(info.spec) == "table" and not info.seen[uid] then
-                    if itemData == nil then
-                        itemData = ResolveDisplayItem(uid)
-                        if type(itemData) ~= "table" then
-                            break
-                        end
-                    end
-                    if ItemMatchesSpec(itemData, info.spec) then
-                        info.seen[uid] = true
-                        info.matches[#info.matches + 1] = itemData
-                    end
-                end
+    if type(store) == "table" then
+        for key, row in pairs(store) do
+            local uid = tonumber(key) or 0
+            if uid <= 0 and type(row) == "table" then
+                uid = tonumber(row.uniqueID) or 0
+            end
+            if uid > 0 then
+                ConsiderMatchUid(infos, uid, nil)
             end
         end
+    end
+
+    -- Same ProductMatches path Brew uses on bag samples (Preserved / butcher twins).
+    local Inv = StockPiler3.Inventory
+    if Inv and Inv.ForEachItem then
+        Inv.ForEachItem(function(item)
+            if type(item) ~= "table" then
+                return
+            end
+            local uid = tonumber(item.uniqueID) or 0
+            if uid <= 0 then
+                return
+            end
+            local anyOpen = false
+            for i = 1, #infos do
+                if not infos[i].seen[uid] then
+                    anyOpen = true
+                    break
+                end
+            end
+            if anyOpen then
+                ConsiderMatchUid(infos, uid, item)
+            end
+        end)
     end
 
     for i = 1, #infos do
         SortMatchList(infos[i].matches, infos[i].exemplarUid)
     end
+    _matchCacheKey = cacheKey
+    _matchCacheBySlot = bySlot
     return bySlot
 end
 

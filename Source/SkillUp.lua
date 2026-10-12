@@ -3571,12 +3571,15 @@ function SkillUp.BuildApoBrewRow(opts)
     local recipe, why, parts = SkillUp.BuildApoBrewRecipe()
     if type(recipe) ~= "table" then
         SkillUp._apoBrewRow = nil
-        if not quiet then
-            if why == "need_resin" or why == "unstable" then
-                if StockPiler3.Refine and StockPiler3.Refine.MarkRefineDue then
-                    StockPiler3.Refine.MarkRefineDue("skill-up-resin")
-                end
+        -- Wake refine even on quiet Watch paints: plots-full idle otherwise never
+        -- CollectIntents, so Apo seed_buffer stalls until a manual refine.
+        if why == "seed_buffer" or why == "need_resin" or why == "unstable" then
+            if StockPiler3.Refine and StockPiler3.Refine.MarkRefineDue then
+                local due = (why == "seed_buffer") and "skill-up-buffer" or "skill-up-resin"
+                StockPiler3.Refine.MarkRefineDue(due)
             end
+        end
+        if not quiet then
             SkillUp.MaybeNotifyApoStall(why or "need_mats")
         end
         return nil
@@ -3588,8 +3591,12 @@ function SkillUp.BuildApoBrewRow(opts)
     end
     if craftable < 1 then
         SkillUp._apoBrewRow = nil
+        local heldForBuffer = SkillUp.PickApoBagMaterial("main", { ignoreReserve = true }) ~= nil
+        if heldForBuffer and StockPiler3.Refine and StockPiler3.Refine.MarkRefineDue then
+            StockPiler3.Refine.MarkRefineDue("skill-up-buffer")
+        end
         if not quiet then
-            if SkillUp.PickApoBagMaterial("main", { ignoreReserve = true }) ~= nil then
+            if heldForBuffer then
                 SkillUp.MaybeNotifyApoStall("seed_buffer")
             else
                 SkillUp.MaybeNotifyApoStall("need_mats")

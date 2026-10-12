@@ -98,17 +98,18 @@
             <TextOffset x="4" y="4" />
         </Button>
 
-        <!-- Compact row action: gold text, orange hover. -->
-        <Button name="StockPiler3_RowTextButton" inherits="EA_Button_DefaultText" font="font_chat_text" textalign="center">
+        <!-- Compact row action: ListSort chrome (highlit/pressed) + centered label. -->
+        <Button name="StockPiler3_RowTextButton" inherits="EA_Button_ListSort" font="font_chat_text" textalign="center" textAutoFitMinScale="0.5">
             <Size>
                 <AbsPoint x="70" y="28" />
             </Size>
+            <TextOffset x="2" y="2" />
             <TextColors>
                 <Normal r="255" g="204" b="102" a="255" />
                 <NormalHighlit r="255" g="85" b="0" a="255" />
                 <Pressed r="255" g="85" b="0" a="255" />
                 <PressedHighlit r="255" g="85" b="0" a="255" />
-                <Disabled r="92" g="92" b="92" a="255" />
+                <Disabled r="160" g="160" b="160" a="255" />
             </TextColors>
         </Button>
 

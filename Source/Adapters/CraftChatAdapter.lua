@@ -484,6 +484,15 @@ local function ParseCraftingLine(text)
         created = string.gsub(created, "%.$", "")
         return { kind = "created", name = created }
     end
+    -- Server destroys the item it just refused ("it has been lost") and tells
+    -- you the main never landed. One line is enough to stop the load.
+    if string.find(lower, "bad seed data", 1, true)
+        or string.find(lower, "seed couldn't be generated", 1, true)
+        or string.find(lower, "seed could not be generated", 1, true)
+        or string.find(lower, "add main ingredient before", 1, true)
+    then
+        return { kind = "bad_seed" }
+    end
     return nil
 end
 
@@ -518,6 +527,10 @@ function CC.OnChatTextArrived()
     elseif parsed.kind == "created" then
         if StockPiler3.BrewLearn and StockPiler3.BrewLearn.OnCreatedChat then
             StockPiler3.BrewLearn.OnCreatedChat(parsed.name)
+        end
+    elseif parsed.kind == "bad_seed" then
+        if StockPiler3.Brew and StockPiler3.Brew.OnCraftServerReject then
+            StockPiler3.Brew.OnCraftServerReject()
         end
     end
 end

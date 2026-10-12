@@ -1057,6 +1057,17 @@ function Refine.ShouldAllowRefineNow()
     if Refine.HasActiveResinNeed() == true then
         return true, "resin-need"
     end
+    -- SkillUp: plots-full idle used to skip CollectIntents entirely, so buffer
+    -- plants sat while Apo stayed on "Held for seed buffer" until a manual refine.
+    local SkillUpIdle = StockPiler3.SkillUp
+    if SkillUpIdle then
+        if SkillUpIdle.HasUpgradePlant and SkillUpIdle.HasUpgradePlant() == true then
+            return true, "skill-up-upgrade"
+        end
+        if SkillUpIdle.HasRefinablePlants and SkillUpIdle.HasRefinablePlants() == true then
+            return true, "skill-up-buffer"
+        end
+    end
     return false, "idle-grow"
 end
 

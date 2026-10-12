@@ -491,6 +491,19 @@ function BA.IsCraftBagFull()
     return filled >= capacity
 end
 
+--- Free craft-bag slots (nil if occupancy unknown).
+function BA.CraftBagFreeSlots()
+    local filled, capacity = BA.CountBagOccupancy(BAG_CRAFT)
+    if filled == nil or capacity == nil or capacity <= 0 then
+        return nil
+    end
+    local free = capacity - filled
+    if free < 0 then
+        free = 0
+    end
+    return free
+end
+
 --- Find a bag slot holding seedUid. Cached by Inventory snapGen; InvalidateCache on structure change.
 function BA.FindSeedSlot(uid)
     uid = tonumber(uid) or 0

@@ -9,7 +9,7 @@ local Classify = StockPiler3.Classify
 -- ~27 short effect filter keys (stubs OK for UI combo).
 Classify.EFFECT_KEYS = {
     "str", "int", "wp", "bs", "tou", "armor", "absorb", "heal", "hot", "ap",
-    "rcorp", "rele", "rspi",
+    "rcorp", "rele", "rspi", "snare",
     "hytoucrit", "hystrmelee", "hywillheal", "hystrheal", "hyintmcrit",
     "hyaccrcrit", "hywoumelee", "hywoucrit", "hywoumcrit", "hywourcrit",
     "hywouheal", "hywoustr", "hyresist", "hywouarmpen", "hywouinit",
@@ -29,6 +29,7 @@ local EFFECT_SHORT = {
     heal = "Heal",
     hot = "HoT",
     ap = "AP",
+    snare = "Snare",
     rcorp = "Corp",
     rele = "Ele",
     rspi = "Spi",
@@ -170,6 +171,15 @@ local function ClassifyFromDescription(description)
     if string.find(descLower, "absorbs", 1, true) or string.find(descLower, "magical barrier", 1, true) then
         return "absorb"
     end
+    -- Glue bomb / snare (Use: "more slowly", ingredient "glue bomb potions").
+    if string.find(descLower, "more slowly", 1, true)
+        or string.find(descLower, "glue bomb", 1, true)
+        or string.find(descLower, "slows targets", 1, true)
+        or string.find(descLower, "slow targets", 1, true)
+        or string.find(descLower, "snare", 1, true)
+    then
+        return "snare"
+    end
     -- Resist potions / plant text (before generic "increases" / "armor").
     if string.find(descLower, "spirit resistance", 1, true)
         or string.find(descLower, "spirit resist", 1, true)
@@ -214,6 +224,12 @@ local function ClassifyFromDescription(description)
         if string.find(descLower, "armor", 1, true) or string.find(descLower, "armour", 1, true) then
             return "armor"
         end
+        if string.find(descLower, "glue bomb", 1, true)
+            or string.find(descLower, "slows", 1, true)
+            or string.find(descLower, "snare", 1, true)
+        then
+            return "snare"
+        end
     end
     return nil
 end
@@ -236,6 +252,9 @@ local function ClassifyFromName(name)
     if string.find(n, "brilliance", 1, true) then return "int" end
     if string.find(n, "discipline", 1, true) then return "wp" end
     if string.find(n, "securing", 1, true) then return "armor" end
+    if string.find(n, "strangulation", 1, true) or string.find(n, "glue", 1, true) then
+        return "snare"
+    end
     if string.find(n, "spirit screen", 1, true) or string.find(n, "spirit resist", 1, true) then
         return "rspi"
     end

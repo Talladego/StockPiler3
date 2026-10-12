@@ -319,6 +319,38 @@ local function TryWatchLiveCatchup(opts)
     end
 end
 
+--- One forced craftable recount per inventory snapGen (coalesced to end of frame).
+local function RequestForcedWatchRecount(_reason)
+    local Inv = StockPiler3.Inventory
+    local snapGen = Inv and Inv.GetSnapGen and tonumber(Inv.GetSnapGen()) or 0
+    if snapGen > 0 and Ui._forceRecountDoneSnapGen == snapGen then
+        return
+    end
+    Ui._forceRecountPendingSnapGen = snapGen
+    local FW = StockPiler3.FrameWork
+    local genKey = snapGen > 0 and snapGen or ((tonumber(Ui._forceRecountOnceGen) or 0) + 1)
+    Ui._forceRecountOnceGen = genKey
+    local function run()
+        local doneSnap = tonumber(Ui._forceRecountPendingSnapGen) or 0
+        if doneSnap > 0 and Ui._forceRecountDoneSnapGen == doneSnap then
+            return
+        end
+        if doneSnap > 0 then
+            Ui._forceRecountDoneSnapGen = doneSnap
+        end
+        TryWatchLiveCatchup({
+            ignoreDefer = true,
+            allowBrewHold = true,
+            forceRecount = true,
+        })
+    end
+    if FW and FW.StartOnce then
+        FW.StartOnce("ui-force-watch-recount", genKey, run)
+    else
+        run()
+    end
+end
+
 --- Rebuild Potions/Plants list after a structural knowledge learn.
 --- Brew-hold / plan-defer flushes used to clear dirty after PatchLiveHave only,
 --- so a newly learned potion stayed invisible until the user flipped tabs.
@@ -485,11 +517,15 @@ local function OnWatchUiDirty(payload)
     if StockPiler3TabWatch and StockPiler3TabWatch.InvalidateBrewChrome then
         StockPiler3TabWatch.InvalidateBrewChrome()
     end
-    TryWatchLiveCatchup({
-        ignoreDefer = true,
-        allowBrewHold = true,
-        forceRecount = payload.recount == true or payload.forceRecount == true,
-    })
+    if payload.recount == true or payload.forceRecount == true then
+        RequestForcedWatchRecount(payload.reason or "watch-ui-dirty")
+    else
+        TryWatchLiveCatchup({
+            ignoreDefer = true,
+            allowBrewHold = true,
+            forceRecount = false,
+        })
+    end
     TryCatalogLiveCatchup()
 end
 
@@ -502,11 +538,7 @@ local function OnBrewSessionChanged(payload)
         StockPiler3TabWatch.InvalidateBrewChrome()
     end
     if payload.recount == true or payload.forceRecount == true then
-        TryWatchLiveCatchup({
-            ignoreDefer = true,
-            allowBrewHold = true,
-            forceRecount = true,
-        })
+        RequestForcedWatchRecount(payload.reason or "brew-session")
     elseif DoesWindowExist("StockPiler3Window")
         and WindowGetShowing("StockPiler3Window") == true
         and StockPiler3TabWatch
@@ -667,12 +699,19 @@ function Ui.FlushWatchUiIfDirty()
         local snap = StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Get
             and StockPiler3.PlanSnapshot.Get()
         local planRows = type(snap) == "table" and snap.rows or nil
-        if type(planRows) == "table" and planRows ~= listData then
+        -- listData is a sorted copy of plan.rows; compare bound plan identity, not listData.
+        local boundPlanRows = StockPiler3TabWatch and StockPiler3TabWatch._boundPlanRows
+        if type(planRows) == "table" and planRows ~= boundPlanRows then
             if listEmpty and StockPiler3TabWatch and StockPiler3TabWatch.Refresh then
                 StockPiler3TabWatch.Refresh({ forcePlan = false, brewHold = true })
             elseif type(planRows) == "table" and #planRows > 0 and StockPiler3TabWatch then
-                -- Swap listData in place; keepVisible paint (no ListBoxSetDisplayOrder).
-                StockPiler3TabWatch.listData = planRows
+                -- Rebind sorted copy (never assign unsorted plan.rows as listData).
+                if StockPiler3TabWatch.BindSortedList then
+                    StockPiler3TabWatch.BindSortedList(planRows)
+                else
+                    StockPiler3TabWatch.listData = planRows
+                    StockPiler3TabWatch._boundPlanRows = planRows
+                end
                 if StockPiler3TabWatch.UpdateRows then
                     StockPiler3TabWatch.UpdateRows({ keepVisible = true })
                 end
@@ -693,12 +732,20 @@ function Ui.FlushWatchUiIfDirty()
             if StockPiler3.Planner.InvalidateCraftableStamps then
                 StockPiler3.Planner.InvalidateCraftableStamps(listData)
             end
-            StockPiler3.Planner.PatchWatchRowsLiveCounts(listData, {
+            -- Sorted listData shares row objects with plan.rows when bound; patch once.
+            local patchTarget = listData
+            if type(planRows) == "table" and boundPlanRows == planRows then
+                patchTarget = planRows
+            end
+            StockPiler3.Planner.PatchWatchRowsLiveCounts(patchTarget, {
                 allowWarmHave = true,
                 syncSnapshot = true,
                 forceRecountCraftable = true,
             })
-            if type(planRows) == "table" and planRows ~= listData then
+            if type(planRows) == "table"
+                and planRows ~= patchTarget
+                and boundPlanRows ~= planRows
+            then
                 StockPiler3.Planner.PatchWatchRowsLiveCounts(planRows, {
                     allowWarmHave = true,
                     syncSnapshot = true,
@@ -845,8 +892,9 @@ function Ui.RegisterEventRefresh()
     track(B.Subscribe(E.PLAN_INVALIDATED, markDirty))
     track(B.Subscribe(E.INVENTORY_SNAPSHOT, function()
         Ui.MarkWatchUiDirty()
-        -- Live paint when flush is allowed; storm/defer still coalesce.
-        TryWatchLiveCatchup({ forceRecount = true })
+        -- Cheap stock/status patch only; forced craftable recount is coalesced
+        -- from brew / craft-ready paths (avoids 6+ full WarmHave walks per brew).
+        TryWatchLiveCatchup({ forceRecount = false })
         TryCatalogLiveCatchup()
     end))
     if E.INVENTORY_DIRTY then
@@ -875,7 +923,9 @@ function Ui.RegisterEventRefresh()
     if E.CRAFT_READY_CHANGED then
         track(B.Subscribe(E.CRAFT_READY_CHANGED, function()
             Ui.RequestFooterRefresh()
-            OnWatchUiDirty({ immediate = true, recount = true })
+            -- Defer recount so we do not re-enter PatchWatchRowsLiveCounts mid-call.
+            RequestForcedWatchRecount("craft-ready")
+            Ui.MarkWatchUiDirty()
         end))
     end
     if E.FOOTER_DIRTY then

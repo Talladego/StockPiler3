@@ -26,6 +26,11 @@ Brew._job = nil
 Brew._loadSource = nil -- "auto" | "manual"
 -- Row Brew click: load then Perform once settle clears (one-click load+brew).
 Brew._performAfterManualLoad = false
+-- Honour deferred Perform even if the board was auto-loaded (click on loaded row).
+Brew._performAfterLoadIgnoreSource = false
+-- Absolute game-time expiry for deferred Perform (settle + TTL).
+Brew._performAfterLoadUntil = 0
+Brew.PERFORM_AFTER_LOAD_TTL_SEC = 5
 Brew._brewOpLockUntil = 0
 Brew._adoptBlockUntil = 0
 Brew._openFailLatched = false
@@ -674,6 +679,9 @@ local function FindCraftingBagItemBySpec(wantSpec, exemplarUid, reserved)
             return
         end
         local uid = tonumber(item.uniqueID) or 0
+        if uid > 0 and Brew.IsRejectedCraftUid and Brew.IsRejectedCraftUid(uid) == true then
+            return
+        end
         local growable = itemIsGrowable(item)
         local take = false
         if bestSlot <= 0 then
@@ -701,8 +709,9 @@ local function FindCraftingBagItemBySpec(wantSpec, exemplarUid, reserved)
         end
     end
 
-    if BA and BA.FetchLight and BA.IterateSlots then
-        local bags = BA.FetchLight()
+    if BA and BA.IterateSlots and (BA.FetchForce or BA.FetchLight) then
+        -- Force-refresh during load: stale craft indexes make AddCraftingItem no-op.
+        local bags = BA.FetchForce and BA.FetchForce() or BA.FetchLight()
         local craftBagType = "craft"
         -- Pass 1: craft bag
         for i = 1, #bags do
@@ -1012,6 +1021,8 @@ local function ClearSession(opts)
     Brew._job = nil
     Brew._loadSource = nil
     Brew._performAfterManualLoad = false
+    Brew._performAfterLoadIgnoreSource = false
+    Brew._performAfterLoadUntil = 0
     Brew._awaitingBrewComplete = false
     Brew._postBrewClearArmed = false
     Brew._brewHaveBefore = nil
@@ -1085,8 +1096,13 @@ end
 --- board-incomplete must wait settle too - GetSlottedItem lags after AddCraftingItem.
 local function ShouldAutoUnloadForEngine(why)
     why = tostring(why or "")
+    -- bad-craft-state often fires before missing-container-or-main when only a
+    -- vial is slotted (partial auto-load). Without unloading, phase stays loaded
+    -- forever and AutoBrew never retries the rest of the recipe.
     local gated = why == "board-incomplete"
         or why == "missing-container-or-main"
+        or why == "empty-board"
+        or string.find(why, "bad%-craft%-state", 1, false) == 1
         or string.find(why, "engine%-", 1, false) == 1
     if not gated then
         return false
@@ -1414,6 +1430,20 @@ local function BeginLoadJob(row, source)
     if source == "manual" then
         Brew.ClearOpenFailBackoff()
     end
+    -- Auto: refuse when craft bag has no free slot for inventory pulls.
+    -- (Potion output goes to the main bag — craft free is only for AddCraftingItem.)
+    if source ~= "manual" then
+        local backoffUntil = tonumber(Brew._autoLoadBackoffUntil) or 0
+        if backoffUntil > 0 and NowSec() < backoffUntil then
+            return false
+        end
+        local BA = StockPiler3.BagAdapter
+        local free = BA and BA.CraftBagFreeSlots and BA.CraftBagFreeSlots()
+        if type(free) == "number" and free < 1 then
+            LogBrew("load skip craft-bag-space free=" .. tostring(free))
+            return false
+        end
+    end
     -- Never stomp an in-flight or already-loaded board (Validate-fail used to
     -- fall through TryBrewClick into a second BeginLoadJob).
     -- Manual Load on a *different* watch: unload then load that recipe.
@@ -1596,11 +1626,71 @@ local function AbortIncompleteLoad(reason)
     LogBrew("load abort " .. reason)
     Brew._job = nil
     local a = AA()
-    if a and a.ClearSlots then
+    local session = GetSession()
+    -- CloseWindow ends the stealth apo session; ClearSlots alone leaves SkillType
+    -- stuck and AutoBrew clear-phase retries looping on not-addcontainer.
+    if a and a.CloseWindow then
+        a.CloseWindow(session)
+    elseif a and a.ClearSlots then
         a.ClearSlots()
     end
     ClearSession({ reason = reason })
+    -- Stop AutoBrew clear→flask→fail→clear thrash when a step cannot land.
+    Brew._autoLoadBackoffUntil = NowSec() + (tonumber(Brew.LOAD_ABORT_BACKOFF_SEC) or 4)
     ForceBrewUiRefresh()
+end
+
+function Brew.IsRejectedCraftUid(uid)
+    uid = tonumber(uid) or 0
+    local rejected = Brew._rejectedCraftUids
+    return uid > 0 and type(rejected) == "table" and rejected[uid] == true
+end
+
+--- Crafting chat: "Bad seed data... it has been lost" / "add main ingredient
+--- before other ingredients". The server destroyed the item just sent.
+--- Blacklist that main uid (stat twin the server will not slot) and stop.
+function Brew.OnCraftServerReject()
+    local uid = tonumber(Brew._lastIssuedUid) or 0
+    local role = tostring(Brew._lastIssuedRole or "")
+    local job = Brew._job
+    if type(job) == "table" and type(job.slots) == "table" then
+        local slot = job.slots[tonumber(job.index) or 1]
+        if type(slot) == "table" and slot.loadIssued == true then
+            uid = tonumber(slot.matchedUid) or uid
+            role = tostring(slot.role or role)
+            -- Stabilizer added before the main stuck: the broken item is the main.
+            if role ~= "main" then
+                for i = 1, #job.slots do
+                    local step = job.slots[i]
+                    if type(step) == "table" and tostring(step.role or "") == "main" then
+                        uid = tonumber(step.matchedUid) or uid
+                        role = "main"
+                        break
+                    end
+                end
+            end
+        end
+    end
+    local newly = false
+    if role == "main" and uid > 0 then
+        Brew._rejectedCraftUids = Brew._rejectedCraftUids or {}
+        if Brew._rejectedCraftUids[uid] ~= true then
+            Brew._rejectedCraftUids[uid] = true
+            newly = true
+            LogBrew("craft chat rejected main uid=" .. tostring(uid))
+        end
+    end
+    if newly then
+        local Planner = StockPiler3.Planner
+        if Planner and Planner.InvalidateHaveCacheAfterQuiet then
+            Planner.InvalidateHaveCacheAfterQuiet()
+        elseif Planner and Planner.InvalidateHaveWarm then
+            Planner.InvalidateHaveWarm()
+        end
+    end
+    if type(Brew._job) == "table" then
+        AbortIncompleteLoad("craft-chat-bad-seed")
+    end
 end
 
 local function AdvanceLoadJob()
@@ -1635,6 +1725,13 @@ local function AdvanceLoadJob()
                 and a.IsWindowOpen and a.IsWindowOpen() then
                 a.HideWindowOnly()
                 session._brewApoStealth = true
+            end
+            if a.SetSoftLocks then
+                a.SetSoftLocks(false)
+            end
+            -- Allow action-bar Apo again once headless open finished (not mid-SendInitCrafting).
+            if a.ClearEngineShowSuppress then
+                a.ClearEngineShowSuppress()
             end
             job.phase = "clear"
             job.waitTicks = 0
@@ -1672,7 +1769,29 @@ local function AdvanceLoadJob()
             end
             if job.waitTicks > CLEAR_WAIT_TICKS then
                 LogBrew("load abort clear-timeout")
+                if a.CloseWindow then
+                    a.CloseWindow(GetSession())
+                end
                 ClearSession({ reason = "clear-timeout" })
+                Brew._autoLoadBackoffUntil = NowSec() + (tonumber(Brew.LOAD_ABORT_BACKOFF_SEC) or 4)
+                return false
+            end
+            return true
+        end
+        -- Only start load from ADDCONTAINER. Loading into leftover VALID_RECIPE
+        -- rejects later AddCraftingItem after the flask (SP1 SessionReadyToFill).
+        -- Do not spam ClearSlots here when the board is already empty — that
+        -- fights a concurrent AutoBrew restart and flickers the flask.
+        local cs = GameData and GameData.CraftingStates
+        local st = a.CraftingState and a.CraftingState()
+        if cs and st ~= nil and st ~= cs.ADDCONTAINER then
+            if job.waitTicks > CLEAR_WAIT_TICKS then
+                LogBrew("load abort not-addcontainer state=" .. tostring(st))
+                if a.CloseWindow then
+                    a.CloseWindow(GetSession())
+                end
+                ClearSession({ reason = "not-addcontainer" })
+                Brew._autoLoadBackoffUntil = NowSec() + (tonumber(Brew.LOAD_ABORT_BACKOFF_SEC) or 4)
                 return false
             end
             return true
@@ -1680,27 +1799,30 @@ local function AdvanceLoadJob()
         job.phase = "load"
         job.index = 1
         job.waitTicks = 0
+        job.reserved = {}
+        if a.SetSoftLocks then
+            a.SetSoftLocks(false)
+        end
         return true
     end
     if phase == "load" then
+        local STEP_WAIT = tonumber(Brew.LOAD_STEP_WAIT_TICKS) or 60
         local slots = job.slots
         local idx = tonumber(job.index) or 1
         if type(slots) ~= "table" or idx > #slots then
-            -- All recipe steps were AddItem'd (a miss aborts above). Do not sync-check
-            -- GetSlottedItem here - engine bag/board lag one or more frames after Add,
-            -- which falsely aborted complete loads as load-incomplete.
-            Brew._job = nil
-            SetSessionPhase("loaded", "load-done")
-            local session = GetSession()
-            session.phase = "loaded"
-            Brew._loadSettleUntil = NowSec() + (tonumber(Brew.LOAD_SETTLE_SEC) or 0.75)
-            ForceBrewUiRefresh()
+            job.phase = "verify"
+            job.waitTicks = 0
             return true
         end
         -- First load tick: dry-run every step so a mid-recipe miss never partial-fills.
         if idx == 1 and job.preflightDone ~= true then
             job.preflightDone = true
+            if a.SetSoftLocks then
+                a.SetSoftLocks(false)
+            end
             local reserved = {}
+            local needFromInv = 0
+            local craftType = (EA_Window_Backpack and EA_Window_Backpack.TYPE_CRAFTING) or 4
             for i = 1, #slots do
                 local pre = slots[i]
                 if type(pre) == "table" then
@@ -1720,16 +1842,154 @@ local function AdvanceLoadJob()
                         AbortIncompleteLoad("preflight-miss-" .. tostring(pre.role or "?"))
                         return false
                     end
+                    if (tonumber(bagType) or craftType) ~= craftType then
+                        needFromInv = needFromInv + 1
+                    end
                     local rkey = tostring(bagType or 0) .. ":" .. tostring(bagSlot)
                     reserved[rkey] = (tonumber(reserved[rkey]) or 0) + 1
                 end
             end
+            local BA = StockPiler3.BagAdapter
+            local free = BA and BA.CraftBagFreeSlots and BA.CraftBagFreeSlots()
+            if type(free) == "number" and needFromInv > free then
+                LogBrew(string.format(
+                    "load preflight craft-bag-space need=%s free=%s - abort",
+                    tostring(needFromInv), tostring(free)
+                ))
+                AbortIncompleteLoad("craft-bag-space")
+                return false
+            end
         end
+
         local slot = slots[idx]
-        job.index = idx + 1
         if type(slot) ~= "table" then
+            job.index = idx + 1
             return true
         end
+
+        local function StepCraftSlot(step)
+            local craftSlot = tonumber(step.craftingSlot)
+            if craftSlot == nil then
+                craftSlot = tonumber(step.craftSlot) or tonumber(step.index)
+            end
+            if craftSlot == nil and step.role == "container" then
+                craftSlot = 0
+            end
+            return craftSlot
+        end
+
+        local function UnreserveStep(step)
+            if type(step) ~= "table" or type(job.reserved) ~= "table" then
+                return
+            end
+            local bagSlot = tonumber(step.bagSlot) or 0
+            local bagType = tonumber(step.bagType)
+            if bagSlot <= 0 or bagType == nil then
+                return
+            end
+            local rkey = tostring(bagType) .. ":" .. tostring(bagSlot)
+            local used = tonumber(job.reserved[rkey]) or 0
+            if used <= 1 then
+                job.reserved[rkey] = nil
+            else
+                job.reserved[rkey] = used - 1
+            end
+            step.bagSlot = nil
+            step.bagType = nil
+        end
+
+        -- Confirm prior issued add landed before advancing (SP1 StepSatisfied).
+        -- Firing the next AddCraftingItem before the server accepts the previous
+        -- one is silently rejected — board stuck with vial-only.
+        local function StepLanded(step)
+            if type(step) ~= "table" then
+                return false
+            end
+            local craftSlot = StepCraftSlot(step)
+            if craftSlot ~= nil and a.GetSlottedItem and a.GetSlottedItem(craftSlot) ~= nil then
+                return true
+            end
+            -- Only trust crafting-state shortcuts after this job issued the add
+            -- (SP1); leftover VALID_RECIPE must not skip a real slot fill.
+            if step.loadIssued ~= true then
+                return false
+            end
+            local cs = GameData and GameData.CraftingStates
+            local st = a.CraftingState and a.CraftingState()
+            if cs == nil or st == nil then
+                return false
+            end
+            local role = tostring(step.role or "")
+            if role == "container" and st >= (cs.ADDDETERMINENT or 1) then
+                return true
+            end
+            if role == "main" and st >= (cs.ADDINGREDIENT or 2) then
+                return true
+            end
+            return false
+        end
+
+        if slot.loadIssued == true then
+            if StepLanded(slot) then
+                -- Reserve bag qty only once the engine accepted the pull.
+                if type(job.reserved) ~= "table" then
+                    job.reserved = {}
+                end
+                local bagSlot = tonumber(slot.bagSlot) or 0
+                local bagType = tonumber(slot.bagType)
+                if bagSlot > 0 and bagType ~= nil and slot.reservedOk ~= true then
+                    local rkey = tostring(bagType) .. ":" .. tostring(bagSlot)
+                    job.reserved[rkey] = (tonumber(job.reserved[rkey]) or 0) + 1
+                    slot.reservedOk = true
+                end
+                LogBrew(string.format(
+                    "load confirmed role=%s craftSlot=%s",
+                    tostring(slot.role), tostring(StepCraftSlot(slot))
+                ))
+                job.index = idx + 1
+                job.waitTicks = 0
+                slot.retryCount = 0
+                return true
+            end
+            job.waitTicks = (tonumber(job.waitTicks) or 0) + 1
+            if job.waitTicks > 0 and (job.waitTicks % 15) == 0 and job.waitTicks < STEP_WAIT then
+                local retries = (tonumber(slot.retryCount) or 0) + 1
+                slot.retryCount = retries
+                if retries > 4 then
+                    AbortIncompleteLoad("load-step-timeout-" .. tostring(slot.role or "?"))
+                    return false
+                end
+                LogBrew(string.format(
+                    "load retry role=%s retry=%s state=%s bagWas=%s:%s",
+                    tostring(slot.role), tostring(retries),
+                    tostring(a.CraftingState and a.CraftingState()),
+                    tostring(slot.bagType), tostring(slot.bagSlot)
+                ))
+                -- Free the pending claim so craft-bag stacks stay eligible
+                -- (reserving before land forced inventory retries that no-op).
+                UnreserveStep(slot)
+                slot.loadIssued = false
+                slot.reservedOk = false
+                if type(ApothecaryWindow) == "table" and type(ApothecaryWindow.clientSlotList) == "table" then
+                    local cs = StepCraftSlot(slot)
+                    if cs ~= nil then
+                        ApothecaryWindow.clientSlotList[cs] = nil
+                    end
+                end
+            end
+            if job.waitTicks > STEP_WAIT then
+                AbortIncompleteLoad("load-step-timeout-" .. tostring(slot.role or "?"))
+                return false
+            end
+            return true
+        end
+
+        -- Soft locks down for the pull; do not ReleaseAllLocks (can disturb board).
+        if a.SetSoftLocks then
+            a.SetSoftLocks(false)
+        end
+
+        local role = tostring(slot.role or "")
         local exemplarUid = tonumber(slot.uniqueID) or tonumber(slot.uid) or 0
         local want = slot.spec
         if type(want) ~= "table" and StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.ResolveSlotSpec then
@@ -1740,13 +2000,7 @@ local function AdvanceLoadJob()
         end
         local bagSlot, item, bagType, matchedUid = FindCraftingBagItemBySpec(want, exemplarUid, job.reserved)
         if bagSlot > 0 and a.AddItemToCrafting then
-            local craftSlot = tonumber(slot.craftingSlot)
-            if craftSlot == nil then
-                craftSlot = tonumber(slot.craftSlot) or tonumber(slot.index)
-            end
-            if craftSlot == nil and slot.role == "container" then
-                craftSlot = 0
-            end
+            local craftSlot = StepCraftSlot(slot)
             local added = a.AddItemToCrafting(craftSlot, bagSlot, bagType)
             if added ~= true then
                 LogBrew(string.format(
@@ -1756,18 +2010,26 @@ local function AdvanceLoadJob()
                 AbortIncompleteLoad("load-add-fail-" .. tostring(slot.role or "?"))
                 return false
             end
-            local rkey = tostring(bagType or 0) .. ":" .. tostring(bagSlot)
-            job.reserved[rkey] = (tonumber(job.reserved[rkey]) or 0) + 1
+            slot.loadIssued = true
+            slot.bagSlot = bagSlot
+            slot.bagType = bagType
+            slot.matchedUid = tonumber(matchedUid) or tonumber(item and item.uniqueID) or 0
+            slot.reservedOk = false
+            Brew._lastIssuedUid = slot.matchedUid
+            Brew._lastIssuedRole = role
+            -- Do not reserve until StepLanded — a failed land must not block
+            -- the craft-bag stack and force a doomed inventory retry.
+            job.waitTicks = 0
             LogBrew(string.format(
-                "load add role=%s exemplar=%s matchedUid=%s bag=%s craftSlot=%s",
-                tostring(slot.role),
+                "load issued role=%s exemplar=%s matchedUid=%s bag=%s bagType=%s craftSlot=%s",
+                role,
                 tostring(exemplarUid),
                 tostring(matchedUid or (item and item.uniqueID) or 0),
                 tostring(bagSlot),
+                tostring(bagType),
                 tostring(craftSlot)
             ))
         else
-            -- Missing any saved recipe slot -> abort (do not invent a stable partial board).
             LogBrew(string.format(
                 "load miss role=%s exemplar=%s - abort exact recipe load",
                 tostring(slot.role), tostring(exemplarUid)
@@ -1777,12 +2039,40 @@ local function AdvanceLoadJob()
         end
         return true
     end
+    if phase == "verify" then
+        local VERIFY_WAIT_TICKS = tonumber(Brew.LOAD_VERIFY_TICKS) or 12
+        job.waitTicks = (tonumber(job.waitTicks) or 0) + 1
+        local recipe = job.recipe
+        if BoardCoversRecipe(recipe) == true then
+            Brew._job = nil
+            if a.SetSoftLocks then
+                a.SetSoftLocks(true)
+            end
+            SetSessionPhase("loaded", "load-verified")
+            local session = GetSession()
+            session.phase = "loaded"
+            Brew._loadSettleUntil = NowSec() + (tonumber(Brew.LOAD_SETTLE_SEC) or 0.75)
+            ForceBrewUiRefresh()
+            return true
+        end
+        if job.waitTicks > VERIFY_WAIT_TICKS then
+            LogBrew("load verify fail board-incomplete after "
+                .. tostring(job.waitTicks) .. " ticks")
+            AbortIncompleteLoad("load-board-incomplete")
+            return false
+        end
+        return true
+    end
     return false
 end
 
 local function KickLoadJob()
+    -- Only nudge open/clear; never double-issue AddCraftingItem in one frame.
     AdvanceLoadJob()
-    AdvanceLoadJob()
+    local job = Brew._job
+    if type(job) == "table" and tostring(job.phase or "") ~= "load" then
+        AdvanceLoadJob()
+    end
 end
 
 ----------------------------------------------------------------
@@ -1807,6 +2097,12 @@ function Brew.BeginForRow(row, opts)
     if BeginLoadJob(row, source) then
         if opts.performAfter == true and source == "manual" then
             Brew._performAfterManualLoad = true
+            Brew._performAfterLoadIgnoreSource = false
+            local now = 0
+            if type(GetGameTime) == "function" then
+                now = tonumber(GetGameTime()) or 0
+            end
+            Brew._performAfterLoadUntil = now + (tonumber(Brew.PERFORM_AFTER_LOAD_TTL_SEC) or 5)
         end
         Brew.ArmWatchUiHold()
         KickLoadJob()
@@ -1860,6 +2156,13 @@ function Brew.OnRowCraftClick(row)
     if tostring(session.phase or "") == "loaded" and sameRow then
         if InLoadSettle() then
             Brew._performAfterManualLoad = true
+            -- Click on an auto-loaded board must still Perform after settle.
+            Brew._performAfterLoadIgnoreSource = true
+            local now = 0
+            if type(GetGameTime) == "function" then
+                now = tonumber(GetGameTime()) or 0
+            end
+            Brew._performAfterLoadUntil = now + (tonumber(Brew.PERFORM_AFTER_LOAD_TTL_SEC) or 5)
             return true
         end
         local ok = Brew.TryPerform(nil)
@@ -1908,6 +2211,11 @@ local function PerformBlockReason()
     if a.ServerHasItems and a.ServerHasItems() ~= true then
         return "empty-board"
     end
+    -- Prefer concrete board gaps over generic craft-state (partial loads often
+    -- report not-brewable while only the container is present).
+    if not BoardHasContainerAndMain() then
+        return "missing-container-or-main"
+    end
     if a.IsBrewableCraftState and a.IsBrewableCraftState() ~= true then
         return "bad-craft-state:" .. tostring(a.CraftingState and a.CraftingState() or "?")
     end
@@ -1920,9 +2228,6 @@ local function PerformBlockReason()
             return "engine-will-fail:" .. tostring(chance)
         end
         return "engine-chance-unusable:" .. tostring(chance)
-    end
-    if not BoardHasContainerAndMain() then
-        return "missing-container-or-main"
     end
     local session = GetSession()
     local recipe = session and session.recipe
@@ -2196,10 +2501,21 @@ function Brew.MaybeAutoPerformReady()
     return ok == true
 end
 
---- Row Brew button: after manual load settles, Perform once (one-click load+brew).
+--- Row Brew button: after load settles, Perform once (one-click load+brew).
 --- BoardReadyToAutoPerform is auto-source only; use PerformBlockReason here.
 function Brew.MaybePerformAfterManualLoad()
     if Brew._performAfterManualLoad ~= true then
+        return false
+    end
+    local now = 0
+    if type(GetGameTime) == "function" then
+        now = tonumber(GetGameTime()) or 0
+    end
+    local untilT = tonumber(Brew._performAfterLoadUntil) or 0
+    if untilT > 0 and now > untilT then
+        Brew._performAfterManualLoad = false
+        Brew._performAfterLoadIgnoreSource = false
+        Brew._performAfterLoadUntil = 0
         return false
     end
     if type(Brew._job) == "table" then
@@ -2212,8 +2528,10 @@ function Brew.MaybePerformAfterManualLoad()
     if tostring(session.phase or "") ~= "loaded" then
         return false
     end
-    if Brew._loadSource ~= "manual" then
+    if Brew._loadSource ~= "manual" and Brew._performAfterLoadIgnoreSource ~= true then
         Brew._performAfterManualLoad = false
+        Brew._performAfterLoadIgnoreSource = false
+        Brew._performAfterLoadUntil = 0
         return false
     end
     if Brew.IsBusy() then
@@ -2226,9 +2544,12 @@ function Brew.MaybePerformAfterManualLoad()
             Brew.ClearLoadedSession({ reason = why })
             ForceBrewUiRefresh()
         end
+        -- Non-unload blocks (performing / empty-board / …): keep armed until TTL.
         return false
     end
     Brew._performAfterManualLoad = false
+    Brew._performAfterLoadIgnoreSource = false
+    Brew._performAfterLoadUntil = 0
     local ok = Brew.TryPerform(nil)
     if ok == true then
         LogBrew("manual-perform-after-load")
@@ -2358,15 +2679,24 @@ local function SyncWatchLiveCountsAfterBrew()
     local PS = StockPiler3.PlanSnapshot
     local plan = PS and PS.Get and PS.Get()
     local planRows = type(plan) == "table" and plan.rows or nil
+    local boundPlanRows = StockPiler3TabWatch and StockPiler3TabWatch._boundPlanRows
     local patchOpts = {
         syncSnapshot = true,
         allowWarmHave = true,
         forceRecountCraftable = true,
     }
+    -- When Watch listData is a sorted copy of plan.rows, row objects are shared:
+    -- patch plan.rows once (avoids double full recount).
     if type(planRows) == "table" and Planner.PatchWatchRowsLiveCounts then
         Planner.PatchWatchRowsLiveCounts(planRows, patchOpts)
+    elseif type(listData) == "table" and Planner.PatchWatchRowsLiveCounts then
+        Planner.PatchWatchRowsLiveCounts(listData, patchOpts)
     end
-    if type(listData) == "table" and listData ~= planRows and Planner.PatchWatchRowsLiveCounts then
+    if type(listData) == "table"
+        and listData ~= planRows
+        and boundPlanRows ~= planRows
+        and Planner.PatchWatchRowsLiveCounts
+    then
         Planner.PatchWatchRowsLiveCounts(listData, patchOpts)
     end
     -- Optimistic craftable on the session row when bags have not snapped yet.

@@ -1940,6 +1940,7 @@ local function InvalidateFocusCaches()
     Planner._demandCacheKey = nil
     Planner._craftBagFull = nil
     Planner._craftBagFullSnap = nil
+    Planner._craftBagFreeCached = nil
 end
 
 ----------------------------------------------------------------
@@ -2583,16 +2584,26 @@ local function ApplyStockedStatus(row)
     row.craftableShared = false
 end
 
---- Craft bag has no free slots (brew output / harvest cannot land).
+--- Craft bag too tight for brew load (need a free slot to pull inventory mats).
+--- Potion products land in the main bag — do not reserve craft space for output.
+--- Cache by snap + live free count so freeing slots is not stuck on an old snap.
 local function IsCraftBagFullCached()
+    local BA = StockPiler3.BagAdapter
+    local free = BA and BA.CraftBagFreeSlots and tonumber(BA.CraftBagFreeSlots()) or nil
     local Inv = StockPiler3.Inventory
     local snap = Inv and Inv.GetSnapGen and Inv.GetSnapGen() or 0
-    if Planner._craftBagFullSnap == snap and Planner._craftBagFull ~= nil then
+    if Planner._craftBagFullSnap == snap
+        and Planner._craftBagFreeCached == free
+        and Planner._craftBagFull ~= nil
+    then
         return Planner._craftBagFull == true
     end
-    local BA = StockPiler3.BagAdapter
     local full = BA and BA.IsCraftBagFull and BA.IsCraftBagFull() == true
+    if full ~= true and free ~= nil and free < 1 then
+        full = true
+    end
     Planner._craftBagFullSnap = snap
+    Planner._craftBagFreeCached = free
     Planner._craftBagFull = full
     return full
 end
@@ -2637,6 +2648,11 @@ local function ApplySpecPlanStatus(row, target, recipe, demand)
     if covered then
         if SeedBufferShort(recipe, target.potionKey, row) then
             ApplySeedBufferStatus(row)
+            return
+        end
+        -- Bags cover the brew but craft bag is too tight to load from inventory.
+        if IsCraftBagFullCached() then
+            ApplyCraftBagFullStatus(row)
             return
         end
         ApplyReadyStatus(row)
@@ -2883,6 +2899,8 @@ local function ApplyLiveWatchStatus(row, recipe, deficit, have, craftable, targe
         elseif key == "buy_ingredients" and row.craftableShared == true then
             -- Shared buy-only paint; PolishSharedContest refreshes flasks vs Ready.
             return
+        elseif IsCraftBagFullCached() then
+            ApplyCraftBagFullStatus(row)
         else
             ApplyReadyStatus(row)
             ApplyNeedApothecaryStatus(row)
@@ -3258,12 +3276,17 @@ local function PolishWatchRowsStatus(rows)
             local target = tonumber(row.potionMin) or tonumber(row.target) or 0
             local covered = target > 0 and (have + craftable) >= target
             local key = tostring(row.statusKey or "")
-            -- Ready only when bags+craftable cover the target.
+            -- Ready only when bags+craftable cover the target and craft bag can load.
             if craftable > 0 and covered
                 and (key == "buy_ingredients" or key == "restocking" or key == "craft_bag_full")
             then
-                ApplyReadyStatus(row)
-                key = "ready_to_craft"
+                if IsCraftBagFullCached() then
+                    ApplyCraftBagFullStatus(row)
+                    key = "craft_bag_full"
+                else
+                    ApplyReadyStatus(row)
+                    key = "ready_to_craft"
+                end
             end
             -- Uncovered Ready (partial craftable / race) -> Enable AutoGrow / Restocking / Buy.
             if (not covered or craftable <= 0)
@@ -3276,6 +3299,13 @@ local function PolishWatchRowsStatus(rows)
                 end
                 key = tostring(row.statusKey or "")
             end
+            -- Covered Ready stuck while craft bag is too tight to pull inventory mats.
+            if (key == "ready_to_craft" or key == "ready_to_craft_shared")
+                and covered and craftable > 0 and IsCraftBagFullCached()
+            then
+                ApplyCraftBagFullStatus(row)
+                key = "craft_bag_full"
+            end
             -- Stale Enable AutoGrow / Restocking / craft-bag-full after toggles change.
             if key == "enable_autogrow" or key == "restocking" or key == "craft_bag_full" then
                 if covered then
@@ -3286,7 +3316,11 @@ local function PolishWatchRowsStatus(rows)
                             ApplyStockedStatus(row)
                         end
                     elseif craftable > 0 then
-                        ApplyReadyStatus(row)
+                        if IsCraftBagFullCached() then
+                            ApplyCraftBagFullStatus(row)
+                        else
+                            ApplyReadyStatus(row)
+                        end
                     elseif IsCraftBagFullCached() then
                         ApplyCraftBagFullStatus(row)
                     else
@@ -4050,9 +4084,12 @@ local function PatchWatchRowsLiveCounts(rows, opts)
             if forceRecountCraftable then
                 Planner._forceWarmHave = true
             end
-            WarmSpecHaveCacheForWatches()
+            -- Always clear the force flag even if WarmHave errors.
+            local ok = pcall(WarmSpecHaveCacheForWatches)
             Planner._forceWarmHave = nil
-            haveWarm = IsHaveCacheWarmForSnap()
+            if ok then
+                haveWarm = IsHaveCacheWarmForSnap()
+            end
         end
     end
     -- Prefer warm cache; force path still recounts after WarmHave attempt.
@@ -4282,16 +4319,18 @@ local function PatchWatchRowsLiveCounts(rows, opts)
             end
         end
     end
+    local craftReadyBrew = nil
+    local craftReadyBefore = nil
     if needSharedPolish then
-        local Brew = StockPiler3.Brew
-        local beforeReady = Brew and Brew.HasReadyToCraft and Brew.HasReadyToCraft() == true
+        craftReadyBrew = StockPiler3.Brew
+        craftReadyBefore = craftReadyBrew and craftReadyBrew.HasReadyToCraft
+            and craftReadyBrew.HasReadyToCraft() == true
         if PolishSharedContest(rows) then
             InvalidateFocusCaches()
         end
-        if Brew and Brew.InvalidateCanBrewCache then
-            Brew.InvalidateCanBrewCache()
+        if craftReadyBrew and craftReadyBrew.InvalidateCanBrewCache then
+            craftReadyBrew.InvalidateCanBrewCache()
         end
-        local afterReady = Brew and Brew.HasReadyToCraft and Brew.HasReadyToCraft() == true
         if syncSnapshot then
             for i = 1, #rows do
                 local row = rows[i]
@@ -4299,21 +4338,6 @@ local function PatchWatchRowsLiveCounts(rows, opts)
                     PatchPlanSnapshotLiveStatus(row)
                 end
             end
-        end
-        if beforeReady ~= afterReady then
-            local Bus = StockPiler3.EventBus
-            local E = StockPiler3.Events
-            if Bus and Bus.Fire and E and E.CRAFT_READY_CHANGED then
-                Bus.Fire(E.CRAFT_READY_CHANGED, { ready = afterReady == true })
-            end
-            if Bus and Bus.FireFooterDirty then
-                Bus.FireFooterDirty({ reason = "craft-ready" })
-            elseif StockPiler3.Ui and StockPiler3.Ui.RequestFooterRefresh then
-                StockPiler3.Ui.RequestFooterRefresh()
-            end
-        end
-        if Brew and Brew.MaybeNotifyBrewReady then
-            Brew.MaybeNotifyBrewReady()
         end
     end
     for i = 1, #rows do
@@ -4337,6 +4361,26 @@ local function PatchWatchRowsLiveCounts(rows, opts)
             Bus.FireFooterDirty({ reason = "seed-buffer" })
         elseif StockPiler3.Ui and StockPiler3.Ui.RequestFooterRefresh then
             StockPiler3.Ui.RequestFooterRefresh()
+        end
+    end
+    -- Fire CRAFT_READY_CHANGED only after stamps/propagate (no mid-patch re-entry).
+    if needSharedPolish and craftReadyBrew then
+        local afterReady = craftReadyBrew.HasReadyToCraft
+            and craftReadyBrew.HasReadyToCraft() == true
+        if craftReadyBefore ~= afterReady then
+            local Bus = StockPiler3.EventBus
+            local E = StockPiler3.Events
+            if Bus and Bus.Fire and E and E.CRAFT_READY_CHANGED then
+                Bus.Fire(E.CRAFT_READY_CHANGED, { ready = afterReady == true })
+            end
+            if Bus and Bus.FireFooterDirty then
+                Bus.FireFooterDirty({ reason = "craft-ready" })
+            elseif StockPiler3.Ui and StockPiler3.Ui.RequestFooterRefresh then
+                StockPiler3.Ui.RequestFooterRefresh()
+            end
+        end
+        if craftReadyBrew.MaybeNotifyBrewReady then
+            craftReadyBrew.MaybeNotifyBrewReady()
         end
     end
     if StockPiler3.Grow and StockPiler3.Grow.MaybeNotifyAutoGrowStall then

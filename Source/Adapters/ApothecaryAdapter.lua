@@ -289,6 +289,14 @@ local function PlaceApoOnScreen()
     end
 end
 
+function AA.UnparkApoRoot()
+    UnparkApoRoot()
+end
+
+function AA.PlaceApoOnScreen()
+    PlaceApoOnScreen()
+end
+
 function AA.ParkApoRoot()
     if AA._playerWantsApo == true then
         return false
@@ -314,17 +322,55 @@ function AA.ParkApoRoot()
     return true
 end
 
+--- True while SP3 should ignore engine CRAFTING_SHOW_WINDOW echoes from SendInitCrafting.
+local function EngineShowSuppressed()
+    if AA._sp3Opening == true or AA._suppressEngineShow == true then
+        return true
+    end
+    local untilT = tonumber(AA._suppressEngineShowUntil) or 0
+    if untilT <= 0 then
+        return false
+    end
+    local now = 0
+    if type(GetGameTime) == "function" then
+        now = tonumber(GetGameTime()) or 0
+    end
+    if now <= untilT then
+        return true
+    end
+    AA._suppressEngineShowUntil = 0
+    return false
+end
+
+local function ArmEngineShowSuppress(sec)
+    AA._suppressEngineShow = true
+    local now = 0
+    if type(GetGameTime) == "function" then
+        now = tonumber(GetGameTime()) or 0
+    end
+    AA._suppressEngineShowUntil = now + (tonumber(sec) or 2)
+end
+
+function AA.ClearEngineShowSuppress()
+    AA._suppressEngineShow = false
+    AA._suppressEngineShowUntil = 0
+end
+
 function AA.InstallStealthHooks()
     if CraftingSystem and type(CraftingSystem.ToggleShowing) == "function" and not AA._origToggleShowing then
         AA._origToggleShowing = CraftingSystem.ToggleShowing
         CraftingSystem.ToggleShowing = function(tradeSkill)
-            if AA._sp3Opening == true then
-                return AA._origToggleShowing(tradeSkill)
-            end
             local apo = AA.TradeSkill()
             local isApo = tradeSkill == nil or tradeSkill == apo
+            -- Headless open: never run stock ShowCurrentWindow (on-screen + backpack).
+            if isApo and EngineShowSuppressed() then
+                return
+            end
+            -- Parked stealth brew: action-bar ability brings Apo on-screen.
+            -- Do not treat late CRAFTING_SHOW_WINDOW echoes as player intent while suppressed.
             if isApo and AA._apoParked == true then
                 AA._playerWantsApo = true
+                AA.ClearEngineShowSuppress()
                 PlaceApoOnScreen()
                 local name = ApoRootName()
                 if type(DoesWindowExist) == "function"
@@ -353,6 +399,7 @@ end
 
 function AA.EndStealthUi()
     AA._sp3Opening = false
+    AA.ClearEngineShowSuppress()
     AA._playerWantsApo = false
     UnparkApoRoot()
 end
@@ -384,16 +431,20 @@ function AA.InitHeadlessSession()
     if CraftingSystem and type(CraftingSystem.SetStaticData) == "function" then
         TryQuiet("SetStaticData", CraftingSystem.SetStaticData)
     end
+    -- Park first so the required "real show" for SkillType never paints on-screen.
+    AA.ParkApoRoot()
     ShowApoRootVisible()
-    if type(ApothecaryWindow) == "table" and type(ApothecaryWindow.Show) == "function" then
-        -- SendInitCrafting + soft locks only (no backpack).
-        TryQuiet("ApothecaryWindow.Show", ApothecaryWindow.Show)
-    elseif type(SendInitCrafting) == "function" then
+    -- Prefer SendInitCrafting without ApothecaryWindow.Show: Show() enables soft
+    -- locks that make AddCraftingItem no-op for mains/ingredients (container still
+    -- works). Soft locks stay off for headless brew load.
+    if type(SendInitCrafting) == "function" then
         TryCall("SendInitCrafting", SendInitCrafting, apo)
-        AA.SetSoftLocks(true)
-    else
-        AA.SetSoftLocks(true)
+    elseif type(ApothecaryWindow) == "table" and type(ApothecaryWindow.Show) == "function" then
+        TryQuiet("ApothecaryWindow.Show", ApothecaryWindow.Show)
     end
+    AA.SetSoftLocks(false)
+    -- Re-park: engine CRAFTING_SHOW_WINDOW / SetStateData can reset anchors.
+    AA.ParkApoRoot()
 end
 
 function AA.HideWindowOnly()
@@ -430,6 +481,16 @@ function AA.OpenWindow(session)
         session._brewApoStealth = false
     end
 
+    -- Already stealth-active: do not re-show (OpenWindow retries must not flash).
+    if AA.IsCraftingSessionActive() == true and AA._apoParked == true then
+        if session then
+            session._brewApoStealth = true
+        end
+        AA.ParkApoRoot()
+        return true
+    end
+
+    ArmEngineShowSuppress(2.5)
     AA._sp3Opening = true
     AA.InitHeadlessSession()
     AA._sp3Opening = false
@@ -450,6 +511,7 @@ function AA.CloseWindow(session)
 
     AA.ClearSlots()
     AA.ReleaseBackpackLocks()
+    AA.ClearEngineShowSuppress()
 
     if session then
         session._brewOpenedApo = false
@@ -499,26 +561,47 @@ function AA.AddItemToCrafting(craftSlot, bagSlot, bagType)
     if bagSlot <= 0 or type(AddCraftingItem) ~= "function" then
         return false
     end
-    -- Container slot 0 uses AddCraftingContainer when available.
-    if craftSlot == 0 or craftSlot == nil then
+    bagType = tonumber(bagType) or AA.CraftingBackpackType()
+    -- Stock ApothecaryWindow.AddItem stamps clientSlotList before the engine
+    -- call; without it AddCraftingItem often no-ops while pcall still succeeds.
+    if type(ApothecaryWindow) == "table" then
+        if type(ApothecaryWindow.clientSlotList) ~= "table" then
+            ApothecaryWindow.clientSlotList = {}
+        end
+        if craftSlot ~= nil then
+            ApothecaryWindow.clientSlotList[craftSlot] = {
+                slot = bagSlot,
+                backpack = bagType,
+            }
+        end
+    end
+    -- Container is slot 0 only. Nil craftSlot used to fall through to
+    -- AddCraftingContainer and silently "succeed" for mains/stabs.
+    if craftSlot == 0 then
         if type(AddCraftingContainer) == "function" then
             return TryCall(
                 "AddCraftingContainer",
                 AddCraftingContainer,
                 AA.TradeSkill(),
                 bagSlot,
-                bagType or AA.CraftingBackpackType()
+                bagType
             ) == true
         end
-        craftSlot = 0
+    elseif craftSlot == nil then
+        return false
     end
+    -- Soft locks from ApothecaryWindow.Show / a prior container add make
+    -- AddCraftingItem no-op for mains/ingredients while AddCraftingContainer
+    -- still works. Only clear soft locks — ReleaseAllLocks mid-load can
+    -- disturb the board (flask flicker) without helping the add.
+    AA.SetSoftLocks(false)
     return TryCall(
         "AddCraftingItem",
         AddCraftingItem,
         AA.TradeSkill(),
         craftSlot,
         bagSlot,
-        bagType or AA.CraftingBackpackType()
+        bagType
     ) == true
 end
 

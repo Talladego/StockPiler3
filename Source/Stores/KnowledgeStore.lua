@@ -76,15 +76,19 @@ function Know.ValidateAndRepairSavedData()
             report.itemsStamped = tonumber(ir.stamped) or 0
         end
     end
+    local repairReport = nil
     if StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.ValidateAndRepairSavedRecipes then
-        local rr = StockPiler3.RecipeSpec.ValidateAndRepairSavedRecipes()
-        if type(rr) == "table" then
-            report.recipesMerged = tonumber(rr.merged) or 0
-            report.recipesRemapped = tonumber(rr.remapped) or 0
-            report.recipesDropped = tonumber(rr.dropped) or 0
-            report.potionsDropped = tonumber(rr.potionsDropped) or 0
-            report.watchesDropped = tonumber(rr.watchesDropped) or 0
-            report.scrubbed = tonumber(rr.scrubbed) or 0
+        repairReport = StockPiler3.RecipeSpec.ValidateAndRepairSavedRecipes()
+        if type(repairReport) == "table" then
+            report.recipesMerged = tonumber(repairReport.merged) or 0
+            report.recipesRemapped = tonumber(repairReport.remapped) or 0
+            report.recipesDropped = tonumber(repairReport.dropped) or 0
+            report.potionsDropped = tonumber(repairReport.potionsDropped) or 0
+            report.watchesDropped = tonumber(repairReport.watchesDropped) or 0
+            report.scrubbed = tonumber(repairReport.scrubbed) or 0
+            report.droppedRecipeKeys = repairReport.droppedRecipeKeys
+            report.droppedPotionKeys = repairReport.droppedPotionKeys
+            report.droppedWatchKeys = repairReport.droppedWatchKeys
         end
     end
     local changed = (report.itemsStamped
@@ -108,6 +112,25 @@ function Know.ValidateAndRepairSavedData()
             report.watchesDropped,
             report.scrubbed
         ))
+        local function logKeys(label, keys)
+            if type(keys) ~= "table" or #keys == 0 then
+                return
+            end
+            local n = math.min(#keys, 20)
+            for i = 1, n do
+                StockPiler3.Debug.LogAlways(
+                    string.format("validate| %s[%d]=%s", label, i, tostring(keys[i]))
+                )
+            end
+            if #keys > n then
+                StockPiler3.Debug.LogAlways(
+                    string.format("validate| %s … +%d more (see Account._repairQuarantine)", label, #keys - n)
+                )
+            end
+        end
+        logKeys("droppedRecipe", report.droppedRecipeKeys)
+        logKeys("droppedPotion", report.droppedPotionKeys)
+        logKeys("droppedWatch", report.droppedWatchKeys)
     end
     return report
 end
