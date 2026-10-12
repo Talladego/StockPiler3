@@ -296,10 +296,15 @@ local function BuildVisibleList()
     SortRows(rows)
     StockPiler3TabPlants.listData = rows
     local order = {}
+    local structureKey = tostring(#rows)
     for i = 1, #rows do
         order[i] = i
+        local row = rows[i]
+        local id = type(row) == "table" and (row.plantKey or row.id or row.plantUid) or ""
+        structureKey = structureKey .. "|" .. tostring(id)
     end
     StockPiler3TabPlants.displayOrder = order
+    StockPiler3TabPlants._listStructureKey = structureKey
 end
 
 function StockPiler3TabPlants.Initialize()
@@ -326,10 +331,15 @@ end
 
 function StockPiler3TabPlants.Refresh()
     UpdateSortHeaders()
+    local prevKey = StockPiler3TabPlants._listStructureKey
     BuildVisibleList()
+    local keyChanged = prevKey ~= StockPiler3TabPlants._listStructureKey
     if DoesWindowExist("SP3TabPlantsList") then
-        ListBoxSetDisplayOrder("SP3TabPlantsList", {})
-        ListBoxSetDisplayOrder("SP3TabPlantsList", StockPiler3TabPlants.displayOrder)
+        -- Empty→full ListBoxSetDisplayOrder resets scroll; skip when row ids unchanged.
+        if keyChanged or prevKey == nil then
+            ListBoxSetDisplayOrder("SP3TabPlantsList", {})
+            ListBoxSetDisplayOrder("SP3TabPlantsList", StockPiler3TabPlants.displayOrder)
+        end
         StockPiler3TabPlants.UpdateRows()
     end
 end

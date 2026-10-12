@@ -75,13 +75,20 @@ local function SpecFingerprint(spec, boundUid)
         return ""
     end
     local M = MS()
+    -- Recipe storage identity is UID-agnostic (Scale/Chitin twins, TYPE/FAMILY noise).
+    if M and M.RecipeIdentityKey then
+        local key = M.RecipeIdentityKey(spec, boundUid)
+        if key ~= nil and key ~= "" then
+            return key
+        end
+    end
     local uid = tonumber(boundUid) or tonumber(spec.boundUid) or 0
     if spec.incomplete == true then
         if uid <= 0 then
             uid = tonumber(spec.uid) or 0
         end
         if M and M.Key then
-            return M.Key(spec, uid)
+            return M.Key(spec, uid, { omitUid = true })
         end
         if uid > 0 then
             return "uid:" .. tostring(uid)
@@ -2562,6 +2569,192 @@ function RS.MigrateRecipeFingerprintsV2()
     return true
 end
 
+local function MergeRecipeStats(dest, recipe)
+    local function addField(name)
+        dest[name] = (tonumber(dest[name]) or 0) + (tonumber(recipe[name]) or 0)
+    end
+    addField("brewAttempts")
+    addField("brewSuccesses")
+    addField("brewCrits")
+    addField("brewSuperCrits")
+    addField("brewFailures")
+    addField("brewVolatiles")
+    addField("yieldProductSum")
+    addField("yieldSamples")
+    addField("crafts")
+    if type(recipe.outcomes) == "table" then
+        dest.outcomes = dest.outcomes or {}
+        for uid, row in pairs(recipe.outcomes) do
+            local existing = dest.outcomes[uid]
+            if type(existing) ~= "table" then
+                dest.outcomes[uid] = row
+            elseif type(row) == "table" then
+                existing.successes = (tonumber(existing.successes) or 0)
+                    + (tonumber(row.successes) or 0)
+                existing.productSum = (tonumber(existing.productSum) or 0)
+                    + (tonumber(row.productSum) or 0)
+                if (tonumber(row.yield) or 0) > (tonumber(existing.yield) or 0) then
+                    existing.yield = row.yield
+                end
+            end
+        end
+    end
+    if (tonumber(dest.yieldSamples) or 0) > 0 then
+        dest.recipeYield = (tonumber(dest.yieldProductSum) or 0)
+            / (tonumber(dest.yieldSamples) or 1)
+    end
+end
+
+--- Rematerialize Account.recipes under current SlotsFingerprint / RecipeIdentityKey.
+--- Merges collisions, drops empty/irreparable recipes, remaps potion + watch keys.
+--- Idempotent. Returns { keyMap, merged, dropped, remapped, watchesDropped, potionsDropped }.
+local function RematerializeRecipeFingerprints()
+    local report = {
+        keyMap = {},
+        merged = 0,
+        dropped = 0,
+        remapped = 0,
+        watchesDropped = 0,
+        potionsDropped = 0,
+    }
+    local recipes = RecipesTable()
+    if type(recipes) ~= "table" then
+        return report
+    end
+
+    local keyMap = report.keyMap
+    local rebuilt = {}
+    for oldKey, recipe in pairs(recipes) do
+        if type(recipe) ~= "table" then
+            report.dropped = report.dropped + 1
+        else
+            HydrateRecipeSlots(recipe)
+            local slots = recipe.slots
+            local newKey = ""
+            if type(slots) == "table" and #slots > 0 then
+                newKey = tostring(SlotsFingerprint(slots) or "")
+            end
+            local oldKeyStr = tostring(oldKey)
+            if newKey == "" then
+                -- Irreparable: no usable slot fingerprint — drop.
+                report.dropped = report.dropped + 1
+            else
+                keyMap[oldKeyStr] = newKey
+                if newKey ~= oldKeyStr then
+                    report.remapped = report.remapped + 1
+                end
+                local dest = rebuilt[newKey]
+                if type(dest) ~= "table" then
+                    recipe.recipeSpecKey = newKey
+                    recipe.slots = SlimSlotsForStorage(slots)
+                    rebuilt[newKey] = recipe
+                else
+                    MergeRecipeStats(dest, recipe)
+                    report.merged = report.merged + 1
+                end
+            end
+        end
+    end
+    for k in pairs(recipes) do
+        recipes[k] = nil
+    end
+    for k, v in pairs(rebuilt) do
+        recipes[k] = v
+    end
+
+    local potions = PotionsTable()
+    if type(potions) == "table" then
+        local dropPotionKeys = {}
+        for pk, potion in pairs(potions) do
+            if type(potion) ~= "table" then
+                dropPotionKeys[#dropPotionKeys + 1] = pk
+            else
+                local oldActive = tostring(
+                    potion.activeRecipeKey
+                        or potion.activeRecipeSpecKey
+                        or potion.recipeSpecKey
+                        or ""
+                )
+                local keys = CollectPotionRecipeKeyList(potion)
+                local seen = {}
+                local nextKeys = {}
+                for i = 1, #keys do
+                    local old = tostring(keys[i] or "")
+                    local neu = keyMap[old] or old
+                    if neu ~= "" and type(recipes[neu]) == "table" and seen[neu] ~= true then
+                        seen[neu] = true
+                        nextKeys[#nextKeys + 1] = neu
+                    end
+                end
+                if #nextKeys == 0 then
+                    dropPotionKeys[#dropPotionKeys + 1] = pk
+                else
+                    ApplyPotionRecipeKeyList(potion, nextKeys)
+                    local neuActive = keyMap[oldActive] or oldActive
+                    if neuActive ~= "" and seen[neuActive] == true then
+                        potion.activeRecipeKey = neuActive
+                        potion.activeRecipeSpecKey = neuActive
+                        potion.recipeSpecKey = neuActive
+                    else
+                        potion.activeRecipeKey = nextKeys[1]
+                        potion.activeRecipeSpecKey = nextKeys[1]
+                        potion.recipeSpecKey = nextKeys[1]
+                    end
+                end
+            end
+        end
+        for i = 1, #dropPotionKeys do
+            potions[dropPotionKeys[i]] = nil
+            report.potionsDropped = report.potionsDropped + 1
+        end
+    end
+
+    local settings = StockPiler3.Settings
+    if type(settings) == "table" and type(settings.characters) == "table" then
+        for _, char in pairs(settings.characters) do
+            if type(char) == "table" and type(char.watches) == "table" then
+                local nextWatches = {}
+                for watchKey, watch in pairs(char.watches) do
+                    if type(watch) == "table" then
+                        local parsed = RS.ParsePotionRecipeKey and RS.ParsePotionRecipeKey(watchKey)
+                        local newWatchKey = watchKey
+                        local keep = true
+                        if type(parsed) == "table" and parsed.recipeSpecKey then
+                            local oldRk = tostring(parsed.recipeSpecKey)
+                            local neuRk = keyMap[oldRk] or oldRk
+                            local outUid = tonumber(parsed.outputUid) or 0
+                            if type(recipes[neuRk]) ~= "table" then
+                                keep = false
+                                report.watchesDropped = report.watchesDropped + 1
+                            elseif RS.PotionRecipeKey and outUid > 0 then
+                                newWatchKey = RS.PotionRecipeKey(outUid, neuRk)
+                            end
+                        end
+                        if keep then
+                            if watch.recipeSpecKey then
+                                local wrk = keyMap[tostring(watch.recipeSpecKey)]
+                                    or watch.recipeSpecKey
+                                if type(recipes[tostring(wrk)]) == "table" then
+                                    watch.recipeSpecKey = wrk
+                                end
+                            end
+                            if watch.potionKey == nil and type(parsed) == "table" then
+                                watch.potionKey = parsed.potionKey
+                            end
+                            if type(nextWatches[newWatchKey]) ~= "table" then
+                                nextWatches[newWatchKey] = watch
+                            end
+                        end
+                    end
+                end
+                char.watches = nextWatches
+            end
+        end
+    end
+
+    return report
+end
+
 --- One-shot: canonicalize fingerprints (load-order independent); merge order-duplicate recipes.
 function RS.MigrateRecipeFingerprintsV3()
     local acct = StockPiler3.Account
@@ -2576,146 +2769,27 @@ function RS.MigrateRecipeFingerprintsV3()
         acct.recipeFingerprintMigrateV3 = true
         return false
     end
-
-    local function MergeRecipeStats(dest, recipe)
-        local function addField(name)
-            dest[name] = (tonumber(dest[name]) or 0) + (tonumber(recipe[name]) or 0)
-        end
-        addField("brewAttempts")
-        addField("brewSuccesses")
-        addField("brewCrits")
-        addField("brewSuperCrits")
-        addField("brewFailures")
-        addField("brewVolatiles")
-        addField("yieldProductSum")
-        addField("yieldSamples")
-        addField("crafts")
-        if type(recipe.outcomes) == "table" then
-            dest.outcomes = dest.outcomes or {}
-            for uid, row in pairs(recipe.outcomes) do
-                local existing = dest.outcomes[uid]
-                if type(existing) ~= "table" then
-                    dest.outcomes[uid] = row
-                elseif type(row) == "table" then
-                    existing.successes = (tonumber(existing.successes) or 0)
-                        + (tonumber(row.successes) or 0)
-                    existing.productSum = (tonumber(existing.productSum) or 0)
-                        + (tonumber(row.productSum) or 0)
-                    if (tonumber(row.yield) or 0) > (tonumber(existing.yield) or 0) then
-                        existing.yield = row.yield
-                    end
-                end
-            end
-        end
-        if (tonumber(dest.yieldSamples) or 0) > 0 then
-            dest.recipeYield = (tonumber(dest.yieldProductSum) or 0)
-                / (tonumber(dest.yieldSamples) or 1)
-        end
-    end
-
-    local keyMap = {}
-    local rebuilt = {}
-    for oldKey, recipe in pairs(recipes) do
-        if type(recipe) == "table" then
-            HydrateRecipeSlots(recipe)
-            local newKey = SlotsFingerprint(recipe.slots)
-            if newKey == nil or newKey == "" then
-                newKey = tostring(oldKey)
-            end
-            keyMap[tostring(oldKey)] = newKey
-            local dest = rebuilt[newKey]
-            if type(dest) ~= "table" then
-                recipe.recipeSpecKey = newKey
-                recipe.slots = SlimSlotsForStorage(recipe.slots)
-                rebuilt[newKey] = recipe
-            else
-                MergeRecipeStats(dest, recipe)
-            end
-        end
-    end
-    for k in pairs(recipes) do
-        recipes[k] = nil
-    end
-    for k, v in pairs(rebuilt) do
-        recipes[k] = v
-    end
-
-    local potions = PotionsTable()
-    if type(potions) == "table" then
-        for _, potion in pairs(potions) do
-            if type(potion) == "table" then
-                local oldActive = tostring(
-                    potion.activeRecipeKey
-                        or potion.activeRecipeSpecKey
-                        or potion.recipeSpecKey
-                        or ""
-                )
-                local keys = CollectPotionRecipeKeyList(potion)
-                local seen = {}
-                local nextKeys = {}
-                for i = 1, #keys do
-                    local old = tostring(keys[i] or "")
-                    local neu = keyMap[old] or old
-                    if neu ~= "" and seen[neu] ~= true then
-                        seen[neu] = true
-                        nextKeys[#nextKeys + 1] = neu
-                    end
-                end
-                ApplyPotionRecipeKeyList(potion, nextKeys)
-                local neuActive = keyMap[oldActive] or oldActive
-                if neuActive ~= "" and seen[neuActive] == true then
-                    potion.activeRecipeKey = neuActive
-                    potion.activeRecipeSpecKey = neuActive
-                    potion.recipeSpecKey = neuActive
-                elseif #nextKeys > 0 then
-                    potion.activeRecipeKey = nextKeys[1]
-                    potion.activeRecipeSpecKey = nextKeys[1]
-                    potion.recipeSpecKey = nextKeys[1]
-                end
-            end
-        end
-    end
-
-    local settings = StockPiler3.Settings
-    if type(settings) == "table" and type(settings.characters) == "table" then
-        for _, char in pairs(settings.characters) do
-            if type(char) == "table" and type(char.watches) == "table" then
-                local nextWatches = {}
-                for watchKey, watch in pairs(char.watches) do
-                    if type(watch) == "table" then
-                        local parsed = RS.ParsePotionRecipeKey and RS.ParsePotionRecipeKey(watchKey)
-                        local newWatchKey = watchKey
-                        if type(parsed) == "table" and parsed.recipeSpecKey then
-                            local neuRk = keyMap[tostring(parsed.recipeSpecKey)]
-                                or tostring(parsed.recipeSpecKey)
-                            local outUid = tonumber(parsed.outputUid) or 0
-                            if RS.PotionRecipeKey and outUid > 0 then
-                                newWatchKey = RS.PotionRecipeKey(outUid, neuRk)
-                            end
-                        end
-                        if watch.recipeSpecKey then
-                            watch.recipeSpecKey = keyMap[tostring(watch.recipeSpecKey)]
-                                or watch.recipeSpecKey
-                        end
-                        if watch.potionKey == nil and type(parsed) == "table" then
-                            watch.potionKey = parsed.potionKey
-                        end
-                        -- Prefer newer watch row if two keys collapse onto one.
-                        if type(nextWatches[newWatchKey]) ~= "table" then
-                            nextWatches[newWatchKey] = watch
-                        end
-                    end
-                end
-                char.watches = nextWatches
-            end
-        end
-    end
-
+    RematerializeRecipeFingerprints()
     acct.recipeFingerprintMigrateV3 = true
     if StockPiler3.Knowledge and StockPiler3.Knowledge.Touch then
         StockPiler3.Knowledge.Touch("recipe-fingerprint-migrate-v3")
     end
     return true
+end
+
+--- Idempotent saved-data repair for recipes/potions/watches.
+--- Corrects fingerprint twins (TYPE/FAMILY noise, uid: vs fx:); drops irreparable rows.
+function RS.ValidateAndRepairSavedRecipes()
+    local report = RematerializeRecipeFingerprints()
+    local scrubbed = 0
+    if RS.ScrubSubsetPotionRecipeKeys then
+        scrubbed = scrubbed + (tonumber(RS.ScrubSubsetPotionRecipeKeys()) or 0)
+    end
+    if RS.ScrubOrphanSubsetRecipes then
+        scrubbed = scrubbed + (tonumber(RS.ScrubOrphanSubsetRecipes()) or 0)
+    end
+    report.scrubbed = scrubbed
+    return report
 end
 
 --- Re-fingerprint after EFFECT stamps (e.g. resist families): merge incomplete-uid
@@ -2742,6 +2816,18 @@ function RS.MigrateRecipeFingerprintsV4()
         StockPiler3.Knowledge.Touch("recipe-fingerprint-migrate-v4")
     end
     return ok == true
+end
+
+--- @deprecated use RS.ValidateAndRepairSavedRecipes (idempotent; no latch).
+function RS.MigrateRecipeFingerprintsV5()
+    local report = RS.ValidateAndRepairSavedRecipes()
+    local acct = StockPiler3.Account
+    if type(acct) == "table" then
+        acct.recipeFingerprintMigrateV5 = true
+        acct.recipeFingerprintMigrateV3 = true
+        acct.recipeFingerprintMigrateV4 = true
+    end
+    return type(report) == "table"
 end
 
 -- Expose hydrate for planner

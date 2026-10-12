@@ -58,7 +58,61 @@ function Know.Ensure()
     return ok
 end
 
---- Run fingerprint migrate once Account tables exist (Bootstrap after EnsureAccount).
+--- Idempotent: correct recoverable saved-data issues; drop irreparable rows.
+--- Safe to run every load and from /sp3 audit.
+function Know.ValidateAndRepairSavedData()
+    local report = {
+        itemsStamped = 0,
+        recipesMerged = 0,
+        recipesRemapped = 0,
+        recipesDropped = 0,
+        potionsDropped = 0,
+        watchesDropped = 0,
+        scrubbed = 0,
+    }
+    if StockPiler3.Items and StockPiler3.Items.ValidateAndRepairSavedItems then
+        local ir = StockPiler3.Items.ValidateAndRepairSavedItems()
+        if type(ir) == "table" then
+            report.itemsStamped = tonumber(ir.stamped) or 0
+        end
+    end
+    if StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.ValidateAndRepairSavedRecipes then
+        local rr = StockPiler3.RecipeSpec.ValidateAndRepairSavedRecipes()
+        if type(rr) == "table" then
+            report.recipesMerged = tonumber(rr.merged) or 0
+            report.recipesRemapped = tonumber(rr.remapped) or 0
+            report.recipesDropped = tonumber(rr.dropped) or 0
+            report.potionsDropped = tonumber(rr.potionsDropped) or 0
+            report.watchesDropped = tonumber(rr.watchesDropped) or 0
+            report.scrubbed = tonumber(rr.scrubbed) or 0
+        end
+    end
+    local changed = (report.itemsStamped
+        + report.recipesMerged
+        + report.recipesRemapped
+        + report.recipesDropped
+        + report.potionsDropped
+        + report.watchesDropped
+        + report.scrubbed) > 0
+    if changed and StockPiler3.Knowledge.Touch then
+        StockPiler3.Knowledge.Touch("saved-data-repair")
+    end
+    if StockPiler3.Debug and StockPiler3.Debug.LogAlways then
+        StockPiler3.Debug.LogAlways(string.format(
+            "validate| itemsStamped=%d recipesRemapped=%d merged=%d dropped=%d potionsDropped=%d watchesDropped=%d scrubbed=%d",
+            report.itemsStamped,
+            report.recipesRemapped,
+            report.recipesMerged,
+            report.recipesDropped,
+            report.potionsDropped,
+            report.watchesDropped,
+            report.scrubbed
+        ))
+    end
+    return report
+end
+
+--- Legacy one-shot migrates, then idempotent ValidateAndRepairSavedData.
 function Know.MigrateFingerprints()
     if StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.MigrateRecipeFingerprintsV2 then
         StockPiler3.RecipeSpec.MigrateRecipeFingerprintsV2()
@@ -69,6 +123,7 @@ function Know.MigrateFingerprints()
     if StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.MigrateRecipeFingerprintsV4 then
         StockPiler3.RecipeSpec.MigrateRecipeFingerprintsV4()
     end
+    Know.ValidateAndRepairSavedData()
     if StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.MigratePotionEffectKeys then
         StockPiler3.RecipeSpec.MigratePotionEffectKeys()
     end

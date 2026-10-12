@@ -379,71 +379,77 @@
                 </Label>
 
                 <!-- Headers: Prio | Name | Status | Stock | Craftable | Target | AutoGrow | Brew (1000px) -->
-                <Button name="$parentColPrio" inherits="StockPiler3_StaticHeader">
+                <Button name="$parentColPrio" inherits="StockPiler3_SortHeaderWatch" id="1" textalign="left">
                     <Size>
                         <AbsPoint x="56" y="28" />
                     </Size>
+                    <TextOffset x="4" y="4" />
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
                             <AbsPoint x="0" y="148" />
                         </Anchor>
                     </Anchors>
                 </Button>
-                <Button name="$parentColPotion" inherits="StockPiler3_StaticHeader">
+                <Button name="$parentColPotion" inherits="StockPiler3_SortHeaderWatch" id="2" textalign="left">
                     <Size>
                         <AbsPoint x="288" y="28" />
                     </Size>
-                    <TextOffset x="30" y="4" />
+                    <TextOffset x="4" y="4" />
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
                             <AbsPoint x="56" y="148" />
                         </Anchor>
                     </Anchors>
                 </Button>
-                <Button name="$parentColStatus" inherits="StockPiler3_StaticHeader">
+                <Button name="$parentColStatus" inherits="StockPiler3_SortHeaderWatch" id="3" textalign="left">
                     <Size>
                         <AbsPoint x="216" y="28" />
                     </Size>
+                    <TextOffset x="4" y="4" />
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
                             <AbsPoint x="344" y="148" />
                         </Anchor>
                     </Anchors>
                 </Button>
-                <Button name="$parentColStock" inherits="StockPiler3_StaticHeader">
+                <Button name="$parentColStock" inherits="StockPiler3_SortHeaderWatch" id="4" textalign="left">
                     <Size>
                         <AbsPoint x="72" y="28" />
                     </Size>
+                    <TextOffset x="4" y="4" />
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
                             <AbsPoint x="560" y="148" />
                         </Anchor>
                     </Anchors>
                 </Button>
-                <Button name="$parentColCraftable" inherits="StockPiler3_StaticHeader" handleinput="false">
+                <Button name="$parentColCraftable" inherits="StockPiler3_SortHeaderWatch" id="5" textalign="left">
                     <Size>
                         <AbsPoint x="96" y="28" />
                     </Size>
+                    <TextOffset x="4" y="4" />
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
                             <AbsPoint x="632" y="148" />
                         </Anchor>
                     </Anchors>
                 </Button>
-                <Button name="$parentColTarget" inherits="StockPiler3_StaticHeader">
+                <Button name="$parentColTarget" inherits="StockPiler3_SortHeaderWatch" id="6" textalign="left">
                     <Size>
                         <AbsPoint x="70" y="28" />
                     </Size>
+                    <TextOffset x="4" y="4" />
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
                             <AbsPoint x="728" y="148" />
                         </Anchor>
                     </Anchors>
                 </Button>
-                <Button name="$parentColPriority" inherits="StockPiler3_StaticHeader">
+                <Button name="$parentColPriority" inherits="StockPiler3_SortHeaderWatch" id="7" textalign="left">
                     <Size>
                         <AbsPoint x="100" y="28" />
                     </Size>
+                    <TextOffset x="4" y="4" />
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
                             <AbsPoint x="798" y="148" />

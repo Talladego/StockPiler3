@@ -29,6 +29,33 @@ local ICON_SCALE = 0.34
 local TARGET_MAX = 200
 local syncingUi = false
 
+local SORT_IDS = {
+    [1] = "prio",
+    [2] = "name",
+    [3] = "status",
+    [4] = "stock",
+    [5] = "craftable",
+    [6] = "target",
+    [7] = "autoGrow",
+}
+
+local SORT_HEADERS = {
+    prio = "SP3TabWatchColPrio",
+    name = "SP3TabWatchColPotion",
+    status = "SP3TabWatchColStatus",
+    stock = "SP3TabWatchColStock",
+    craftable = "SP3TabWatchColCraftable",
+    target = "SP3TabWatchColTarget",
+    autoGrow = "SP3TabWatchColPriority",
+}
+
+local function GetSettings()
+    if StockPiler3.Persistence and StockPiler3.Persistence.EnsureSettings then
+        return StockPiler3.Persistence.EnsureSettings()
+    end
+    return StockPiler3.Settings
+end
+
 local function CharRow(create)
     return StockPiler3.Util.CharacterRow(create)
 end
@@ -208,6 +235,170 @@ local function IsEphemeralWatchRow(data)
         or (type(data) == "table" and data.addonOwned == true)
 end
 
+local function WatchRowKindRank(row)
+    if IsPlantWatchRow(row) then
+        return 2
+    end
+    if IsEphemeralWatchRow(row) then
+        return 3
+    end
+    return 1
+end
+
+local function NarrowWatchName(row)
+    local n = row and row.name
+    if StockPiler3.Util and StockPiler3.Util.ToNarrow then
+        return string.lower(StockPiler3.Util.ToNarrow(n) or "")
+    end
+    return string.lower(tostring(n or ""))
+end
+
+local function NarrowWatchStatus(row)
+    local t = row and (row.statusText or row.statusKey)
+    if StockPiler3.Util and StockPiler3.Util.ToNarrow then
+        return string.lower(StockPiler3.Util.ToNarrow(t) or "")
+    end
+    return string.lower(tostring(t or ""))
+end
+
+local function WatchRowStableKey(row)
+    return tostring(row and (row.potionRecipeKey or row.potionKey or row.id or row.plantKey) or "")
+end
+
+local function CompareWatchRows(a, b, column, ascending)
+    local function finish(less)
+        if ascending then
+            return less
+        end
+        return not less
+    end
+    local ka, kb = WatchRowKindRank(a), WatchRowKindRank(b)
+    if ka ~= kb then
+        return ka < kb
+    end
+    local na, nb = NarrowWatchName(a), NarrowWatchName(b)
+    local function compareName()
+        if na ~= nb then
+            return finish(na < nb)
+        end
+        return WatchRowStableKey(a) < WatchRowStableKey(b)
+    end
+    if ka ~= 1 and (column == "prio" or column == "autoGrow") then
+        return compareName()
+    end
+    if column == "prio" then
+        local ta = tonumber(a and a.priorityTier) or 1
+        local tb = tonumber(b and b.priorityTier) or 1
+        if ta == tb then
+            return compareName()
+        end
+        return finish(ta < tb)
+    elseif column == "name" then
+        return compareName()
+    elseif column == "status" then
+        local sa, sb = NarrowWatchStatus(a), NarrowWatchStatus(b)
+        if sa == sb then
+            return compareName()
+        end
+        return finish(sa < sb)
+    elseif column == "stock" then
+        local ha = tonumber(a and (a.potionHave or a.have or a.stock)) or 0
+        local hb = tonumber(b and (b.potionHave or b.have or b.stock)) or 0
+        if ha == hb then
+            return compareName()
+        end
+        return finish(ha < hb)
+    elseif column == "craftable" then
+        local ca = tonumber(a and a.craftable) or 0
+        local cb = tonumber(b and b.craftable) or 0
+        if ca == cb then
+            return compareName()
+        end
+        return finish(ca < cb)
+    elseif column == "target" then
+        local ta = tonumber(a and (a.target or a.potionMin)) or 0
+        local tb = tonumber(b and (b.target or b.potionMin)) or 0
+        if ta == tb then
+            return compareName()
+        end
+        return finish(ta < tb)
+    elseif column == "autoGrow" then
+        local aa = a and a.autoGrow == true
+        local ab = b and b.autoGrow == true
+        if aa == ab then
+            return compareName()
+        end
+        return finish(aa and not ab)
+    end
+    return compareName()
+end
+
+local function SortWatchRows(rows)
+    if type(rows) ~= "table" or #rows < 2 then
+        return
+    end
+    local s = GetSettings()
+    local column = (type(s) == "table" and s.watchSortColumn) or "prio"
+    local ascending = type(s) ~= "table" or s.watchSortAscending ~= false
+    table.sort(rows, function(a, b)
+        return CompareWatchRows(a, b, column, ascending)
+    end)
+end
+
+--- Bind display list without mutating Planner snapshot row order.
+local function BindSortedList(rows)
+    if type(rows) ~= "table" then
+        rows = {}
+    end
+    local list = rows
+    local plan = StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Get
+        and StockPiler3.PlanSnapshot.Get()
+    if type(plan) == "table" and rows == plan.rows then
+        list = {}
+        for i = 1, #rows do
+            list[i] = rows[i]
+        end
+    end
+    SortWatchRows(list)
+    StockPiler3TabWatch.listData = list
+    StockPiler3TabWatch.displayOrder = {}
+    for i = 1, #list do
+        StockPiler3TabWatch.displayOrder[i] = i
+    end
+end
+
+local function UpdateSortHeaderLabels()
+    local labels = {
+        prio = T("watch.col.prio"),
+        name = T("watch.col.name"),
+        status = T("watch.col.status"),
+        stock = T("watch.col.stock"),
+        craftable = T("watch.col.craftable"),
+        target = T("watch.col.target"),
+        autoGrow = T("watch.col.autogrow"),
+    }
+    for key, win in pairs(SORT_HEADERS) do
+        if DoesWindowExist(win) and labels[key] then
+            ButtonSetText(win, labels[key])
+        end
+    end
+    if DoesWindowExist("SP3TabWatchColBrew") then
+        ButtonSetText("SP3TabWatchColBrew", T("watch.col.brew"))
+    end
+end
+
+local function UpdateSortHeaders()
+    UpdateSortHeaderLabels()
+    local s = GetSettings()
+    if StockPiler3.ViewList and StockPiler3.ViewList.UpdateSortArrows then
+        StockPiler3.ViewList.UpdateSortArrows(
+            SORT_HEADERS,
+            (type(s) == "table" and s.watchSortColumn) or "prio",
+            type(s) ~= "table" or s.watchSortAscending ~= false
+        )
+    end
+end
+
 local function EnsureWatchNameRarityColors(data)
     if type(data) ~= "table" then
         return 255, 255, 255
@@ -382,26 +573,27 @@ local function ApplyRowBrewButton(btnWin, data)
         return
     end
     WindowSetShowing(btnWin, true)
-    -- Load follows the green Craftable column. Snap-gen mismatch used to grey
-    -- Load while Craftable stayed green after bag/plan catch-up.
+    -- One-click Brew (load+perform). Label is always Brew; color tracks readiness.
+    ButtonSetText(btnWin, T("watch.chip_brew"))
     local craftableGreen = RowCraftableGreen(data)
     local state = GetRowCraftUiState(data)
-    -- This row's apo session is loaded: always show Brew (ready to perform).
     if state == "brew" then
-        ButtonSetText(btnWin, T("watch.chip_brew"))
         ButtonSetDisabledFlag(btnWin, false)
         SetButtonTextColorAll(btnWin, COLOR_OK[1], COLOR_OK[2], COLOR_OK[3])
         return
     end
+    if state == "load" then
+        ButtonSetDisabledFlag(btnWin, true)
+        SetButtonTextColorAll(btnWin, COLOR_WARN[1], COLOR_WARN[2], COLOR_WARN[3])
+        return
+    end
     if not craftableGreen then
-        ButtonSetText(btnWin, T("watch.chip_load"))
         ButtonSetDisabledFlag(btnWin, true)
         SetButtonTextColorAll(btnWin, COLOR_GRAY[1], COLOR_GRAY[2], COLOR_GRAY[3])
         return
     end
-    -- Idle or loading: yellow Load (green Craftable, apo not ready to perform).
+    -- Idle + craftable: yellow Brew (click loads then performs).
     ButtonSetDisabledFlag(btnWin, false)
-    ButtonSetText(btnWin, T("watch.chip_load"))
     SetButtonTextColorAll(btnWin, COLOR_WARN[1], COLOR_WARN[2], COLOR_WARN[3])
 end
 
@@ -465,9 +657,12 @@ local function AfterWatchSettingsChanged()
         -- Bypass 5s Watch flush throttle so status text updates on this click.
         StockPiler3.Ui._watchUiLastKey = nil
         StockPiler3.Ui._watchUiFlushedAt = 0
-        if StockPiler3.Ui.MarkWatchUiDirty then
-            StockPiler3.Ui.MarkWatchUiDirty()
-        end
+    end
+    local Bus = StockPiler3.EventBus
+    if Bus and Bus.FireWatchUiDirty then
+        Bus.FireWatchUiDirty({ immediate = true, recount = true, reason = "watch-settings" })
+    elseif StockPiler3.Ui and StockPiler3.Ui.MarkWatchUiDirty then
+        StockPiler3.Ui.MarkWatchUiDirty()
     end
     -- Optimistic row paint: do not wait for coalesced flush / plan rebuild.
     StockPiler3TabWatch._rowPaintKey = nil
@@ -492,8 +687,14 @@ local function AfterSoftMoneySetting()
     if StockPiler3.Buy and StockPiler3.Buy.OnMoneySettingsChanged then
         StockPiler3.Buy.OnMoneySettingsChanged()
     end
-    if StockPiler3.Ui and StockPiler3.Ui.MarkWatchUiDirty then
+    local Bus = StockPiler3.EventBus
+    if Bus and Bus.FireWatchUiDirty then
+        Bus.FireWatchUiDirty({ immediate = true, reason = "money-settings" })
+    elseif StockPiler3.Ui and StockPiler3.Ui.MarkWatchUiDirty then
         StockPiler3.Ui.MarkWatchUiDirty()
+    end
+    if Bus and Bus.FireFooterDirty then
+        Bus.FireFooterDirty({ reason = "money-settings" })
     end
     StockPiler3TabWatch.RefreshSkillGates()
     -- Soft money chips already updated via RefreshSkillGates; patch rows now too.
@@ -626,6 +827,17 @@ local function BuildVisibleList(opts)
         plan = StockPiler3.PlanSnapshot.Get()
     end
     local rows = type(plan) == "table" and plan.rows or nil
+    -- Soft Invalidate keeps stale plan.rows; optimistic eye add/remove already mutated
+    -- listData. Prefer that until the coalesced rebuild lands a fresh cache key.
+    local PS = StockPiler3.PlanSnapshot
+    local cacheStale = PS and PS.GetCacheKey and PS.GetCacheKey() == nil
+    local preferPrev = (cacheStale == true or holdBuild == true)
+        and type(prevList) == "table" and #prevList > 0
+    if preferPrev then
+        PatchWatchRowsLiveCounts(prevList)
+        BindSortedList(prevList)
+        return
+    end
     if type(rows) ~= "table" or #rows == 0 then
         local keepPrev = type(prevList) == "table" and #prevList > 0
         if keepPrev then
@@ -636,18 +848,16 @@ local function BuildVisibleList(opts)
             if keep then
                 PatchWatchRowsLiveCounts(prevList)
                 -- Prefer current snapshot rows when they exist (avoid orphaned stale listData).
-                local snap = StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Get
+                local snapNow = StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Get
                     and StockPiler3.PlanSnapshot.Get()
-                local snapRows = type(snap) == "table" and snap.rows or nil
-                if type(snapRows) == "table" and #snapRows > 0 then
-                    PatchWatchRowsLiveCounts(snapRows)
-                    StockPiler3TabWatch.listData = snapRows
+                local snapRowsNow = type(snapNow) == "table" and snapNow.rows or nil
+                if type(snapRowsNow) == "table" and #snapRowsNow > 0
+                    and not (PS and PS.GetCacheKey and PS.GetCacheKey() == nil)
+                then
+                    PatchWatchRowsLiveCounts(snapRowsNow)
+                    BindSortedList(snapRowsNow)
                 else
-                    StockPiler3TabWatch.listData = prevList
-                end
-                StockPiler3TabWatch.displayOrder = {}
-                for i = 1, #StockPiler3TabWatch.listData do
-                    StockPiler3TabWatch.displayOrder[i] = i
+                    BindSortedList(prevList)
                 end
                 return
             end
@@ -655,11 +865,7 @@ local function BuildVisibleList(opts)
         rows = {}
     end
     PatchWatchRowsLiveCounts(rows)
-    StockPiler3TabWatch.listData = rows
-    StockPiler3TabWatch.displayOrder = {}
-    for i = 1, #StockPiler3TabWatch.listData do
-        StockPiler3TabWatch.displayOrder[i] = i
-    end
+    BindSortedList(rows)
 end
 
 local function UpdateEnableCheckbox()
@@ -926,48 +1132,6 @@ local function AfterPrioritySoftChange(potionKey, newTier)
             end
         end
     end
-    local function rowKindRank(row)
-        if IsPlantWatchRow(row) then
-            return 2
-        end
-        if IsEphemeralWatchRow(row) then
-            return 3
-        end
-        return 1
-    end
-    local function narrowName(row)
-        local n = row and row.name
-        if StockPiler3.Util and StockPiler3.Util.ToNarrow then
-            return string.lower(StockPiler3.Util.ToNarrow(n) or "")
-        end
-        return string.lower(tostring(n or ""))
-    end
-    local function sortWatchRows(rows)
-        if type(rows) ~= "table" or #rows < 2 then
-            return
-        end
-        table.sort(rows, function(a, b)
-            local ka, kb = rowKindRank(a), rowKindRank(b)
-            if ka ~= kb then
-                return ka < kb
-            end
-            if ka ~= 1 then
-                return narrowName(a) < narrowName(b)
-            end
-            local ta = tonumber(a and a.priorityTier) or 1
-            local tb = tonumber(b and b.priorityTier) or 1
-            if ta ~= tb then
-                return ta < tb
-            end
-            local na, nb = narrowName(a), narrowName(b)
-            if na ~= nb then
-                return na < nb
-            end
-            return tostring(a and (a.potionKey or a.id) or "")
-                < tostring(b and (b.potionKey or b.id) or "")
-        end)
-    end
-
     local PS = StockPiler3.PlanSnapshot
     local plan = PS and PS.Get and PS.Get()
     local planRows = type(plan) == "table" and plan.rows or nil
@@ -976,14 +1140,17 @@ local function AfterPrioritySoftChange(potionKey, newTier)
     if listData ~= planRows then
         patchRows(listData)
     end
-    sortWatchRows(planRows)
-    if listData ~= planRows then
-        sortWatchRows(listData)
-    end
+    -- Display-only reorder (do not mutate Planner snapshot order).
     if type(listData) == "table" then
-        StockPiler3TabWatch.displayOrder = {}
-        for i = 1, #listData do
-            StockPiler3TabWatch.displayOrder[i] = i
+        if listData == planRows then
+            BindSortedList(planRows)
+            listData = StockPiler3TabWatch.listData
+        else
+            SortWatchRows(listData)
+            StockPiler3TabWatch.displayOrder = {}
+            for i = 1, #listData do
+                StockPiler3TabWatch.displayOrder[i] = i
+            end
         end
     end
     if StockPiler3.Planner and StockPiler3.Planner.AfterPrioritySoftChange then
@@ -1059,18 +1226,30 @@ function StockPiler3TabWatch.Initialize()
     TintStepper("SP3TabWatchSeedBufferChipBg")
     TintStepper("SP3TabWatchReserveChipBg")
     TintStepper("SP3TabWatchBudgetChipBg")
-    ButtonSetText("SP3TabWatchColPrio", T("watch.col.prio"))
-    ButtonSetText("SP3TabWatchColPotion", T("watch.col.name"))
-    ButtonSetText("SP3TabWatchColStock", T("watch.col.stock"))
-    ButtonSetText("SP3TabWatchColStatus", T("watch.col.status"))
-    ButtonSetText("SP3TabWatchColCraftable", T("watch.col.craftable"))
-    ButtonSetText("SP3TabWatchColTarget", T("watch.col.target"))
-    ButtonSetText("SP3TabWatchColPriority", T("watch.col.autogrow"))
-    ButtonSetText("SP3TabWatchColBrew", T("watch.col.brew"))
+    UpdateSortHeaders()
     StockPiler3TabWatch.RefreshSkillGates()
     if StockPiler3TabWatch.PrimeRowChrome then
         StockPiler3TabWatch.PrimeRowChrome()
     end
+end
+
+function StockPiler3TabWatch.OnSortColumn()
+    local id = WindowGetId(SystemData.ActiveWindow.name)
+    local col = SORT_IDS[id]
+    if not col then
+        return
+    end
+    local s = GetSettings()
+    if type(s) ~= "table" then
+        return
+    end
+    if s.watchSortColumn == col then
+        s.watchSortAscending = not (s.watchSortAscending ~= false)
+    else
+        s.watchSortColumn = col
+        s.watchSortAscending = true
+    end
+    StockPiler3TabWatch.Refresh({ forceRebind = true })
 end
 
 function StockPiler3TabWatch.RefreshSkillGates()
@@ -1388,6 +1567,9 @@ local function OptimisticAddWatchRow(opts)
         StockPiler3TabWatch.displayOrder[i] = i
     end
     StockPiler3TabWatch._rowPaintKey = nil
+    -- Length changed off-tab: next Watch Refresh must ListBoxSetDisplayOrder
+    -- (order is always 1..n so orderChanged alone misses this).
+    StockPiler3TabWatch._pendingListRebind = true
     return true
 end
 
@@ -1445,6 +1627,9 @@ function StockPiler3TabWatch.AfterCatalogWatchToggle(opts)
         listTouched = OptimisticAddWatchRow(opts) == true
     else
         listTouched = OptimisticRemoveWatchRow(opts) == true
+        if listTouched == true then
+            StockPiler3TabWatch._pendingListRebind = true
+        end
     end
     if StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Invalidate then
         StockPiler3.PlanSnapshot.Invalidate()
@@ -1472,8 +1657,10 @@ function StockPiler3TabWatch.AfterCatalogWatchToggle(opts)
         elseif StockPiler3TabWatch.Refresh then
             StockPiler3TabWatch.Refresh({ forcePlan = false })
         end
+    elseif listTouched == true then
+        -- Off Watch: keep optimistic listData; force rebind on next Watch paint.
+        StockPiler3TabWatch._pendingListRebind = true
     end
-    -- Off Watch: listData already patched; MarkWatchUiDirty paints when Watch opens.
     -- Restore tab visibility if a prior KickListBoxLayout left Watch stacked.
     if StockPiler3Window and StockPiler3Window.EnsureSelectedTabShowing then
         StockPiler3Window.EnsureSelectedTabShowing()
@@ -1574,6 +1761,8 @@ local function RebindWatchListBox(order)
     StockPiler3TabWatch._pendingListRebind = nil
     StockPiler3TabWatch._rowPaintKey = {}
     StockPiler3TabWatch._rowIconNum = {}
+    local listData = StockPiler3TabWatch.listData
+    StockPiler3TabWatch._lastBoundListCount = type(listData) == "table" and #listData or 0
     -- Same kick Potions/Plants use: empty order then real order forces populate.
     ListBoxSetDisplayOrder("SP3TabWatchList", {})
     ListBoxSetDisplayOrder("SP3TabWatchList", order)
@@ -1587,8 +1776,10 @@ function StockPiler3TabWatch.Refresh(opts)
     if not DoesWindowExist(TAB_ROOT) then
         return
     end
+    UpdateSortHeaders()
     StockPiler3TabWatch.RefreshSkillGates()
     local prevOrder = StockPiler3TabWatch.displayOrder
+    local prevBoundCount = tonumber(StockPiler3TabWatch._lastBoundListCount)
     BuildVisibleList(opts)
     if not DoesWindowExist("SP3TabWatchList") then
         return
@@ -1615,6 +1806,11 @@ function StockPiler3TabWatch.Refresh(opts)
     end
 
     local forceRebind = opts.forceRebind == true
+        or StockPiler3TabWatch._pendingListRebind == true
+    -- Eye toggle off-tab already grew displayOrder; orderChanged stays false.
+    if not forceRebind and (prevBoundCount == nil or prevBoundCount ~= listCount) then
+        forceRebind = true
+    end
     -- Stale PopulatorIndices after optimistic eye-clear (indices past #listData).
     if not forceRebind and hasPopulated and type(indices) == "table" then
         for _, dataIndex in pairs(indices) do
@@ -1634,7 +1830,7 @@ function StockPiler3TabWatch.Refresh(opts)
         return
     end
     if not brewHold and (forceRebind or (listCount > 0 and not hasPopulated)) then
-        if forceRebind then
+        if forceRebind and opts.forceRebind == true then
             StockPiler3TabWatch.KickListBoxLayout()
         end
         RebindWatchListBox(order or {})

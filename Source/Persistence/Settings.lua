@@ -90,6 +90,8 @@ StockPiler3.DefaultSettings = {
     potionEffectFilter = "",
     potionSortColumn = "name",
     potionSortAscending = true,
+    watchSortColumn = "prio",
+    watchSortAscending = true,
 }
 
 StockPiler3.DefaultCharacterSettings = {
@@ -211,6 +213,12 @@ function P.EnsureSettings()
     end
     if s.potionSortAscending == nil then
         s.potionSortAscending = true
+    end
+    if s.watchSortColumn == nil then
+        s.watchSortColumn = "prio"
+    end
+    if s.watchSortAscending == nil then
+        s.watchSortAscending = true
     end
     if s.selectedTab == nil then
         s.selectedTab = 1

@@ -258,7 +258,10 @@ function Caps.OnTradeSkillPulse()
                         Ui.InvalidateSkillGates()
                     end
                     Ui._watchUiLastKey = nil
-                    if Ui.MarkWatchUiDirty then
+                    local Bus = StockPiler3.EventBus
+                    if Bus and Bus.FireWatchUiDirty then
+                        Bus.FireWatchUiDirty({ reason = "trade-caps" })
+                    elseif Ui.MarkWatchUiDirty then
                         Ui.MarkWatchUiDirty()
                     end
                 end
@@ -320,9 +323,12 @@ function Caps.OnTradeSkillPulse()
                 end
                 Ui._watchUiLastKey = nil
                 Ui._watchUiFlushedAt = 0
-                if Ui.MarkWatchUiDirty then
-                    Ui.MarkWatchUiDirty()
-                end
+            end
+            local Bus = StockPiler3.EventBus
+            if Bus and Bus.FireWatchUiDirty then
+                Bus.FireWatchUiDirty({ reason = "trade-skill" })
+            elseif Ui and Ui.MarkWatchUiDirty then
+                Ui.MarkWatchUiDirty()
             end
             local Grow = StockPiler3.Grow
             if Grow and Grow.InvalidatePlantQueue then

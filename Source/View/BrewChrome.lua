@@ -17,24 +17,25 @@ function BrewChrome.RefreshBrewUi()
     if StockPiler3.Perf and StockPiler3.Perf.Begin then
         StockPiler3.Perf.Begin("BrewUi")
     end
-    if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
+    local Bus = StockPiler3.EventBus
+    if Bus and Bus.FireFooterDirty then
+        Bus.FireFooterDirty({ immediate = true, syncMacro = true, reason = "brew-chrome" })
+    elseif StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
         StockPiler3Window.RequestFooterRefresh()
     elseif StockPiler3Window and StockPiler3Window.RefreshFooterButtons then
         StockPiler3Window.RefreshFooterButtons()
     end
-    if StockPiler3TabWatch and StockPiler3TabWatch.InvalidateBrewChrome then
+    if Bus and Bus.FireBrewSessionChanged then
+        Bus.FireBrewSessionChanged({ reason = "brew-chrome" })
+    elseif StockPiler3TabWatch and StockPiler3TabWatch.InvalidateBrewChrome then
         StockPiler3TabWatch.InvalidateBrewChrome()
-    end
-    -- Chrome-only keepVisible paint. Do not MarkWatchUiDirty / RequestListRepopulate:
-    -- those queued a full RefreshActiveTab (ListBoxSetDisplayOrder) once the
-    -- inter-craft hold expired and blanked every Watch row between crafts.
-    if DoesWindowExist("StockPiler3Window")
-        and WindowGetShowing("StockPiler3Window") == true
-        and StockPiler3Window.SelectedTab == StockPiler3Window.TABS_WATCH
-        and StockPiler3TabWatch
-        and StockPiler3TabWatch.UpdateRows
-    then
-        StockPiler3TabWatch.UpdateRows({ keepVisible = true })
+        if DoesWindowExist("StockPiler3Window")
+            and WindowGetShowing("StockPiler3Window") == true
+            and StockPiler3Window.SelectedTab == StockPiler3Window.TABS_WATCH
+            and StockPiler3TabWatch.UpdateRows
+        then
+            StockPiler3TabWatch.UpdateRows({ keepVisible = true })
+        end
     end
     if Brew and Brew.MaybeNotifyBrewReady then
         Brew.MaybeNotifyBrewReady()

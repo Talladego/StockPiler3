@@ -828,9 +828,12 @@ local function MaybeFinishSessionSettle()
         end
         Ui._watchUiLastKey = nil
         Ui._watchUiFlushedAt = 0
-        if Ui.MarkWatchUiDirty then
-            Ui.MarkWatchUiDirty()
-        end
+    end
+    local Bus = StockPiler3.EventBus
+    if Bus and Bus.FireWatchUiDirty then
+        Bus.FireWatchUiDirty({ reason = "session-settle" })
+    elseif Ui and Ui.MarkWatchUiDirty then
+        Ui.MarkWatchUiDirty()
     end
     Sch.EnqueuePlanRebuild({ urgent = true })
     if DoesWindowExist("StockPiler3Window")
@@ -975,7 +978,12 @@ function Sch.IsPlanRebuildPending()
     return Sch._planDue == true
 end
 
-function Sch.MarkWatchUiDirty()
+function Sch.MarkWatchUiDirty(payload)
+    local Bus = StockPiler3.EventBus
+    if Bus and Bus.FireWatchUiDirty then
+        Bus.FireWatchUiDirty(type(payload) == "table" and payload or {})
+        return
+    end
     local Ui = StockPiler3.Ui
     if Ui and Ui.MarkWatchUiDirty then
         Ui.MarkWatchUiDirty()

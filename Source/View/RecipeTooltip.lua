@@ -9,6 +9,8 @@ local RecipeTooltip = StockPiler3.RecipeTooltip
 
 -- Yellow stats line (matches stock item-bonus tint when available).
 local COLOR_STATS = { 220, 180, 60 }
+-- Slot headers (skill + role): darker than uncommon rarity green (24,240,0).
+local COLOR_INGREDIENT_HEADER = { r = 70, g = 155, b = 55 }
 
 local function T(key, tokens)
     return StockPiler3.Util.T(key, tokens)
@@ -16,8 +18,8 @@ end
 
 RecipeTooltip.SEP_LINE = T("recipe.sep")
 
--- DefaultTooltip XML ships 17 rows; grow for long recipes (perCraft copies + seps).
-local RECIPE_TOOLTIP_MAX_ROWS = 32
+-- DefaultTooltip XML ships 17 rows; grow for long recipes (match lists + seps).
+local RECIPE_TOOLTIP_MAX_ROWS = 80
 
 local function RgbDef(rgb)
     if not rgb then
@@ -82,7 +84,7 @@ local function RecipeTooltipColor(kind, role)
         return Tooltips.COLOR_ITEM_DEFAULT_GRAY
     end
     if kind == "ingredient" then
-        return Tooltips.COLOR_ACTION
+        return COLOR_INGREDIENT_HEADER
     end
     if kind == "effect" or kind == "bonus" or kind == "positive" or kind == "negative" then
         return Tooltips.COLOR_ITEM_BONUS or Tooltips.COLOR_HEADING
@@ -197,6 +199,25 @@ local function TrimRecipeTooltipRows(rows, limit)
             break
         end
     end
+
+    -- Drop extra match name rows (keep at least one body per ingredient section).
+    while #rows > limit do
+        local removed = false
+        for i = #rows, 1, -1 do
+            local r = rows[i]
+            if r.kind == "body" then
+                local prev = rows[i - 1]
+                if prev and prev.kind == "body" then
+                    table.remove(rows, i)
+                    removed = true
+                    break
+                end
+            end
+        end
+        if not removed then
+            break
+        end
+    end
     return rows
 end
 
@@ -229,13 +250,231 @@ local function SlotHeaderAndStats(slot, spec, tipContext)
     return header, stats, role
 end
 
---- Append one fingerprint ingredient block (header + yellow stats).
-local function AppendIngredientSection(rows, header, stats, role, statsColor)
+local function IconMarkup(iconNum)
+    iconNum = tonumber(iconNum) or 0
+    if iconNum <= 0 then
+        return L""
+    end
+    return towstring(string.format("<icon%05d> ", iconNum))
+end
+
+--- Learned exemplar uid from recipe slot (fingerprint brew still uses MatchSpec).
+local function SlotExemplarUid(slot, spec)
+    if type(slot) ~= "table" then
+        return 0
+    end
+    local uid = tonumber(slot.uid) or 0
+    if uid <= 0 then
+        uid = tonumber(slot.boundUid) or 0
+    end
+    if uid <= 0 and type(spec) == "table" then
+        uid = tonumber(spec.boundUid) or tonumber(spec.uid) or 0
+    end
+    return uid
+end
+
+local function ItemsStore()
+    local acct = StockPiler3.Account
+    if type(acct) == "table" and type(acct.items) == "table" then
+        return acct.items
+    end
+    if StockPiler3.Knowledge and StockPiler3.Knowledge.Items then
+        return StockPiler3.Knowledge.Items()
+    end
+    return nil
+end
+
+local function NarrowName(name)
+    return StockPiler3.Util.ToNarrow(name)
+end
+
+--- Prefer bag sample for rarity tint; fall back to learned Items row.
+local function ResolveDisplayItem(uid)
+    uid = tonumber(uid) or 0
+    if uid <= 0 then
+        return nil
+    end
+    local itemData = nil
+    if StockPiler3.Inventory and StockPiler3.Inventory.GetSample then
+        itemData = StockPiler3.Inventory.GetSample(uid)
+    end
+    local Items = StockPiler3.Items
+    if type(itemData) ~= "table" and Items and Items.AsItemData then
+        itemData = Items.AsItemData(uid)
+    elseif type(itemData) == "table"
+        and (tonumber(itemData.rarity) or 0) <= 0
+        and Items and Items.AsItemData
+    then
+        local cached = Items.AsItemData(uid)
+        if type(cached) == "table" and (tonumber(cached.rarity) or 0) > 0 then
+            -- Avoid mutating the live bag sample; clone tint fields for tip display.
+            itemData = {
+                uniqueID = uid,
+                name = itemData.name or cached.name,
+                iconNum = tonumber(itemData.iconNum) or tonumber(cached.iconNum) or 0,
+                rarity = cached.rarity,
+                itemSet = tonumber(itemData.itemSet) or tonumber(cached.itemSet) or 0,
+            }
+        end
+    end
+    if type(itemData) ~= "table" then
+        return nil
+    end
+    local name = itemData.name
+    if name == nil or name == L"" then
+        return nil
+    end
+    return itemData
+end
+
+--- Resolve display item for the ingredient used when the recipe was learned.
+--- Returns nil when uid/name cannot be resolved (skip for older recipes).
+local function ResolveLearnedExemplar(slot, spec)
+    return ResolveDisplayItem(SlotExemplarUid(slot, spec))
+end
+
+local function ItemMatchesSpec(itemData, spec)
+    local MS = StockPiler3.MaterialSpec
+    if type(itemData) ~= "table" or type(spec) ~= "table" or not MS then
+        return false
+    end
+    if MS.IsSeedOrSpore and MS.IsSeedOrSpore(itemData) == true then
+        return false
+    end
+    if MS.ProductMatches and MS.ProductMatches(itemData, spec) == true then
+        return true
+    end
+    if MS.Matches and MS.Matches(itemData, spec) == true then
+        return true
+    end
+    return false
+end
+
+local function SortMatchList(list, exemplarUid)
+    exemplarUid = tonumber(exemplarUid) or 0
+    table.sort(list, function(a, b)
+        local au = tonumber(a and a.uniqueID) or 0
+        local bu = tonumber(b and b.uniqueID) or 0
+        if exemplarUid > 0 then
+            if au == exemplarUid and bu ~= exemplarUid then
+                return true
+            end
+            if bu == exemplarUid and au ~= exemplarUid then
+                return false
+            end
+        end
+        local an = string.lower(NarrowName(a and a.name))
+        local bn = string.lower(NarrowName(b and b.name))
+        if an ~= bn then
+            return an < bn
+        end
+        return au < bu
+    end)
+end
+
+--- One pass over learned Items: fingerprint matches per material slot (exemplar first).
+local function CollectKnownMatchesBySlot(materials)
+    local bySlot = {}
+    if type(materials) ~= "table" then
+        return bySlot
+    end
+    local infos = {}
+    for i = 1, #materials do
+        local slot, spec = ResolveSlot(materials[i])
+        local info = {
+            slot = slot,
+            spec = spec,
+            exemplarUid = SlotExemplarUid(slot, spec),
+            seen = {},
+            matches = {},
+        }
+        infos[i] = info
+        bySlot[i] = info.matches
+        if type(slot) == "table" then
+            local exemplar = ResolveLearnedExemplar(slot, spec)
+            if type(exemplar) == "table" then
+                local uid = tonumber(exemplar.uniqueID) or info.exemplarUid
+                if uid > 0 then
+                    info.seen[uid] = true
+                end
+                info.matches[#info.matches + 1] = exemplar
+            end
+        end
+    end
+
+    local store = ItemsStore()
+    local Items = StockPiler3.Items
+    if type(store) ~= "table" or not Items or not Items.AsItemData then
+        for i = 1, #infos do
+            SortMatchList(infos[i].matches, infos[i].exemplarUid)
+        end
+        return bySlot
+    end
+
+    for key, row in pairs(store) do
+        local uid = tonumber(key) or 0
+        if uid <= 0 and type(row) == "table" then
+            uid = tonumber(row.uniqueID) or 0
+        end
+        if uid > 0 then
+            local itemData = nil
+            for i = 1, #infos do
+                local info = infos[i]
+                if type(info.slot) == "table" and type(info.spec) == "table" and not info.seen[uid] then
+                    if itemData == nil then
+                        itemData = ResolveDisplayItem(uid)
+                        if type(itemData) ~= "table" then
+                            break
+                        end
+                    end
+                    if ItemMatchesSpec(itemData, info.spec) then
+                        info.seen[uid] = true
+                        info.matches[#info.matches + 1] = itemData
+                    end
+                end
+            end
+        end
+    end
+
+    for i = 1, #infos do
+        SortMatchList(infos[i].matches, infos[i].exemplarUid)
+    end
+    return bySlot
+end
+
+local function AppendMatchNameRow(rows, itemData, role)
+    if type(itemData) ~= "table" then
+        return
+    end
+    local name = itemData.name
+    if name == nil or name == L"" then
+        return
+    end
+    local r, g, b = 255, 255, 255
+    local VL = StockPiler3.ViewList
+    if VL and VL.ItemRarityNameColor then
+        r, g, b = VL.ItemRarityNameColor(itemData)
+    end
+    rows[#rows + 1] = {
+        text = IconMarkup(itemData.iconNum) .. name,
+        kind = "body",
+        role = role,
+        color = { r = r, g = g, b = b },
+    }
+end
+
+--- Append one fingerprint ingredient block (header + known matches + yellow stats).
+local function AppendIngredientSection(rows, header, stats, role, statsColor, matches)
     rows[#rows + 1] = {
         text = header,
         kind = "ingredient",
         role = role,
     }
+    if type(matches) == "table" then
+        for i = 1, #matches do
+            AppendMatchNameRow(rows, matches[i], role)
+        end
+    end
     if stats ~= nil and stats ~= L"" then
         rows[#rows + 1] = {
             text = stats,
@@ -246,7 +485,8 @@ local function AppendIngredientSection(rows, header, stats, role, statsColor)
     end
 end
 
---- Recipe tip rows: title/meta, then one section per perCraft unit (no names / Have-Need).
+--- Recipe tip rows: title/meta, then one section per perCraft unit.
+--- Each section lists all known fingerprint-matching ingredients (rarity tint).
 function RecipeTooltip.BuildRows(recipeData)
     if type(recipeData) ~= "table" then
         return {}
@@ -324,18 +564,20 @@ function RecipeTooltip.BuildRows(recipeData)
         end
     end
 
+    local matchesBySlot = CollectKnownMatchesBySlot(materials)
     local sectionShown = 0
     for i = 1, #materials do
         local slot, spec = ResolveSlot(materials[i])
         if type(slot) == "table" then
             local header, stats, role = SlotHeaderAndStats(slot, spec, tipContext)
+            local matches = matchesBySlot[i]
             local copies = math.max(1, tonumber(slot.perCraft) or 1)
             for _ = 1, copies do
                 if sectionShown > 0 then
                     RecipeTooltip.AppendSeparator(rows)
                 end
                 sectionShown = sectionShown + 1
-                AppendIngredientSection(rows, header, stats, role, statsColor)
+                AppendIngredientSection(rows, header, stats, role, statsColor, matches)
             end
         end
     end

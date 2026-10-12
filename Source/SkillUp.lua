@@ -1775,7 +1775,10 @@ local function RepaintSkillUpWatch()
     -- keep the reload paint until /sp3 dumpall bumped snapGen.
     Ui._watchUiLastKey = nil
     Ui._watchUiFlushedAt = 0
-    if Ui.MarkWatchUiDirty then
+    local Bus = StockPiler3.EventBus
+    if Bus and Bus.FireWatchUiDirty then
+        Bus.FireWatchUiDirty({ immediate = true, reason = "skillup-stall" })
+    elseif Ui.MarkWatchUiDirty then
         Ui.MarkWatchUiDirty()
     end
 end

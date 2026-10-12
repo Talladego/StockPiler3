@@ -285,7 +285,9 @@ end
 local function EnsureHaveCacheForSnap()
     local snapGen = CurrentSnapGen()
     if Planner._specHaveSnapGen ~= snapGen or type(Planner._specHaveCache) ~= "table" then
-        if HoldHaveCacheQuiet() and type(Planner._specHaveCache) == "table" then
+        if HoldHaveCacheQuiet() and type(Planner._specHaveCache) == "table"
+            and Planner._forceWarmHave ~= true
+        then
             -- Keep prior counts for orch probes, but do NOT claim this snap is warm
             -- and do NOT advance _specHaveSnapGen. Remount-as-warm left CheapRebuild
             -- trusting stale mat totals after the first bag move (Watch craftable stuck).
@@ -313,7 +315,10 @@ local function WarmSpecHaveCache(specs)
         return 0
     end
     -- During quiet/orch hold: never bag-walk and never mark warm (stale remount).
-    if HoldHaveCacheQuiet() and type(Planner._specHaveCache) == "table" then
+    -- Post-brew forceRecount may set _forceWarmHave to walk bags anyway.
+    if HoldHaveCacheQuiet() and type(Planner._specHaveCache) == "table"
+        and Planner._forceWarmHave ~= true
+    then
         EnsureHaveCacheForSnap()
         return 0
     end
@@ -3957,8 +3962,13 @@ local function RefreshSkillUpWatchRows(rows, opts)
         local E = StockPiler3.Events
         if B and E and E.PLAN_UPDATED then
             B.Fire(E.PLAN_UPDATED, { reason = "ephemeral-cleared" })
-        elseif StockPiler3.Ui and StockPiler3.Ui.MarkWatchUiDirty then
-            StockPiler3.Ui.MarkWatchUiDirty()
+        else
+            local Bus = StockPiler3.EventBus
+            if Bus and Bus.FireWatchUiDirty then
+                Bus.FireWatchUiDirty({ reason = "ephemeral-cleared" })
+            elseif StockPiler3.Ui and StockPiler3.Ui.MarkWatchUiDirty then
+                StockPiler3.Ui.MarkWatchUiDirty()
+            end
         end
         local Grow = StockPiler3.Grow
         if Grow and Grow.MarkPlantJobDirty then
@@ -3978,6 +3988,8 @@ local function PatchWatchRowsLiveCounts(rows, opts)
     opts = type(opts) == "table" and opts or {}
     local syncSnapshot = opts.syncSnapshot ~= false
     local allowWarmHave = opts.allowWarmHave ~= false
+    -- After brew / bag settle: recount craftable even while apo session stays loaded.
+    local forceRecountCraftable = opts.forceRecountCraftable == true
     if type(rows) ~= "table" then
         return
     end
@@ -3988,7 +4000,9 @@ local function PatchWatchRowsLiveCounts(rows, opts)
         if type(session) == "table"
             and (session.phase == "loading" or session.phase == "loaded")
         then
-            allowWarmHave = false
+            if forceRecountCraftable ~= true then
+                allowWarmHave = false
+            end
             brewSessionActive = true
         end
     end
@@ -4026,28 +4040,39 @@ local function PatchWatchRowsLiveCounts(rows, opts)
             end
         end
     end
+    if forceRecountCraftable then
+        needCraftable = true
+    end
     local haveWarm = IsHaveCacheWarmForSnap()
     if needCraftable then
         BeginPlanCraftsMemo()
-        if not haveWarm and allowWarmHave then
+        if not haveWarm and (allowWarmHave or forceRecountCraftable) then
+            if forceRecountCraftable then
+                Planner._forceWarmHave = true
+            end
             WarmSpecHaveCacheForWatches()
+            Planner._forceWarmHave = nil
             haveWarm = IsHaveCacheWarmForSnap()
         end
     end
-    local recountCraftable = needCraftable and (haveWarm or allowWarmHave)
+    -- Prefer warm cache; force path still recounts after WarmHave attempt.
+    local recountCraftable = needCraftable and (haveWarm or allowWarmHave or forceRecountCraftable)
     -- Mid-brew Watch catch-up: Stock/Status only (no craftable recount).
-    if opts.recountCraftable == false then
+    if opts.recountCraftable == false and forceRecountCraftable ~= true then
         recountCraftable = false
     end
     -- Quiet/storm remount keeps prior have counts warm for orch probes. Never stamp
     -- craftable from that remount — Watch would look one bag-move behind.
-    if recountCraftable and HoldHaveCacheQuiet() then
+    if recountCraftable and HoldHaveCacheQuiet() and forceRecountCraftable ~= true then
         recountCraftable = false
     end
     local selectiveCraftable = false
     local deltaUids, deltaKeys
     -- Settings / knowledge / watch-gen changes must full-recount (not bag-delta).
-    if recountCraftable and structDirty ~= true and Inv.GetLastNetUidDelta then
+    -- forceRecountCraftable always full-recounts (post-brew mat spend).
+    if recountCraftable and forceRecountCraftable ~= true and structDirty ~= true
+        and Inv.GetLastNetUidDelta
+    then
         local delta = Inv.GetLastNetUidDelta()
         if type(delta) == "table" then
             -- Any spend or restore: full craftable recount. Selective touch-sets
@@ -4276,7 +4301,14 @@ local function PatchWatchRowsLiveCounts(rows, opts)
             end
         end
         if beforeReady ~= afterReady then
-            if StockPiler3.Ui and StockPiler3.Ui.RequestFooterRefresh then
+            local Bus = StockPiler3.EventBus
+            local E = StockPiler3.Events
+            if Bus and Bus.Fire and E and E.CRAFT_READY_CHANGED then
+                Bus.Fire(E.CRAFT_READY_CHANGED, { ready = afterReady == true })
+            end
+            if Bus and Bus.FireFooterDirty then
+                Bus.FireFooterDirty({ reason = "craft-ready" })
+            elseif StockPiler3.Ui and StockPiler3.Ui.RequestFooterRefresh then
                 StockPiler3.Ui.RequestFooterRefresh()
             end
         end
@@ -4300,7 +4332,10 @@ local function PatchWatchRowsLiveCounts(rows, opts)
         if BrewLive and BrewLive.InvalidateCanBrewCache then
             BrewLive.InvalidateCanBrewCache()
         end
-        if StockPiler3.Ui and StockPiler3.Ui.RequestFooterRefresh then
+        local Bus = StockPiler3.EventBus
+        if Bus and Bus.FireFooterDirty then
+            Bus.FireFooterDirty({ reason = "seed-buffer" })
+        elseif StockPiler3.Ui and StockPiler3.Ui.RequestFooterRefresh then
             StockPiler3.Ui.RequestFooterRefresh()
         end
     end
@@ -4949,8 +4984,17 @@ function Planner.SyncLiveStatusClosedWindow()
     end
     local after = Planner.HasReadyToCraft()
     local flipped = before ~= after
-    if flipped and StockPiler3.Ui and StockPiler3.Ui.RequestFooterRefresh then
-        StockPiler3.Ui.RequestFooterRefresh()
+    if flipped then
+        local Bus = StockPiler3.EventBus
+        local E = StockPiler3.Events
+        if Bus and Bus.Fire and E and E.CRAFT_READY_CHANGED then
+            Bus.Fire(E.CRAFT_READY_CHANGED, { ready = after == true })
+        end
+        if Bus and Bus.FireFooterDirty then
+            Bus.FireFooterDirty({ reason = "closed-live" })
+        elseif StockPiler3.Ui and StockPiler3.Ui.RequestFooterRefresh then
+            StockPiler3.Ui.RequestFooterRefresh()
+        end
     end
     if Brew and Brew.MaybeNotifyBrewReady then
         Brew.MaybeNotifyBrewReady()

@@ -24,6 +24,8 @@ Brew.OPEN_RETRY_TICKS = 20
 Brew._session = Brew._session or { phase = "idle" }
 Brew._job = nil
 Brew._loadSource = nil -- "auto" | "manual"
+-- Row Brew click: load then Perform once settle clears (one-click load+brew).
+Brew._performAfterManualLoad = false
 Brew._brewOpLockUntil = 0
 Brew._adoptBlockUntil = 0
 Brew._openFailLatched = false
@@ -87,6 +89,15 @@ local function SetSessionPhase(phase, reason)
     end
     if prev ~= phase then
         LogBrew("session " .. prev .. "->" .. phase .. " reason=" .. tostring(reason or "?"))
+        local Bus = StockPiler3.EventBus
+        if Bus and Bus.FireBrewSessionChanged then
+            Bus.FireBrewSessionChanged({
+                phase = phase,
+                prev = prev,
+                reason = tostring(reason or ""),
+                loadSource = Brew._loadSource,
+            })
+        end
     end
 end
 
@@ -873,7 +884,12 @@ function Brew.AutoBrewBlockedReason()
     return nil
 end
 
-local function RequestFooterRefresh()
+local function RequestFooterRefresh(payload)
+    local Bus = StockPiler3.EventBus
+    if Bus and Bus.FireFooterDirty then
+        Bus.FireFooterDirty(type(payload) == "table" and payload or {})
+        return
+    end
     if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
         StockPiler3Window.RequestFooterRefresh()
     elseif StockPiler3.Ui and StockPiler3.Ui.RequestFooterRefresh then
@@ -882,36 +898,16 @@ local function RequestFooterRefresh()
 end
 
 --- Force footer + macro tint even when CanBrewNow is unchanged (mid-craft greying).
---- opts.rows == false: Footer/Macro only (no Watch list paint). Mid-load and
---- CraftingUpdated storms used to ForceBrew → WatchRows every tick (~250-340ms
---- per SkillUp brew with Footer x3 + WatchRows x2-3).
+--- Publishes FOOTER_DIRTY / WATCH_UI_DIRTY / BREW_SESSION_CHANGED so View listeners
+--- react; keeps a same-frame paint fallback for chrome during load storms.
+--- opts.rows == false: Footer/Macro only (no Watch list paint).
 local function ForceBrewUiRefresh(opts)
     opts = type(opts) == "table" and opts or {}
     Brew.InvalidateCanBrewCache()
     local frame = tonumber(StockPiler3.FrameCounter) or 0
     Brew._brewUiForcedFrame = frame
-    RequestFooterRefresh()
-    -- Immediate macro tint: FlushPendingFooterRefresh holds during plant quiet /
-    -- harvest storm, which left Craft/Brew lit after open-fail / busy while
-    -- clicks already no-op on CanBrewNow.
-    if StockPiler3Window and StockPiler3Window.SyncActionReadiness then
-        StockPiler3Window.SyncActionReadiness({ immediate = true })
-    elseif StockPiler3.Macro and StockPiler3.Macro.RefreshMacroButtonAppearance then
-        local canHarvest = StockPiler3.Grow and StockPiler3.Grow.CanHarvestNow
-            and StockPiler3.Grow.CanHarvestNow() == true
-        local canBrew = Brew.CanBrewNow() == true
-        StockPiler3.Macro._enabledSyncPending = false
-        StockPiler3.Macro._pendingCanHarvest = nil
-        StockPiler3.Macro._pendingCanBrew = nil
-        StockPiler3.Macro.RefreshMacroButtonAppearance({
-            canHarvest = canHarvest,
-            canBrew = canBrew,
-        })
-    end
-    -- Row Load/Brew chrome must flip as soon as session phase changes.
-    if StockPiler3TabWatch and StockPiler3TabWatch.InvalidateBrewChrome then
-        StockPiler3TabWatch.InvalidateBrewChrome()
-    end
+    local Bus = StockPiler3.EventBus
+    RequestFooterRefresh({ immediate = true, syncMacro = true })
     local wantRows = opts.rows ~= false
     -- Load-job slot ticks: Footer/Macro only. Paint rows when _job clears (loaded).
     if wantRows and type(Brew._job) == "table" then
@@ -921,37 +917,52 @@ local function ForceBrewUiRefresh(opts)
     if wantRows and Brew._awaitingBrewComplete == true and opts.rows ~= true then
         wantRows = false
     end
-    -- Mid-brew Footer/Macro path must not MarkWatchUiDirty — that queued a full
-    -- RefreshActiveTab (ListBoxSetDisplayOrder) once the inter-craft hold expired
-    -- and blanked every Watch row between crafts. Paint chrome in place only.
     if wantRows then
         Brew.ArmWatchUiHold()
     end
-    -- At most one UpdateRows per FrameCounter.
-    if DoesWindowExist("StockPiler3Window")
+    if Bus and Bus.FireBrewSessionChanged then
+        Bus.FireBrewSessionChanged({
+            phase = tostring(GetSession().phase or "idle"),
+            loadSource = Brew._loadSource,
+            rows = wantRows,
+            recount = opts.recount == true,
+            reason = tostring(opts.reason or "force-ui"),
+        })
+    elseif Bus and Bus.FireWatchUiDirty then
+        Bus.FireWatchUiDirty({
+            immediate = wantRows,
+            recount = opts.recount == true,
+        })
+    end
+    -- Same-frame fallback chrome (Ui listeners may coalesce under plant quiet).
+    if StockPiler3TabWatch and StockPiler3TabWatch.InvalidateBrewChrome then
+        StockPiler3TabWatch.InvalidateBrewChrome()
+    end
+    if wantRows
+        and DoesWindowExist("StockPiler3Window")
         and WindowGetShowing("StockPiler3Window") == true
         and StockPiler3TabWatch
         and StockPiler3TabWatch.UpdateRows
+        and Brew._brewRowsPaintFrame ~= frame
     then
-        if Brew._brewRowsPaintFrame ~= frame then
-            Brew._brewRowsPaintFrame = frame
-            -- Always keepVisible: PopulatorIndices lag mid-brew / apo open-close;
-            -- wantRows~=true previously inverted this and hid every row.
-            StockPiler3TabWatch.UpdateRows({ keepVisible = true })
-        end
+        Brew._brewRowsPaintFrame = frame
+        StockPiler3TabWatch.UpdateRows({ keepVisible = true })
     end
     if StockPiler3Window and StockPiler3Window.SyncActionReadiness then
         StockPiler3Window.SyncActionReadiness({ immediate = true })
-        -- Immediate sync already painted; clear pending so end-of-frame flush
-        -- does not SyncActionReadiness again with the same inputs.
         StockPiler3Window._footerRefreshPending = false
         StockPiler3Window._footerSyncAllowDeferred = false
     elseif StockPiler3.Macro and StockPiler3.Macro.RefreshMacroButtonAppearance then
+        local canHarvest = StockPiler3.Grow and StockPiler3.Grow.CanHarvestNow
+            and StockPiler3.Grow.CanHarvestNow() == true
+        StockPiler3.Macro._enabledSyncPending = false
+        StockPiler3.Macro._pendingCanHarvest = nil
+        StockPiler3.Macro._pendingCanBrew = nil
         StockPiler3.Macro.RefreshMacroButtonAppearance({
+            canHarvest = canHarvest,
             canBrew = Brew.CanBrewNow() == true,
         })
     end
-    -- Perform's hotbar echo re-lights Craft after this paint. Reassert next frame.
     if StockPiler3.Macro and StockPiler3.Macro.ArmEnableReassert then
         StockPiler3.Macro.ArmEnableReassert()
     end
@@ -1000,6 +1011,7 @@ local function ClearSession(opts)
     opts = type(opts) == "table" and opts or {}
     Brew._job = nil
     Brew._loadSource = nil
+    Brew._performAfterManualLoad = false
     Brew._awaitingBrewComplete = false
     Brew._postBrewClearArmed = false
     Brew._brewHaveBefore = nil
@@ -1793,6 +1805,9 @@ function Brew.BeginForRow(row, opts)
     end
     -- Manual skips AutoGrow holds (plant/harvest/refine); clears open-fail backoff.
     if BeginLoadJob(row, source) then
+        if opts.performAfter == true and source == "manual" then
+            Brew._performAfterManualLoad = true
+        end
         Brew.ArmWatchUiHold()
         KickLoadJob()
         return true
@@ -1841,10 +1856,12 @@ function Brew.OnRowCraftClick(row)
     end
     local session = GetSession()
     local sameRow = RowMatchesSession(row, session)
-    if session.phase == "loaded"
-        and sameRow
-        and Brew._loadSource == "manual"
-    then
+    -- Already loaded for this row: Perform on this click (any load source).
+    if tostring(session.phase or "") == "loaded" and sameRow then
+        if InLoadSettle() then
+            Brew._performAfterManualLoad = true
+            return true
+        end
         local ok = Brew.TryPerform(nil)
         if ok ~= true then
             ChatBrewBlocked(Brew._lastPerformBlockWhy or "not_ready")
@@ -1861,7 +1878,8 @@ function Brew.OnRowCraftClick(row)
         end
         return false
     end
-    local ok = Brew.BeginForRow(row, { manual = true })
+    -- One click: load this recipe, then Perform after settle.
+    local ok = Brew.BeginForRow(row, { manual = true, performAfter = true })
     if ok ~= true then
         ChatBrewBlocked("not_ready")
     end
@@ -2178,6 +2196,48 @@ function Brew.MaybeAutoPerformReady()
     return ok == true
 end
 
+--- Row Brew button: after manual load settles, Perform once (one-click load+brew).
+--- BoardReadyToAutoPerform is auto-source only; use PerformBlockReason here.
+function Brew.MaybePerformAfterManualLoad()
+    if Brew._performAfterManualLoad ~= true then
+        return false
+    end
+    if type(Brew._job) == "table" then
+        return false
+    end
+    if InLoadSettle() then
+        return false
+    end
+    local session = GetSession()
+    if tostring(session.phase or "") ~= "loaded" then
+        return false
+    end
+    if Brew._loadSource ~= "manual" then
+        Brew._performAfterManualLoad = false
+        return false
+    end
+    if Brew.IsBusy() then
+        return false
+    end
+    local why = PerformBlockReason()
+    if why ~= nil then
+        if ShouldAutoUnloadForEngine(why) then
+            LogBrew("manual-perform-after unload reason=" .. tostring(why))
+            Brew.ClearLoadedSession({ reason = why })
+            ForceBrewUiRefresh()
+        end
+        return false
+    end
+    Brew._performAfterManualLoad = false
+    local ok = Brew.TryPerform(nil)
+    if ok == true then
+        LogBrew("manual-perform-after-load")
+    else
+        ChatBrewBlocked(Brew._lastPerformBlockWhy or "not_ready")
+    end
+    return ok == true
+end
+
 function Brew.OnUpdate(timeElapsed)
     if type(Brew._job) == "table" then
         Brew.Tick()
@@ -2211,6 +2271,9 @@ function Brew.OnUpdate(timeElapsed)
     if now > 0 and now >= due then
         Brew._stuckProbeAt = now
         Brew.ProbeStuckAutoLoaded("onupdate")
+        if Brew.MaybePerformAfterManualLoad then
+            Brew.MaybePerformAfterManualLoad()
+        end
         if Brew.MaybeAutoPerformReady then
             Brew.MaybeAutoPerformReady()
         end
@@ -2281,6 +2344,47 @@ function Brew.OnCraftingUpdated()
     ForceBrewUiRefresh({ rows = false })
 end
 
+--- Bust craftable stamps + recount Stock/Status/Craftable on plan + Watch listData.
+--- Manual brew keeps phase=loaded (normally blocks WarmHave recount).
+local function SyncWatchLiveCountsAfterBrew()
+    local Planner = StockPiler3.Planner
+    if not Planner then
+        return
+    end
+    local listData = StockPiler3TabWatch and StockPiler3TabWatch.listData or nil
+    if Planner.InvalidateCraftableStamps then
+        Planner.InvalidateCraftableStamps(listData)
+    end
+    local PS = StockPiler3.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    local planRows = type(plan) == "table" and plan.rows or nil
+    local patchOpts = {
+        syncSnapshot = true,
+        allowWarmHave = true,
+        forceRecountCraftable = true,
+    }
+    if type(planRows) == "table" and Planner.PatchWatchRowsLiveCounts then
+        Planner.PatchWatchRowsLiveCounts(planRows, patchOpts)
+    end
+    if type(listData) == "table" and listData ~= planRows and Planner.PatchWatchRowsLiveCounts then
+        Planner.PatchWatchRowsLiveCounts(listData, patchOpts)
+    end
+    -- Optimistic craftable on the session row when bags have not snapped yet.
+    local session = GetSession()
+    local row = FindSessionRow()
+    if type(row) == "table" and session.craftable ~= nil then
+        local c = math.max(0, tonumber(session.craftable) or 0)
+        if (tonumber(row.craftable) or 0) > c then
+            row.craftable = c
+            row.craftableText = towstring(tostring(c))
+        end
+    end
+    local Bus = StockPiler3.EventBus
+    if Bus and Bus.FireWatchUiDirty then
+        Bus.FireWatchUiDirty({ immediate = true, recount = true, reason = "after-brew-counts" })
+    end
+end
+
 --- After a brew completes: sync live stock; unload when target met or no longer Ready.
 function Brew.RefreshSessionAfterBrew()
     local session = GetSession()
@@ -2311,6 +2415,7 @@ function Brew.RefreshSessionAfterBrew()
         then
             StockPiler3.Scheduler.EnqueueBagFlush(true)
         end
+        SyncWatchLiveCountsAfterBrew()
         ForceBrewUiRefresh()
         return
     end
@@ -2333,17 +2438,11 @@ function Brew.RefreshSessionAfterBrew()
     if session.craftable ~= nil then
         session.craftable = math.max(0, (tonumber(session.craftable) or 0) - 1)
     end
-    -- Live-patch plan so Ready / Shared / Restocking reflects post-brew mats before gate.
-    local PS = StockPiler3.PlanSnapshot
-    local plan = PS and PS.Get and PS.Get()
-    if type(plan) == "table" and type(plan.rows) == "table"
-        and StockPiler3.Planner and StockPiler3.Planner.PatchWatchRowsLiveCounts
+    -- Live-patch Watch rows (stock/status/craftable) before unload gate.
+    SyncWatchLiveCountsAfterBrew()
+    if not (StockPiler3.Planner and StockPiler3.Planner.PatchWatchRowsLiveCounts)
+        and StockPiler3.Scheduler and StockPiler3.Scheduler.EnqueuePlanRebuild
     then
-        StockPiler3.Planner.PatchWatchRowsLiveCounts(plan.rows, {
-            syncSnapshot = true,
-            allowWarmHave = true,
-        })
-    elseif StockPiler3.Scheduler and StockPiler3.Scheduler.EnqueuePlanRebuild then
         StockPiler3.Scheduler.EnqueuePlanRebuild()
     end
     local stillValid = Brew.ValidateApothecaryPerform() == true
@@ -2422,6 +2521,8 @@ function Brew.OnInventorySnapshot()
         return
     end
     SyncSessionStockFromBags(session)
+    -- Bags just snapped: refresh Watch stock/status/craftable for manual + auto.
+    SyncWatchLiveCountsAfterBrew()
     if not RowNeedsMorePotions(session) then
         if Brew._loadSource == "manual" and Brew.ValidateApothecaryPerform() == true then
             Brew._postBrewClearArmed = false
@@ -2436,16 +2537,6 @@ function Brew.OnInventorySnapshot()
         return
     end
     if Brew._loadSource ~= "manual" then
-        local PS = StockPiler3.PlanSnapshot
-        local plan = PS and PS.Get and PS.Get()
-        if type(plan) == "table" and type(plan.rows) == "table"
-            and StockPiler3.Planner and StockPiler3.Planner.PatchWatchRowsLiveCounts
-        then
-            StockPiler3.Planner.PatchWatchRowsLiveCounts(plan.rows, {
-                syncSnapshot = true,
-                allowWarmHave = true,
-            })
-        end
         local row = FindSessionRow()
         if not RowIsReadyToCraft(row) then
             Brew.ClearLoadedSession({ reason = "after-brew-inv-not-ready" })
@@ -2457,6 +2548,8 @@ function Brew.OnInventorySnapshot()
             Brew.ClearLoadedSession({ reason = "after-brew-no-advance" })
             return
         end
+    else
+        ForceBrewUiRefresh()
     end
     if Brew.MaybeClearLoadedIfCannotContinue("after-brew-inv") then
         return

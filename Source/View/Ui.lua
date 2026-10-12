@@ -274,6 +274,7 @@ end
 --- Light in-place stock/status paint while Watch is open (no ListBox rebind).
 --- Defined after ShouldDeferWatchFlush (Lua local visibility).
 --- opts.ignoreDefer: plant quiet / harvest storm still need status recount.
+--- opts.forceRecount / allowBrewHold: post-brew event path (session may stay loaded).
 local function TryWatchLiveCatchup(opts)
     opts = type(opts) == "table" and opts or {}
     if not IsWatchTabVisible() then
@@ -284,22 +285,34 @@ local function TryWatchLiveCatchup(opts)
     end
     local Orch = StockPiler3.Orchestrator
     local Brew = StockPiler3.Brew
-    if (Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true)
+    local brewHold = (Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true)
         or (Brew and Brew.IsWatchUiHold and Brew.IsWatchUiHold() == true)
-    then
-        -- Brew path has its own ~1s catch-up.
+    if brewHold and opts.allowBrewHold ~= true then
+        -- Brew path has its own catch-up / BREW_SESSION_CHANGED handler.
         return
     end
     local listData = StockPiler3TabWatch and StockPiler3TabWatch.listData
     if type(listData) ~= "table" or #listData == 0 then
         return
     end
-    if StockPiler3.Planner and StockPiler3.Planner.PatchWatchRowsLiveCounts then
-        StockPiler3.Planner.PatchWatchRowsLiveCounts(listData, {
-            allowWarmHave = false,
-            syncSnapshot = false,
-            recountCraftable = false,
-        })
+    local Planner = StockPiler3.Planner
+    if Planner and Planner.PatchWatchRowsLiveCounts then
+        if opts.forceRecount == true then
+            if Planner.InvalidateCraftableStamps then
+                Planner.InvalidateCraftableStamps(listData)
+            end
+            Planner.PatchWatchRowsLiveCounts(listData, {
+                allowWarmHave = true,
+                syncSnapshot = true,
+                forceRecountCraftable = true,
+            })
+        else
+            Planner.PatchWatchRowsLiveCounts(listData, {
+                allowWarmHave = false,
+                syncSnapshot = false,
+                recountCraftable = false,
+            })
+        end
     end
     if StockPiler3TabWatch.UpdateRows then
         StockPiler3TabWatch.UpdateRows({ keepVisible = true })
@@ -340,10 +353,10 @@ end
 --- Run even while plan/prewarm defers Watch craftable paint.
 local function TryCatalogLiveCatchup()
     if FlushCatalogIfStructureDirty() then
-        return
+        return true
     end
     if not IsCatalogTabVisible() then
-        return
+        return false
     end
     local selected = StockPiler3Window and StockPiler3Window.SelectedTab
     if selected == StockPiler3Window.TABS_POTIONS
@@ -355,7 +368,7 @@ local function TryCatalogLiveCatchup()
         then
             StockPiler3TabPotions.UpdateRows()
         end
-        return
+        return true
     end
     if selected == StockPiler3Window.TABS_PLANTS
         and StockPiler3TabPlants
@@ -366,7 +379,43 @@ local function TryCatalogLiveCatchup()
         then
             StockPiler3TabPlants.UpdateRows()
         end
+        return true
     end
+    return false
+end
+
+--- Catalog tab: never RefreshActiveTab for bag/plan churn (ListBoxSetDisplayOrder
+--- {}→order resets Potions/Plants scroll). Structure learns rebuild once; Have patches in place.
+local function FlushCatalogTabUi()
+    if not IsCatalogTabVisible() then
+        return false
+    end
+    local knowledgeGen = 0
+    if StockPiler3.Knowledge and StockPiler3.Knowledge.GetGen then
+        knowledgeGen = tonumber(StockPiler3.Knowledge.GetGen()) or 0
+    end
+    local structureNeeded = Ui._catalogStructureDirty == true
+        or knowledgeGen ~= (tonumber(Ui._watchUiLastKnowledgeGen) or 0)
+    if structureNeeded then
+        Ui._catalogStructureDirty = true
+        FlushCatalogIfStructureDirty()
+    else
+        TryCatalogLiveCatchup()
+    end
+    local now = 0
+    if type(GetGameTime) == "function" then
+        now = tonumber(GetGameTime()) or 0
+    end
+    Ui._watchUiDirty = false
+    Ui._watchUiFlushedAt = now
+    Ui._watchUiLastKnowledgeGen = knowledgeGen
+    Ui._watchUiLastPlanGen = CurrentPlanGen()
+    Ui._watchUiLastBrewKey = BrewChromeKey()
+    Ui._watchUiLastKey = WatchContentKey()
+    if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
+        StockPiler3Window.RequestFooterRefresh()
+    end
+    return true
 end
 
 function Ui.ClearWatchTipCaches()
@@ -384,6 +433,88 @@ function Ui.RequestFooterRefresh()
     if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
         StockPiler3Window.RequestFooterRefresh()
     end
+end
+
+function Ui.FlushPendingFooterRefresh()
+    if StockPiler3Window and StockPiler3Window.FlushPendingFooterRefresh then
+        StockPiler3Window.FlushPendingFooterRefresh()
+    end
+end
+
+--- FOOTER_DIRTY → footer/macro chrome. payload.immediate syncs readiness now.
+local function OnFooterDirty(payload)
+    Ui.RequestFooterRefresh()
+    if type(payload) ~= "table" or payload.immediate ~= true then
+        return
+    end
+    local Sch = StockPiler3.Scheduler
+    if Sch then
+        if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+            return
+        end
+        if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
+            return
+        end
+        if Sch.IsSessionSettling and Sch.IsSessionSettling() == true then
+            return
+        end
+    end
+    if StockPiler3Window and StockPiler3Window.SyncActionReadiness then
+        StockPiler3Window.SyncActionReadiness({ immediate = true })
+    elseif payload.syncMacro == true and StockPiler3.Macro
+        and StockPiler3.Macro.RefreshMacroButtonAppearance
+    then
+        local Brew = StockPiler3.Brew
+        local canHarvest = StockPiler3.Grow and StockPiler3.Grow.CanHarvestNow
+            and StockPiler3.Grow.CanHarvestNow() == true
+        local canBrew = Brew and Brew.CanBrewNow and Brew.CanBrewNow() == true
+        StockPiler3.Macro.RefreshMacroButtonAppearance({
+            canHarvest = canHarvest,
+            canBrew = canBrew,
+        })
+    end
+end
+
+--- WATCH_UI_DIRTY → coalesced Watch flush; payload.immediate paints rows now.
+local function OnWatchUiDirty(payload)
+    payload = type(payload) == "table" and payload or {}
+    Ui.MarkWatchUiDirty()
+    if payload.immediate ~= true then
+        return
+    end
+    if StockPiler3TabWatch and StockPiler3TabWatch.InvalidateBrewChrome then
+        StockPiler3TabWatch.InvalidateBrewChrome()
+    end
+    TryWatchLiveCatchup({
+        ignoreDefer = true,
+        allowBrewHold = true,
+        forceRecount = payload.recount == true or payload.forceRecount == true,
+    })
+    TryCatalogLiveCatchup()
+end
+
+--- BREW_SESSION_CHANGED → row Brew chrome + live counts without waiting on coalesce.
+local function OnBrewSessionChanged(payload)
+    payload = type(payload) == "table" and payload or {}
+    Ui.MarkWatchUiDirty()
+    Ui._watchUiLastBrewKey = nil
+    if StockPiler3TabWatch and StockPiler3TabWatch.InvalidateBrewChrome then
+        StockPiler3TabWatch.InvalidateBrewChrome()
+    end
+    if payload.recount == true or payload.forceRecount == true then
+        TryWatchLiveCatchup({
+            ignoreDefer = true,
+            allowBrewHold = true,
+            forceRecount = true,
+        })
+    elseif DoesWindowExist("StockPiler3Window")
+        and WindowGetShowing("StockPiler3Window") == true
+        and StockPiler3TabWatch
+        and StockPiler3TabWatch.UpdateRows
+    then
+        StockPiler3TabWatch.UpdateRows({ keepVisible = true })
+    end
+    OnFooterDirty({ immediate = true, syncMacro = true })
 end
 
 function Ui.InvalidateSkillGates()
@@ -458,6 +589,12 @@ function Ui.FlushWatchUiIfDirty()
             StockPiler3TabWatch.UpdateRows({ keepVisible = true })
         end
         -- Catalog Have is L0-only; do not wait for Have-warm / plan like Watch craftable.
+        -- Consume dirty on catalog so a later defer-end does not RefreshActiveTab
+        -- (empty→full ListBoxSetDisplayOrder) and yank Potions scroll to the top.
+        if IsCatalogTabVisible() then
+            FlushCatalogTabUi()
+            return true
+        end
         TryCatalogLiveCatchup()
         -- Plant quiet / harvest storm skip full RefreshWatch; still patch stock/status.
         if hardHold
@@ -479,6 +616,10 @@ function Ui.FlushWatchUiIfDirty()
     -- caused SkillUp / watch row flicker/disappear via ListBoxSetDisplayOrder.
     if brewSessionActive then
         -- Manual/apo learn can land during Watch brew-hold; still rebuild Potions.
+        if IsCatalogTabVisible() then
+            FlushCatalogTabUi()
+            return true
+        end
         FlushCatalogIfStructureDirty()
         local listData = StockPiler3TabWatch and StockPiler3TabWatch.listData
         local listEmpty = type(listData) ~= "table" or #listData == 0
@@ -547,11 +688,23 @@ function Ui.FlushWatchUiIfDirty()
             if StockPiler3.Perf and StockPiler3.Perf.Begin then
                 StockPiler3.Perf.Begin("UiFlush.BrewCatchup")
             end
+            -- Post-brew / bag snap while session stays loaded: recount craftable too
+            -- (manual Brew used to leave Craftable stuck until hold expired).
+            if StockPiler3.Planner.InvalidateCraftableStamps then
+                StockPiler3.Planner.InvalidateCraftableStamps(listData)
+            end
             StockPiler3.Planner.PatchWatchRowsLiveCounts(listData, {
-                allowWarmHave = false,
-                syncSnapshot = false,
-                recountCraftable = false,
+                allowWarmHave = true,
+                syncSnapshot = true,
+                forceRecountCraftable = true,
             })
+            if type(planRows) == "table" and planRows ~= listData then
+                StockPiler3.Planner.PatchWatchRowsLiveCounts(planRows, {
+                    allowWarmHave = true,
+                    syncSnapshot = true,
+                    forceRecountCraftable = true,
+                })
+            end
             if StockPiler3TabWatch.UpdateRows then
                 StockPiler3TabWatch.UpdateRows({ keepVisible = true })
             end
@@ -561,6 +714,11 @@ function Ui.FlushWatchUiIfDirty()
         end
         Ui._watchUiDirty = false
         return
+    end
+
+    -- Potions/Plants selected: Have/structure only — never RefreshActiveTab (scroll jump).
+    if FlushCatalogTabUi() then
+        return true
     end
 
     -- Brew hold just dropped (or never held): one ListBox rebind if indices empty.
@@ -624,10 +782,6 @@ function Ui.FlushWatchUiIfDirty()
     if StockPiler3Window and StockPiler3Window.RefreshActiveTab then
         StockPiler3Window.RefreshActiveTab()
     end
-    -- RefreshActiveTab rebuilt the visible catalog tab when selected.
-    if IsCatalogTabVisible() then
-        Ui._catalogStructureDirty = false
-    end
     if OpenPaintActive() then
         local watchVisible = IsWatchTabVisible()
         local listCount = 0
@@ -686,17 +840,53 @@ function Ui.RegisterEventRefresh()
     track(B.Subscribe(E.PLAN_UPDATED, function()
         Ui.ClearWatchTipCaches()
         Ui.MarkWatchUiDirty()
-        if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
-            StockPiler3Window.RequestFooterRefresh()
-        end
+        Ui.RequestFooterRefresh()
     end))
     track(B.Subscribe(E.PLAN_INVALIDATED, markDirty))
     track(B.Subscribe(E.INVENTORY_SNAPSHOT, function()
         Ui.MarkWatchUiDirty()
-        TryWatchLiveCatchup()
+        -- Live paint when flush is allowed; storm/defer still coalesce.
+        TryWatchLiveCatchup({ forceRecount = true })
         TryCatalogLiveCatchup()
     end))
+    if E.INVENTORY_DIRTY then
+        track(B.Subscribe(E.INVENTORY_DIRTY, markDirty))
+    end
     track(B.Subscribe(E.GARDEN_SNAPSHOT, markDirty))
+    if E.GARDEN_DIRTY then
+        track(B.Subscribe(E.GARDEN_DIRTY, markDirty))
+    end
+    if E.PHASE_CHANGED then
+        track(B.Subscribe(E.PHASE_CHANGED, function()
+            Ui.InvalidateSkillGates()
+            markDirty()
+            Ui.RequestFooterRefresh()
+        end))
+    end
+    if E.REFINE_OUTSTANDING then
+        track(B.Subscribe(E.REFINE_OUTSTANDING, markDirty))
+    end
+    if E.VENDOR_UPDATED then
+        track(B.Subscribe(E.VENDOR_UPDATED, function()
+            markDirty()
+            Ui.RequestFooterRefresh()
+        end))
+    end
+    if E.CRAFT_READY_CHANGED then
+        track(B.Subscribe(E.CRAFT_READY_CHANGED, function()
+            Ui.RequestFooterRefresh()
+            OnWatchUiDirty({ immediate = true, recount = true })
+        end))
+    end
+    if E.FOOTER_DIRTY then
+        track(B.Subscribe(E.FOOTER_DIRTY, OnFooterDirty))
+    end
+    if E.WATCH_UI_DIRTY then
+        track(B.Subscribe(E.WATCH_UI_DIRTY, OnWatchUiDirty))
+    end
+    if E.BREW_SESSION_CHANGED then
+        track(B.Subscribe(E.BREW_SESSION_CHANGED, OnBrewSessionChanged))
+    end
     if E.KNOWLEDGE_UPDATED then
         track(B.Subscribe(E.KNOWLEDGE_UPDATED, function()
             -- Knowledge can land after an inventory flush already painted Potions.
@@ -708,6 +898,10 @@ function Ui.RegisterEventRefresh()
             Ui._watchUiLastKnowledgeGen = 0
             Ui._watchUiFlushedAt = 0
             Ui.MarkWatchUiDirty()
+            -- Show newly learned potions while the catalog tab is open (no tab flip).
+            if IsCatalogTabVisible() then
+                FlushCatalogIfStructureDirty()
+            end
         end))
     end
     if E.SESSION_LOADED then

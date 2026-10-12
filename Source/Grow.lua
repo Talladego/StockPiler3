@@ -1995,15 +1995,23 @@ local function NudgeHarvestReadiness(forceImmediate)
         or (Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true)
         or (Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true)
     if hold and not forceImmediate then
-        if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
+        local Bus = StockPiler3.EventBus
+        if Bus and Bus.FireFooterDirty then
+            Bus.FireFooterDirty({ reason = "harvest-hold" })
+        elseif StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
             StockPiler3Window.RequestFooterRefresh()
         end
         return
     end
     if StockPiler3Window and StockPiler3Window.SyncActionReadiness then
         StockPiler3Window.SyncActionReadiness({ immediate = true })
-    elseif StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
-        StockPiler3Window.RequestFooterRefresh()
+    else
+        local Bus = StockPiler3.EventBus
+        if Bus and Bus.FireFooterDirty then
+            Bus.FireFooterDirty({ immediate = true, syncMacro = true, reason = "harvest-ready" })
+        elseif StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
+            StockPiler3Window.RequestFooterRefresh()
+        end
     end
 end
 
@@ -2190,14 +2198,19 @@ function Grow.MaybeNotifyHarvestReady()
     local function NudgeFooter(forceImmediate)
         -- forceImmediate bypasses cult storm holds so enable/grey is not deferred
         -- while clicks already honor CanHarvestNow (lit-but-dead macros).
+        local Bus = StockPiler3.EventBus
         if holdFooter and forceImmediate ~= true then
-            if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
+            if Bus and Bus.FireFooterDirty then
+                Bus.FireFooterDirty({ reason = "harvest-latch-hold" })
+            elseif StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
                 StockPiler3Window.RequestFooterRefresh()
             end
             return
         end
         if StockPiler3Window and StockPiler3Window.SyncActionReadiness then
             StockPiler3Window.SyncActionReadiness({ immediate = true })
+        elseif Bus and Bus.FireFooterDirty then
+            Bus.FireFooterDirty({ immediate = true, syncMacro = true, reason = "harvest-latch" })
         elseif StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
             StockPiler3Window.RequestFooterRefresh()
         end

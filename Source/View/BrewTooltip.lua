@@ -170,7 +170,7 @@ function BrewTooltip.ShowRow(mouseoverWindow, row, anchor)
     elseif phase == "loading" then
         tip = T("watch.tip_loading", { name = name })
     elseif RowCraftableGreen(row) then
-        tip = T("watch.tip_load", { name = name })
+        tip = T("watch.tip_brew", { name = name })
     elseif type(row) == "table" and (tonumber(row.craftable) or 0) > 0 and row.seedBufferShort == true then
         tip = T("brew.blocked_buffer")
     elseif type(row) == "table" and (tonumber(row.craftable) or 0) <= 0 then

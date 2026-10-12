@@ -14,10 +14,19 @@ end
 
 function VL.ItemRarityNameColor(itemData)
     if itemData and DataUtils and DataUtils.GetItemRarityColor then
+        -- Engine GetItemRarityColor treats missing itemSet as utility grey.
+        -- Learned Items.AsItemData rows often omit itemSet; probe with 0 so rarity tint works.
+        local probe = itemData
+        if itemData.itemSet == nil and itemData.rarity ~= nil then
+            probe = {
+                rarity = itemData.rarity,
+                itemSet = 0,
+            }
+        end
         local ok, color = StockPiler3.Util.TryCallQuiet(
             "DataUtils.GetItemRarityColor",
             DataUtils.GetItemRarityColor,
-            itemData
+            probe
         )
         if ok and type(color) == "table" then
             return tonumber(color.r) or 255, tonumber(color.g) or 255, tonumber(color.b) or 255

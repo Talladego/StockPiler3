@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.356** - AutoBrew: Ready watches auto-perform; footer Brew stays dark and Craft is harvest-only while on.
+**Version 0.3.360** - Idempotent saved-data ValidateAndRepair (stamp mains, collapse fingerprint twins, drop irreparable recipes/watches).
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -139,6 +139,10 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.360 | Saved-data ValidateAndRepair on load + /sp3 audit (correct twins/mains; drop irreparable) |
+| 0.3.359 | Items: stamp main EFFECT from descriptionNarrow |
+| 0.3.358 | Recipe storage: UID-agnostic fingerprints (Scale/Chitin twins) |
+| 0.3.357 | Catalog: no Potions scroll reset on bag/plan flush; Watch rebinds after eye toggle off-tab |
 | 0.3.356 | AutoBrew on: footer Brew stays dark; Craft macro harvest-only (AutoBrew owns perform) |
 | 0.3.355 | AutoBrew master toggle: auto-perform Ready watches to target (yields to plant/refine/harvest); SyncTipSlotNeeds forward-declare |
 | 0.3.354 | Watch craftable/status recount on settings/knowledge (no /sp3 dumpall needed) |

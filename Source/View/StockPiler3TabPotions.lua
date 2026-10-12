@@ -492,11 +492,16 @@ local function BuildVisibleList()
 
     SortRows(rows)
     local order = {}
+    local structureKey = tostring(#rows)
     for i = 1, #rows do
         order[i] = i
+        local row = rows[i]
+        local id = type(row) == "table" and (row.potionKey or row.id or row.uniqueID) or ""
+        structureKey = structureKey .. "|" .. tostring(id)
     end
     StockPiler3TabPotions.listData = rows
     StockPiler3TabPotions.displayOrder = order
+    StockPiler3TabPotions._listStructureKey = structureKey
 end
 
 local function SetIconTexture(iconWin, iconNum)
@@ -561,10 +566,15 @@ function StockPiler3TabPotions.Refresh()
     end
     SyncEffectComboSelection()
     UpdateSortHeaders()
+    local prevKey = StockPiler3TabPotions._listStructureKey
     BuildVisibleList()
+    local keyChanged = prevKey ~= StockPiler3TabPotions._listStructureKey
     if DoesWindowExist("SP3TabPotionsList") then
-        ListBoxSetDisplayOrder("SP3TabPotionsList", {})
-        ListBoxSetDisplayOrder("SP3TabPotionsList", StockPiler3TabPotions.displayOrder)
+        -- Empty→full ListBoxSetDisplayOrder resets scroll; skip when row ids unchanged.
+        if keyChanged or prevKey == nil then
+            ListBoxSetDisplayOrder("SP3TabPotionsList", {})
+            ListBoxSetDisplayOrder("SP3TabPotionsList", StockPiler3TabPotions.displayOrder)
+        end
         StockPiler3TabPotions.UpdateRows()
     end
 end

@@ -3,7 +3,7 @@
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
-StockPiler3.Version = L"0.3.356"
+StockPiler3.Version = L"0.3.369"
 
 local function T(key, tokens)
     return StockPiler3.Util.T(key, tokens)
@@ -130,6 +130,19 @@ local function DumpAudit(emit)
     emit("audit| unexpected Account keys=" .. tostring(#unexpected))
     for i = 1, #unexpected do
         emit("audit|  " .. tostring(unexpected[i]))
+    end
+    if StockPiler3.Knowledge and StockPiler3.Knowledge.ValidateAndRepairSavedData then
+        local r = StockPiler3.Knowledge.ValidateAndRepairSavedData() or {}
+        emit(string.format(
+            "audit| repair itemsStamped=%s recipesRemapped=%s merged=%s dropped=%s potionsDropped=%s watchesDropped=%s scrubbed=%s",
+            tostring(r.itemsStamped),
+            tostring(r.recipesRemapped),
+            tostring(r.recipesMerged),
+            tostring(r.recipesDropped),
+            tostring(r.potionsDropped),
+            tostring(r.watchesDropped),
+            tostring(r.scrubbed)
+        ))
     end
 end
 

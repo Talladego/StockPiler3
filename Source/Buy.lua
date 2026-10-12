@@ -367,7 +367,10 @@ local function AccountConfirmedBuy(pending, liveMoney)
     if Watch and Watch.AddAutoBuySpentBrass then
         Watch.AddAutoBuySpentBrass(costTotal)
     end
-    if StockPiler3.Ui and StockPiler3.Ui.MarkWatchUiDirty then
+    local Bus = StockPiler3.EventBus
+    if Bus and Bus.FireWatchUiDirty then
+        Bus.FireWatchUiDirty({ reason = "autobuy-spent" })
+    elseif StockPiler3.Ui and StockPiler3.Ui.MarkWatchUiDirty then
         StockPiler3.Ui.MarkWatchUiDirty()
     end
     if StockPiler3TabWatch and StockPiler3TabWatch.RefreshAutoBuyMoneyUi then
@@ -655,15 +658,20 @@ local function WakeBrewAfterBuyFill(reason)
     if Brew and Brew.MaybeNotifyBrewReady then
         Brew.MaybeNotifyBrewReady()
     end
-    if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
+    local Bus = StockPiler3.EventBus
+    if Bus and Bus.FireFooterDirty then
+        Bus.FireFooterDirty({ reason = "buy-fill" })
+    elseif StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
         StockPiler3Window.RequestFooterRefresh()
     end
     if StockPiler3.Ui then
         StockPiler3.Ui._watchUiLastKey = nil
         StockPiler3.Ui._watchUiFlushedAt = 0
-        if StockPiler3.Ui.MarkWatchUiDirty then
-            StockPiler3.Ui.MarkWatchUiDirty()
-        end
+    end
+    if Bus and Bus.FireWatchUiDirty then
+        Bus.FireWatchUiDirty({ immediate = true, recount = true, reason = "buy-fill" })
+    elseif StockPiler3.Ui and StockPiler3.Ui.MarkWatchUiDirty then
+        StockPiler3.Ui.MarkWatchUiDirty()
     end
     -- Do not wait for store-close / coalesced flush - visit often stays open.
     if StockPiler3TabWatch and StockPiler3TabWatch.UpdateRows then
@@ -850,7 +858,10 @@ function Buy.ResetAllowanceSpent()
     Buy.ClearMoneyGateStop("reset-spent")
     Buy.InvalidateJobsCache()
     LogBuy("allowance-spent-reset")
-    if StockPiler3.Ui and StockPiler3.Ui.MarkWatchUiDirty then
+    local Bus = StockPiler3.EventBus
+    if Bus and Bus.FireWatchUiDirty then
+        Bus.FireWatchUiDirty({ immediate = true, reason = "allowance-reset" })
+    elseif StockPiler3.Ui and StockPiler3.Ui.MarkWatchUiDirty then
         StockPiler3.Ui.MarkWatchUiDirty()
     end
     local VA = StockPiler3.VendorAdapter

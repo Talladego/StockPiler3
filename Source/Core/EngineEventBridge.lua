@@ -27,6 +27,17 @@ local function BusFire(name, payload)
     end
 end
 
+local function RequestFooterViaBus(payload)
+    local B = StockPiler3.EventBus
+    if B and B.FireFooterDirty then
+        B.FireFooterDirty(type(payload) == "table" and payload or {})
+        return
+    end
+    if StockPiler3.Ui and StockPiler3.Ui.RequestFooterRefresh then
+        StockPiler3.Ui.RequestFooterRefresh()
+    end
+end
+
 local function HostWindow()
     local host = Bridge._host or "StockPiler3Window"
     if DoesWindowExist and DoesWindowExist(host) then
@@ -186,9 +197,7 @@ function Bridge.OnCraftingUpdated()
     if Brew and tonumber(Brew._brewUiForcedFrame) == frame and frame > 0 then
         return
     end
-    if StockPiler3.Ui and StockPiler3.Ui.RequestFooterRefresh then
-        StockPiler3.Ui.RequestFooterRefresh()
-    end
+    RequestFooterViaBus({ reason = "crafting-updated" })
 end
 
 function Bridge.OnCultivationUpdated()
@@ -231,9 +240,7 @@ function Bridge.OnCultivationUpdated()
     local quiet = Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true
     local settling = Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true
     if not storm and not quiet and not settling then
-        if StockPiler3.Ui and StockPiler3.Ui.RequestFooterRefresh then
-            StockPiler3.Ui.RequestFooterRefresh()
-        end
+        RequestFooterViaBus({ reason = "cultivation-updated" })
     end
     if Grow and Grow.NeedsCurrentStageAdditive and Grow.NeedsCurrentStageAdditive()
         and Sch and Sch.WakeAutoGrow
@@ -334,9 +341,7 @@ function Bridge.OnTradeSkillUpdated()
         if StockPiler3.Ui and StockPiler3.Ui.RefreshCatalogRows then
             StockPiler3.Ui.RefreshCatalogRows()
         end
-        if StockPiler3.Ui and StockPiler3.Ui.RequestFooterRefresh then
-            StockPiler3.Ui.RequestFooterRefresh()
-        end
+        RequestFooterViaBus({ reason = "trade-skills" })
         if firstSkillsReady and cult > 0
             and StockPiler3.Scheduler and StockPiler3.Scheduler.WakeAutoGrow
         then
@@ -420,9 +425,7 @@ end
 
 function Bridge.OnCombatFlagUpdated()
     -- Light: combat pause is consulted on Orch plant path; dirty footer readiness only.
-    if StockPiler3.Ui and StockPiler3.Ui.RequestFooterRefresh then
-        StockPiler3.Ui.RequestFooterRefresh()
-    end
+    RequestFooterViaBus({ reason = "combat-flag" })
 end
 
 local function RunUpdateProcessed(timeElapsed)

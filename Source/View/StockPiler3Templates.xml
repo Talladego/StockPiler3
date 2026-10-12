@@ -64,6 +64,32 @@
             </Windows>
         </Button>
 
+        <Button name="StockPiler3_SortHeaderWatch" inherits="EA_Button_DefaultListSort" font="font_default_text" textalign="left">
+            <Size>
+                <AbsPoint x="80" y="28" />
+            </Size>
+            <TextOffset x="4" y="4" />
+            <EventHandlers>
+                <EventHandler event="OnLButtonUp" function="StockPiler3TabWatch.OnSortColumn" />
+            </EventHandlers>
+            <Windows>
+                <DynamicImage name="$parentUpArrow" inherits="EA_ListSortUpArrow">
+                    <Anchors>
+                        <Anchor point="right" relativePoint="right">
+                            <AbsPoint x="-12" y="0" />
+                        </Anchor>
+                    </Anchors>
+                </DynamicImage>
+                <DynamicImage name="$parentDownArrow" inherits="EA_ListSortDownArrow">
+                    <Anchors>
+                        <Anchor point="center" relativePoint="center" relativeTo="$parentUpArrow">
+                            <AbsPoint x="0" y="0" />
+                        </Anchor>
+                    </Anchors>
+                </DynamicImage>
+            </Windows>
+        </Button>
+
         <!-- Same column-header chrome as StockPiler3_SortHeader, but not clickable and no sort arrows. -->
         <Button name="StockPiler3_StaticHeader" inherits="EA_Button_ListSort" font="font_default_text" textalign="left" handleinput="false">
             <Size>

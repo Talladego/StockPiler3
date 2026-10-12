@@ -368,6 +368,9 @@ function Items.StoreItem(itemData, kindHint)
     if itemData.rarity ~= nil then
         row.rarity = tonumber(itemData.rarity)
     end
+    if itemData.itemSet ~= nil then
+        row.itemSet = tonumber(itemData.itemSet) or 0
+    end
     if itemData.iLevel ~= nil or itemData.level ~= nil then
         row.iLevel = tonumber(itemData.iLevel) or tonumber(itemData.level) or row.iLevel
     end
@@ -471,6 +474,28 @@ function Items.StoreItem(itemData, kindHint)
         row.bonuses[6] = priorEffectId
     end
 
+    -- Board/bag often omits EFFECT (ref 6) while description names the potion family.
+    -- Stamp it so mains leave incomplete and recipe fingerprints can use fx: (not uid:).
+    if row.role == "main" and (tonumber(row.effectId) or 0) <= 0 then
+        local MS = StockPiler3.MaterialSpec
+        if MS and MS.ResolveMainEffectId then
+            local probe = {
+                uniqueID = uid,
+                effectId = row.effectId,
+                description = itemData.description or itemData.desc or row.descriptionNarrow,
+                descriptionNarrow = row.descriptionNarrow,
+                name = itemData.name or row.name,
+            }
+            local resolved = tonumber(MS.ResolveMainEffectId(probe, row.bonuses)) or 0
+            if resolved > 0 then
+                row.effectId = resolved
+                row.bonuses = type(row.bonuses) == "table" and row.bonuses or {}
+                row.bonuses[6] = resolved
+                row.incomplete = false
+            end
+        end
+    end
+
     store[key] = row
     local fxNow = tonumber(row.effectId) or 0
     local skillNow = tonumber(row.skillReq) or 0
@@ -482,6 +507,48 @@ function Items.StoreItem(itemData, kindHint)
         StockPiler3.Knowledge.Touch("item")
     end
     return row, isNew
+end
+
+--- Idempotent saved-data repair: stamp EFFECT on incomplete mains from
+--- descriptionNarrow ("create armor potions", etc.) so fingerprints can use fx:.
+function Items.ValidateAndRepairSavedItems()
+    local store = ItemsTable()
+    if type(store) ~= "table" then
+        return { stamped = 0 }
+    end
+    local MS = StockPiler3.MaterialSpec
+    if not (MS and MS.ResolveMainEffectId) then
+        return { stamped = 0 }
+    end
+    local stamped = 0
+    for _, row in pairs(store) do
+        if type(row) == "table"
+            and tostring(row.role or "") == "main"
+            and (tonumber(row.effectId) or 0) <= 0
+        then
+            local probe = {
+                uniqueID = tonumber(row.uniqueID) or 0,
+                description = row.descriptionNarrow or row.description,
+                descriptionNarrow = row.descriptionNarrow,
+                name = row.name,
+            }
+            local resolved = tonumber(MS.ResolveMainEffectId(probe, row.bonuses)) or 0
+            if resolved > 0 then
+                row.effectId = resolved
+                row.bonuses = type(row.bonuses) == "table" and row.bonuses or {}
+                row.bonuses[6] = resolved
+                row.incomplete = false
+                stamped = stamped + 1
+            end
+        end
+    end
+    return { stamped = stamped }
+end
+
+--- @deprecated use Items.ValidateAndRepairSavedItems
+function Items.MigrateStampMainEffectsFromDescriptions()
+    local r = Items.ValidateAndRepairSavedItems()
+    return type(r) == "table" and (tonumber(r.stamped) or 0) or 0
 end
 
 --- Stamp EFFECT onto a learned plant from its seed (harvest/refine / migrate).
@@ -672,6 +739,8 @@ function Items.AsItemData(uid)
         uniqueID = tonumber(row.uniqueID) or tonumber(uid) or 0,
         name = row.name,
         nameNarrow = row.nameNarrow,
+        description = row.descriptionNarrow or row.description,
+        descriptionNarrow = row.descriptionNarrow,
         iconNum = tonumber(row.iconNum) or 0,
         craftingSkillRequirement = skillReq,
         skillReq = skillReq,
@@ -683,6 +752,8 @@ function Items.AsItemData(uid)
         iLevel = tonumber(row.iLevel) or 0,
         level = tonumber(row.iLevel) or 0,
         rarity = tonumber(row.rarity),
+        -- DataUtils.GetItemRarityColor requires itemSet ~= nil (else utility grey).
+        itemSet = tonumber(row.itemSet) or 0,
         craftingBonus = craftingBonus,
         power = tonumber(row.power) or (type(row.bonuses) == "table" and tonumber(row.bonuses[2])) or 0,
         stability = tonumber(row.stability) or (type(row.bonuses) == "table" and tonumber(row.bonuses[1])) or 0,

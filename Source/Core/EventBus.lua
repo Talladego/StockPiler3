@@ -9,23 +9,52 @@ local Bus = StockPiler3.EventBus
 local subs = {}
 local nextToken = 0
 
-StockPiler3.Events = StockPiler3.Events or {
-    INVENTORY_DIRTY = "sp3.inventory.dirty",
-    INVENTORY_SNAPSHOT = "sp3.inventory.snapshot",
-    GARDEN_DIRTY = "sp3.garden.dirty",
-    GARDEN_SNAPSHOT = "sp3.garden.snapshot",
-    PLAN_INVALIDATED = "sp3.plan.invalidated",
-    PLAN_UPDATED = "sp3.plan.updated",
-    PHASE_CHANGED = "sp3.phase.changed",
-    OP_COMPLETED = "sp3.op.completed",
-    CMD_HARVEST = "sp3.cmd.harvest",
-    CMD_BREW_LOAD = "sp3.cmd.brew.load",
-    CMD_BREW_PERFORM = "sp3.cmd.brew.perform",
-    SESSION_LOADED = "sp3.session.loaded",
-    KNOWLEDGE_UPDATED = "sp3.knowledge.updated",
-    REFINE_OUTSTANDING = "sp3.refine.outstanding",
-    VENDOR_UPDATED = "sp3.vendor.updated",
-}
+StockPiler3.Events = StockPiler3.Events or {}
+local Edef = StockPiler3.Events
+Edef.INVENTORY_DIRTY = Edef.INVENTORY_DIRTY or "sp3.inventory.dirty"
+Edef.INVENTORY_SNAPSHOT = Edef.INVENTORY_SNAPSHOT or "sp3.inventory.snapshot"
+Edef.GARDEN_DIRTY = Edef.GARDEN_DIRTY or "sp3.garden.dirty"
+Edef.GARDEN_SNAPSHOT = Edef.GARDEN_SNAPSHOT or "sp3.garden.snapshot"
+Edef.PLAN_INVALIDATED = Edef.PLAN_INVALIDATED or "sp3.plan.invalidated"
+Edef.PLAN_UPDATED = Edef.PLAN_UPDATED or "sp3.plan.updated"
+Edef.PHASE_CHANGED = Edef.PHASE_CHANGED or "sp3.phase.changed"
+Edef.OP_COMPLETED = Edef.OP_COMPLETED or "sp3.op.completed"
+Edef.CMD_HARVEST = Edef.CMD_HARVEST or "sp3.cmd.harvest"
+Edef.CMD_BREW_LOAD = Edef.CMD_BREW_LOAD or "sp3.cmd.brew.load"
+Edef.CMD_BREW_PERFORM = Edef.CMD_BREW_PERFORM or "sp3.cmd.brew.perform"
+Edef.SESSION_LOADED = Edef.SESSION_LOADED or "sp3.session.loaded"
+Edef.KNOWLEDGE_UPDATED = Edef.KNOWLEDGE_UPDATED or "sp3.knowledge.updated"
+Edef.REFINE_OUTSTANDING = Edef.REFINE_OUTSTANDING or "sp3.refine.outstanding"
+Edef.VENDOR_UPDATED = Edef.VENDOR_UPDATED or "sp3.vendor.updated"
+-- View-facing: domain publishes; Ui owns flush/paint.
+Edef.CRAFT_READY_CHANGED = Edef.CRAFT_READY_CHANGED or "sp3.craft.ready"
+Edef.FOOTER_DIRTY = Edef.FOOTER_DIRTY or "sp3.footer.dirty"
+Edef.WATCH_UI_DIRTY = Edef.WATCH_UI_DIRTY or "sp3.watch.ui.dirty"
+Edef.BREW_SESSION_CHANGED = Edef.BREW_SESSION_CHANGED or "sp3.brew.session"
+
+--- Domain modules publish footer readiness via EventBus (View owns flush).
+function Bus.FireFooterDirty(payload)
+    local E = StockPiler3.Events
+    if E and E.FOOTER_DIRTY then
+        Bus.Fire(E.FOOTER_DIRTY, type(payload) == "table" and payload or {})
+    end
+end
+
+--- Domain modules mark Watch paint dirty via EventBus (View owns flush).
+function Bus.FireWatchUiDirty(payload)
+    local E = StockPiler3.Events
+    if E and E.WATCH_UI_DIRTY then
+        Bus.Fire(E.WATCH_UI_DIRTY, type(payload) == "table" and payload or {})
+    end
+end
+
+--- Brew session phase / load-source chrome (Load→Brew chips, row state).
+function Bus.FireBrewSessionChanged(payload)
+    local E = StockPiler3.Events
+    if E and E.BREW_SESSION_CHANGED then
+        Bus.Fire(E.BREW_SESSION_CHANGED, type(payload) == "table" and payload or {})
+    end
+end
 
 function Bus.Subscribe(eventName, fn)
     eventName = tostring(eventName or "")

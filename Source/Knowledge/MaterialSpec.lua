@@ -434,11 +434,20 @@ local function LookupItemDescription(itemData)
     if type(itemData) ~= "table" then
         return nil
     end
-    local desc = itemData.description or itemData.desc
+    local desc = itemData.description or itemData.desc or itemData.descriptionNarrow
     if desc ~= nil and ToNarrow(desc) ~= "" then
         return desc
     end
     local uid = tonumber(itemData.uniqueID or itemData.uniqueId or itemData.uid) or 0
+    if uid > 0 and StockPiler3.Items and StockPiler3.Items.GetByUid then
+        local learned = StockPiler3.Items.GetByUid(uid)
+        if type(learned) == "table" then
+            local learnedDesc = learned.description or learned.desc or learned.descriptionNarrow
+            if learnedDesc ~= nil and ToNarrow(learnedDesc) ~= "" then
+                return learnedDesc
+            end
+        end
+    end
     if uid > 0 and type(GetDatabaseItemData) == "function" then
         local ok, data = pcall(GetDatabaseItemData, uid)
         if ok and type(data) == "table" and data.description ~= nil then
@@ -475,6 +484,11 @@ local function ResolveMainEffectId(itemData, bonuses)
         return EffectIdFromDescription(desc)
     end
     return nil
+end
+
+--- Public: resolve EFFECT for a main (bonuses / CraftItemInfo / description).
+function MS.ResolveMainEffectId(itemData, bonuses)
+    return ResolveMainEffectId(itemData, type(bonuses) == "table" and bonuses or nil)
 end
 
 function MS.CraftBonusRefs()
@@ -931,10 +945,12 @@ end
 
 --- Recipe / demand identity. Omits DESTROY_ON_FAIL (via MaterialExceptions) so
 --- Fabricated vs Artisan's Glass Vial share keys despite differing on that bonus.
-function MS.Key(spec, boundUid)
+--- opts.omitUid: never embed uid: (recipe storage — Scale/Chitin twins share a key).
+function MS.Key(spec, boundUid, opts)
     if type(spec) ~= "table" then
         return ""
     end
+    opts = type(opts) == "table" and opts or {}
     local parts = {
         "ts:" .. tostring(spec.tradeSkill or 0),
         "st:" .. tostring(spec.slotType or 0),
@@ -946,7 +962,7 @@ function MS.Key(spec, boundUid)
         parts[#parts + 1] = "fx:" .. tostring(spec.effectId)
     end
     local uid = tonumber(boundUid) or tonumber(spec.boundUid) or 0
-    if spec.incomplete == true and uid > 0 then
+    if opts.omitUid ~= true and spec.incomplete == true and uid > 0 then
         parts[#parts + 1] = "uid:" .. tostring(uid)
     end
     if type(spec.bonuses) == "table" then
@@ -965,6 +981,23 @@ function MS.Key(spec, boundUid)
         end
     end
     return table.concat(parts, "|")
+end
+
+--- UID-agnostic mat identity for Account.recipes fingerprints.
+--- Prefer completed Items.ToSpec when an incomplete stub can be upgraded; otherwise
+--- Key without uid: so butcher twins (Supple Scale / Preserved Glossy Chitin) collide.
+function MS.RecipeIdentityKey(spec, boundUid)
+    if type(spec) ~= "table" then
+        return ""
+    end
+    if spec.incomplete == true then
+        local complete = CompleteTargetFromIncomplete(spec)
+        if type(complete) == "table" then
+            return MS.Key(complete, nil)
+        end
+        return MS.Key(spec, boundUid, { omitUid = true })
+    end
+    return MS.Key(spec, nil)
 end
 
 --- Normalize seed/plant forms to apo recipe context (ct:0) for planner have.
