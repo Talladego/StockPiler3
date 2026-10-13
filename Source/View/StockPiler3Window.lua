@@ -881,6 +881,12 @@ function StockPiler3Window.SelectTab(tabNumber, opts)
     -- Footer Harvest/Brew/Clear show-hide must track the tab on the click frame
     -- (do not wait for UPDATE_PROCESSED FlushPendingFooterRefresh).
     StockPiler3Window.SyncActionReadiness()
+    if tabNumber == StockPiler3Window.TABS_WATCH
+        and StockPiler3.Ui
+        and StockPiler3.Ui.FlushDeferredWatchRecount
+    then
+        StockPiler3.Ui.FlushDeferredWatchRecount()
+    end
     if opts.deferRefresh == true then
         if StockPiler3.Ui and StockPiler3.Ui.MarkWatchUiDirty then
             StockPiler3.Ui.MarkWatchUiDirty()

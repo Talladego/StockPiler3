@@ -348,6 +348,7 @@ end
 --- Mid-brew: do not queue ui-force-watch-recount. Pump skips that job until the
 --- session ends, and stamping the snap done before the paint used to drop the
 --- post-brew recount.
+--- Hidden Watch: keep pending only — do not StartOnce a no-op each snapGen.
 local function RequestForcedWatchRecount(_reason)
     local Inv = StockPiler3.Inventory
     local snapGen = Inv and Inv.GetSnapGen and tonumber(Inv.GetSnapGen()) or 0
@@ -360,6 +361,15 @@ local function RequestForcedWatchRecount(_reason)
         -- Bags can move during brew without a new snapGen (inventory side
         -- effects suppressed). A stamp from before the brew must not skip this.
         Ui._forceRecountDeferredDuringBrew = false
+        Ui._forceRecountDoneSnapGen = nil
+    end
+    if not IsWatchTabVisible() then
+        Ui._forceRecountPendingSnapGen = snapGen
+        Ui._forceRecountDeferredWhileHidden = true
+        return
+    end
+    if Ui._forceRecountDeferredWhileHidden == true then
+        Ui._forceRecountDeferredWhileHidden = false
         Ui._forceRecountDoneSnapGen = nil
     end
     if snapGen > 0 and Ui._forceRecountDoneSnapGen == snapGen then
@@ -387,6 +397,14 @@ local function RequestForcedWatchRecount(_reason)
         FW.StartOnce("ui-force-watch-recount", genKey, run)
     else
         run()
+    end
+end
+
+--- Watch became paintable (tab select / window open). Flush bag snaps that
+--- arrived while the tab was hidden without queuing no-op FrameWork jobs.
+function Ui.FlushDeferredWatchRecount()
+    if Ui._forceRecountDeferredWhileHidden == true then
+        RequestForcedWatchRecount("watch-visible")
     end
 end
 
@@ -642,6 +660,11 @@ function Ui.FlushWatchUiIfDirty()
         end
         -- Closed-window: Ready wake done; keep dirty for next open paint.
         return
+    end
+    -- Bag snaps while on Potions/Plants (or while closed) only set pending;
+    -- recount now that Watch can paint.
+    if IsWatchTabVisible() then
+        Ui.FlushDeferredWatchRecount()
     end
     if ShouldDeferWatchFlush() then
         WakeReadyFromLiveStatus()
