@@ -278,10 +278,10 @@ end
 local function TryWatchLiveCatchup(opts)
     opts = type(opts) == "table" and opts or {}
     if not IsWatchTabVisible() then
-        return
+        return false
     end
     if opts.ignoreDefer ~= true and ShouldDeferWatchFlush() then
-        return
+        return false
     end
     local Orch = StockPiler3.Orchestrator
     local Brew = StockPiler3.Brew
@@ -289,40 +289,79 @@ local function TryWatchLiveCatchup(opts)
         or (Brew and Brew.IsWatchUiHold and Brew.IsWatchUiHold() == true)
     if brewHold and opts.allowBrewHold ~= true then
         -- Brew path has its own catch-up / BREW_SESSION_CHANGED handler.
-        return
+        return false
     end
     local listData = StockPiler3TabWatch and StockPiler3TabWatch.listData
     if type(listData) ~= "table" or #listData == 0 then
-        return
+        return false
     end
     local Planner = StockPiler3.Planner
-    if Planner and Planner.PatchWatchRowsLiveCounts then
-        if opts.forceRecount == true then
-            if Planner.InvalidateCraftableStamps then
-                Planner.InvalidateCraftableStamps(listData)
-            end
-            Planner.PatchWatchRowsLiveCounts(listData, {
-                allowWarmHave = true,
-                syncSnapshot = true,
-                forceRecountCraftable = true,
-            })
-        else
-            Planner.PatchWatchRowsLiveCounts(listData, {
-                allowWarmHave = false,
-                syncSnapshot = false,
-                recountCraftable = false,
-            })
+    if not (Planner and Planner.PatchWatchRowsLiveCounts) then
+        return false
+    end
+    if opts.forceRecount == true then
+        local PS = StockPiler3.PlanSnapshot
+        local plan = PS and PS.Get and PS.Get()
+        local planRows = type(plan) == "table" and plan.rows or nil
+        local boundPlanRows = StockPiler3TabWatch and StockPiler3TabWatch._boundPlanRows
+        -- Sorted listData shares row objects with plan.rows when bound.
+        -- Ready reads plan.rows, so a bag-only recount must patch that table too.
+        local patchTarget = listData
+        if type(planRows) == "table" and boundPlanRows == planRows then
+            patchTarget = planRows
         end
+        if Planner.InvalidateCraftableStamps then
+            Planner.InvalidateCraftableStamps(patchTarget)
+        end
+        local patchOpts = {
+            allowWarmHave = true,
+            syncSnapshot = true,
+            forceRecountCraftable = true,
+        }
+        Planner.PatchWatchRowsLiveCounts(patchTarget, patchOpts)
+        if type(planRows) == "table"
+            and planRows ~= patchTarget
+            and boundPlanRows ~= planRows
+        then
+            Planner.PatchWatchRowsLiveCounts(planRows, patchOpts)
+        end
+    else
+        Planner.PatchWatchRowsLiveCounts(listData, {
+            allowWarmHave = false,
+            syncSnapshot = false,
+            recountCraftable = false,
+        })
     end
     if StockPiler3TabWatch.UpdateRows then
         StockPiler3TabWatch.UpdateRows({ keepVisible = true })
     end
+    return true
+end
+
+--- True while FrameWork.Pump will not run (Scheduler skips it for the whole brew).
+local function BrewSessionBlocksRecount()
+    local Orch = StockPiler3.Orchestrator
+    return Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true
 end
 
 --- One forced craftable recount per inventory snapGen (coalesced to end of frame).
+--- Mid-brew: do not queue ui-force-watch-recount. Pump skips that job until the
+--- session ends, and stamping the snap done before the paint used to drop the
+--- post-brew recount.
 local function RequestForcedWatchRecount(_reason)
     local Inv = StockPiler3.Inventory
     local snapGen = Inv and Inv.GetSnapGen and tonumber(Inv.GetSnapGen()) or 0
+    if BrewSessionBlocksRecount() then
+        Ui._forceRecountPendingSnapGen = snapGen
+        Ui._forceRecountDeferredDuringBrew = true
+        return
+    end
+    if Ui._forceRecountDeferredDuringBrew == true then
+        -- Bags can move during brew without a new snapGen (inventory side
+        -- effects suppressed). A stamp from before the brew must not skip this.
+        Ui._forceRecountDeferredDuringBrew = false
+        Ui._forceRecountDoneSnapGen = nil
+    end
     if snapGen > 0 and Ui._forceRecountDoneSnapGen == snapGen then
         return
     end
@@ -335,14 +374,14 @@ local function RequestForcedWatchRecount(_reason)
         if doneSnap > 0 and Ui._forceRecountDoneSnapGen == doneSnap then
             return
         end
-        if doneSnap > 0 then
-            Ui._forceRecountDoneSnapGen = doneSnap
-        end
-        TryWatchLiveCatchup({
+        local painted = TryWatchLiveCatchup({
             ignoreDefer = true,
             allowBrewHold = true,
             forceRecount = true,
-        })
+        }) == true
+        if painted and doneSnap > 0 then
+            Ui._forceRecountDoneSnapGen = doneSnap
+        end
     end
     if FW and FW.StartOnce then
         FW.StartOnce("ui-force-watch-recount", genKey, run)
@@ -537,7 +576,11 @@ local function OnBrewSessionChanged(payload)
     if StockPiler3TabWatch and StockPiler3TabWatch.InvalidateBrewChrome then
         StockPiler3TabWatch.InvalidateBrewChrome()
     end
-    if payload.recount == true or payload.forceRecount == true then
+    local wantsRecount = payload.recount == true or payload.forceRecount == true
+    if Ui._forceRecountDeferredDuringBrew == true and not BrewSessionBlocksRecount() then
+        wantsRecount = true
+    end
+    if wantsRecount then
         RequestForcedWatchRecount(payload.reason or "brew-session")
     elseif DoesWindowExist("StockPiler3Window")
         and WindowGetShowing("StockPiler3Window") == true
@@ -892,8 +935,10 @@ function Ui.RegisterEventRefresh()
     track(B.Subscribe(E.PLAN_INVALIDATED, markDirty))
     track(B.Subscribe(E.INVENTORY_SNAPSHOT, function()
         Ui.MarkWatchUiDirty()
-        -- Cheap stock/status patch only; forced craftable recount is coalesced
-        -- from brew / craft-ready paths (avoids 6+ full WarmHave walks per brew).
+        -- Stock/status paints now. Craftable is one WarmHave per snapGen, not
+        -- a sync walk on every brew slot event: mid-brew snaps only set the
+        -- defer flag (Pump will not run the job until the session is idle).
+        RequestForcedWatchRecount("inventory-snapshot")
         TryWatchLiveCatchup({ forceRecount = false })
         TryCatalogLiveCatchup()
     end))

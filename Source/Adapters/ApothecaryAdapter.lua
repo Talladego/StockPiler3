@@ -323,23 +323,29 @@ function AA.ParkApoRoot()
 end
 
 --- True while SP3 should ignore engine CRAFTING_SHOW_WINDOW echoes from SendInitCrafting.
+--- The armed boolean used to return before the Until check, so the 2.5s TTL never
+--- cleared and ToggleShowing never reached PlaceApoOnScreen.
 local function EngineShowSuppressed()
-    if AA._sp3Opening == true or AA._suppressEngineShow == true then
+    -- Synchronous headless open only. Async echoes use the TTL below.
+    if AA._sp3Opening == true then
         return true
     end
     local untilT = tonumber(AA._suppressEngineShowUntil) or 0
-    if untilT <= 0 then
+    if AA._suppressEngineShow ~= true and untilT <= 0 then
         return false
     end
     local now = 0
     if type(GetGameTime) == "function" then
         now = tonumber(GetGameTime()) or 0
     end
-    if now <= untilT then
-        return true
+    -- No clock, no TTL, or TTL elapsed: drop the latch. A sticky boolean here
+    -- swallows the Apothecary ability until /reload.
+    if untilT <= 0 or now <= 0 or now > untilT then
+        AA._suppressEngineShow = false
+        AA._suppressEngineShowUntil = 0
+        return false
     end
-    AA._suppressEngineShowUntil = 0
-    return false
+    return true
 end
 
 local function ArmEngineShowSuppress(sec)
@@ -362,7 +368,9 @@ function AA.InstallStealthHooks()
         CraftingSystem.ToggleShowing = function(tradeSkill)
             local apo = AA.TradeSkill()
             local isApo = tradeSkill == nil or tradeSkill == apo
-            -- Headless open: never run stock ShowCurrentWindow (on-screen + backpack).
+            -- Echo window (sync open or unexpired TTL): do not run stock ShowCurrentWindow.
+            -- Once EngineShowSuppressed expires it clears the latch, so this falls
+            -- through to the parked PlaceApoOnScreen path instead of returning forever.
             if isApo and EngineShowSuppressed() then
                 return
             end

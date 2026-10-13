@@ -1637,7 +1637,10 @@ local function AbortIncompleteLoad(reason)
     ClearSession({ reason = reason })
     -- Stop AutoBrew clear→flask→fail→clear thrash when a step cannot land.
     Brew._autoLoadBackoffUntil = NowSec() + (tonumber(Brew.LOAD_ABORT_BACKOFF_SEC) or 4)
-    ForceBrewUiRefresh()
+    -- Session is idle now. Ask Watch to recount craftable (craft-chat reject
+    -- spends a mat). A FrameWork job queued while the session was active never
+    -- pumped, and the snap can already be marked done.
+    ForceBrewUiRefresh({ recount = true, reason = reason })
 end
 
 function Brew.IsRejectedCraftUid(uid)
@@ -2959,8 +2962,28 @@ function Brew.RegisterEventHandlers()
                 Brew.InvalidateCanBrewCache()
                 -- Scenario/zone load leaves apo board invalid; a stuck loaded session
                 -- also holds Watch UI in mid-brew catchup (SkillUp rows never rebind).
+                -- ClearSession alone does not CloseWindow, so _suppressEngineShow
+                -- stays latched and the Apothecary ability no-ops until /reload.
                 local session = GetSession()
                 local phase = type(session) == "table" and tostring(session.phase or "idle") or "idle"
+                local a = AA()
+                local owned = type(session) == "table" and (
+                    session._brewOwnedSession == true
+                    or session._brewApoStealth == true
+                    or session._brewOpenedApo == true
+                )
+                if phase == "loading" or phase == "loaded" or owned == true then
+                    if a and a.CloseWindow then
+                        a.CloseWindow(session)
+                    elseif a and a.ClearEngineShowSuppress then
+                        a.ClearEngineShowSuppress()
+                        if a.EndStealthUi then
+                            a.EndStealthUi()
+                        end
+                    end
+                elseif a and a.ClearEngineShowSuppress then
+                    a.ClearEngineShowSuppress()
+                end
                 if phase == "loading" or phase == "loaded" then
                     ClearSession({ reason = "loading-end" })
                     ForceBrewUiRefresh()

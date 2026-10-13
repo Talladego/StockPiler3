@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.395** - AutoBrew wait-confirmed board load; crafting-chat "Bad seed data" aborts and blacklists the refused main uid.
+**Version 0.3.396** - Apothecary ability no longer sticks off after a zone mid-AutoBrew; Watch Craftable recounts after bag-only changes.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -142,6 +142,7 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.396 | Apo ToggleShowing honors the 2.5s suppress TTL; zone mid-load CloseWindow (ability no longer dead until /reload); Watch Craftable recounts on bag snaps (deferred while brewing) |
 | 0.3.395 | Crafting chat: Bad seed / add-main-before abort load; blacklist refused main uid (false ProductMatches twins); CloseWindow on load/clear aborts |
 | 0.3.393 | AutoBrew load: reserve bag slots only after StepLanded; no ReleaseAllLocks mid-add; abort backoff (stops flask flicker) |
 | 0.3.392 | AutoBrew load: wait-confirm each AddCraftingItem (SP1 StepSatisfied) before next step |
