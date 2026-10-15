@@ -130,7 +130,7 @@ end
 
 local function forceGreyMacroIcon(button)
     -- Macro icons often ship a colorful *_disabled texture; ActionButton only greys
-    -- via tint when no disabled texture exists. Force tint so SP2-off always looks off.
+    -- via tint when no disabled texture exists. Force tint so a disabled macro looks off.
     local icon = button and button.m_Windows and button.m_Windows[ACTION_BUTTON_BASE_ICON]
     if icon and type(icon.SetTintColor) == "function" then
         icon:SetTintColor(125, 125, 125)
@@ -1455,8 +1455,8 @@ local function installSetActionDataHook()
 end
 
 --- Engine ActionBars.UpdateSlotEnabledState / SetActionData re-enable DO_MACRO slots
---- after SP2 greys them. Appearance-key early-out then skips re-apply until Harvest
---- readiness flips - Brew stays lit while footer is correctly grey. Force SP2
+--- after StockPiler3 greys them. Appearance-key early-out then skips re-apply until Harvest
+--- readiness flips - Brew stays lit while footer is correctly grey. Force our
 --- readiness on every UpdateEnabledState for our macros.
 local function installUpdateEnabledStateHook()
     if not ActionButton or type(ActionButton.UpdateEnabledState) ~= "function" then

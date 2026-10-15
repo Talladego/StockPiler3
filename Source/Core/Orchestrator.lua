@@ -1,6 +1,6 @@
 ----------------------------------------------------------------
 -- StockPiler3 Core/Orchestrator -- phase FSM + paced AutoGrow tick
--- Tick order: plant one -> additives -> refine -> buy
+-- Tick order: plant one -> additives -> refine -> buy (buy also runs when the vendor is open).
 -- fillBlocked: extend only if newWait > cur; clear when buffer ok.
 ----------------------------------------------------------------
 
@@ -266,13 +266,6 @@ function Orch.DispatchCommand(kind, payload)
         end
         if StockPiler3.Scheduler and StockPiler3.Scheduler.EnqueueBagFlush then
             StockPiler3.Scheduler.EnqueueBagFlush(true)
-        end
-        return true
-    elseif kind == "brew.perform" then
-        if StockPiler3.Brew and StockPiler3.Brew.TryPerform then
-            StockPiler3.Brew.TryPerform(opId)
-        elseif StockPiler3.Brew and StockPiler3.Brew.BrewClick then
-            StockPiler3.Brew.BrewClick()
         end
         return true
     end
@@ -727,9 +720,6 @@ function Orch.Initialize()
     Orch._initialized = true
     TrackBus(B.Subscribe(E.CMD_HARVEST, function()
         Orch.DispatchCommand("harvest", {})
-    end))
-    TrackBus(B.Subscribe(E.CMD_BREW_PERFORM, function()
-        Orch.DispatchCommand("brew.perform", {})
     end))
 end
 

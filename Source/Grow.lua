@@ -82,10 +82,7 @@ local function LogOnce(key, msg)
 end
 
 local function StageEmpty()
-    if GameData and GameData.CultivationStage then
-        return GameData.CultivationStage.EMPTY or 0
-    end
-    return 0
+    return StockPiler3.CultivatorAdapter.StageEmpty()
 end
 
 local function StageGrown()
@@ -1998,8 +1995,6 @@ local function NudgeHarvestReadiness(forceImmediate)
         local Bus = StockPiler3.EventBus
         if Bus and Bus.FireFooterDirty then
             Bus.FireFooterDirty({ reason = "harvest-hold" })
-        elseif StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
-            StockPiler3Window.RequestFooterRefresh()
         end
         return
     end
@@ -2009,8 +2004,6 @@ local function NudgeHarvestReadiness(forceImmediate)
         local Bus = StockPiler3.EventBus
         if Bus and Bus.FireFooterDirty then
             Bus.FireFooterDirty({ immediate = true, syncMacro = true, reason = "harvest-ready" })
-        elseif StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
-            StockPiler3Window.RequestFooterRefresh()
         end
     end
 end
@@ -2202,17 +2195,14 @@ function Grow.MaybeNotifyHarvestReady()
         if holdFooter and forceImmediate ~= true then
             if Bus and Bus.FireFooterDirty then
                 Bus.FireFooterDirty({ reason = "harvest-latch-hold" })
-            elseif StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
-                StockPiler3Window.RequestFooterRefresh()
             end
             return
         end
+        -- Window first. The bus is only the fallback when the window is missing.
         if StockPiler3Window and StockPiler3Window.SyncActionReadiness then
             StockPiler3Window.SyncActionReadiness({ immediate = true })
         elseif Bus and Bus.FireFooterDirty then
             Bus.FireFooterDirty({ immediate = true, syncMacro = true, reason = "harvest-latch" })
-        elseif StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
-            StockPiler3Window.RequestFooterRefresh()
         end
     end
     -- Enable Harvest as soon as any plot is harvestable (not only all-planted latch).
@@ -2503,9 +2493,6 @@ function Grow.WakeAfterHarvest(plotNum, opts)
         local Garden = StockPiler3.Garden
         if Garden and Garden.GetPlot then
             local plot = Garden.GetPlot(plotNum)
-            if type(plot) ~= "table" and Grow.CachedPlot then
-                plot = Grow.CachedPlot(plotNum)
-            end
             if type(plot) == "table" then
                 seedUid = tonumber(plot.seedUid) or 0
                 if seedUid <= 0 and type(plot.seed) == "table" then

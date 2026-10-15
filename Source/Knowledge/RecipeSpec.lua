@@ -3129,18 +3129,6 @@ function RS.MigrateRecipeFingerprintsV4()
     return ok == true
 end
 
---- @deprecated use RS.ValidateAndRepairSavedRecipes (idempotent; no latch).
-function RS.MigrateRecipeFingerprintsV5()
-    local report = RS.ValidateAndRepairSavedRecipes()
-    local acct = StockPiler3.Account
-    if type(acct) == "table" then
-        acct.recipeFingerprintMigrateV5 = true
-        acct.recipeFingerprintMigrateV3 = true
-        acct.recipeFingerprintMigrateV4 = true
-    end
-    return type(report) == "table"
-end
-
 -- Expose hydrate for planner
 function RS.HydrateRecipeSlots(recipe)
     HydrateRecipeSlots(recipe)

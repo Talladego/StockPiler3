@@ -289,14 +289,6 @@ local function PlaceApoOnScreen()
     end
 end
 
-function AA.UnparkApoRoot()
-    UnparkApoRoot()
-end
-
-function AA.PlaceApoOnScreen()
-    PlaceApoOnScreen()
-end
-
 function AA.ParkApoRoot()
     if AA._playerWantsApo == true then
         return false

@@ -1,6 +1,6 @@
 ----------------------------------------------------------------
 -- StockPiler3 Core/FrameWork -- frame-sliced prewarm job queue
--- One StartOnce heavy job per Pump (budget=1). Publish only in done().
+-- One StartOnce heavy job per Pump (budget=1). WarmHave publishes from resume.
 -- Never slice engine craft APIs (PlantSeed / BuyItem / PerformCrafting).
 ----------------------------------------------------------------
 
@@ -73,9 +73,6 @@ local function ShouldSkipPump()
         end
         -- Plant/refine quiet: never WarmHave/Demand bag work under CultivationUpdated.
         if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
-            return true
-        end
-        if Sch._skipPlanThisFrame == true then
             return true
         end
     end
@@ -289,14 +286,4 @@ function FW.Pump()
         StockPiler3.Perf.Mark("FrameWork.Pump")
     end
     return FW._didWork == true
-end
-
-function FW.Shutdown()
-    local order = FW._order
-    for i = #order, 1, -1 do
-        FW.Cancel(order[i])
-    end
-    FW._jobs = {}
-    FW._order = {}
-    FW._didWork = false
 end

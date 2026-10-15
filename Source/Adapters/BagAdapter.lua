@@ -270,9 +270,6 @@ function BA.GetBagTable(bagType, opts)
             local ok, data = TryQuiet("BagAdapter.GetCraftingItemData.force", GetCraftingItemData)
             if ok and type(data) == "table" then
                 BA._warmCraft = data
-                if DataUtilsData then
-                    DataUtilsData.craftingItems = data
-                end
                 return data
             end
         end
@@ -295,9 +292,6 @@ function BA.GetBagTable(bagType, opts)
         local ok, data = TryQuiet("BagAdapter.GetInventoryItemData.force", GetInventoryItemData)
         if ok and type(data) == "table" then
             BA._warmMain = data
-            if DataUtilsData then
-                DataUtilsData.items = data
-            end
             return data
         end
     end

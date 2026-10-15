@@ -1779,8 +1779,6 @@ local function RepaintSkillUpWatch()
     local Bus = StockPiler3.EventBus
     if Bus and Bus.FireWatchUiDirty then
         Bus.FireWatchUiDirty({ immediate = true, reason = "skillup-stall" })
-    elseif Ui.MarkWatchUiDirty then
-        Ui.MarkWatchUiDirty()
     end
 end
 
@@ -2091,20 +2089,6 @@ function SkillUp.OnApoSkillDelta(delta)
 end
 
 --- Empirical skill-up rate at an exact skill level (nil if too few samples).
-function SkillUp.LevelRate(kind, level)
-    local row = LevelBucket(kind, level, false)
-    if type(row) ~= "table" then
-        return nil, 0, 0
-    end
-    local attempts = tonumber(row.attempts) or 0
-    local hits = tonumber(row.hits) or 0
-    local minN = SkillUp.SKILL_RATE_MIN_ATTEMPTS or 5
-    if attempts < minN or attempts <= 0 then
-        return nil, hits, attempts
-    end
-    return hits / attempts, hits, attempts
-end
-
 --- Default expected crafts for one skill-up at `level` (SkillUp Apo floor mats).
 --- Rises sharply toward the next tier - brewing T50 at skill 74 is much harder than at 50.
 function SkillUp.DefaultCraftsPerLevel(kind, level)

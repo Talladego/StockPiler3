@@ -31,19 +31,11 @@ local function RequestFooterViaBus(payload)
     local B = StockPiler3.EventBus
     if B and B.FireFooterDirty then
         B.FireFooterDirty(type(payload) == "table" and payload or {})
-        return
-    end
-    if StockPiler3.Ui and StockPiler3.Ui.RequestFooterRefresh then
-        StockPiler3.Ui.RequestFooterRefresh()
     end
 end
 
 local function HostWindow()
-    local host = Bridge._host or "StockPiler3Window"
-    if DoesWindowExist and DoesWindowExist(host) then
-        return host
-    end
-    return host
+    return Bridge._host or "StockPiler3Window"
 end
 
 local function TrackHandler(eventId, handlerName)

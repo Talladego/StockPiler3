@@ -190,47 +190,48 @@ local function SetIconTexture(iconWin, iconNum)
     StockPiler3.ViewList.SetIconTexture(iconWin, iconNum, ICON_SCALE)
 end
 
+local STATUS_TIP_COLORS = {
+    no_recipe = COLOR_BLOCK,
+    no_target = COLOR_BLOCK,
+    potion_stocked = COLOR_OK,
+    plant_stocked = COLOR_OK,
+    ready_to_craft = COLOR_OK,
+    ready_to_craft_shared = COLOR_WARN,
+    restocking = COLOR_WARN,
+    craft_bag_full = COLOR_WARN,
+    enable_autogrow = COLOR_BLOCK,
+    need_apothecary = COLOR_BLOCK,
+    need_skill = COLOR_BLOCK,
+    buy_ingredients = COLOR_BLOCK,
+    need_seeds = COLOR_WARN,
+    upgrading_seed = COLOR_WARN,
+    seed_buffer = COLOR_WARN,
+    planting = COLOR_OK,
+    buffer_plant = COLOR_OK,
+    growing = COLOR_OK,
+    refining = COLOR_WARN,
+    wait_cult = COLOR_WARN,
+    idle = COLOR_WARN,
+    fallback_blocked = COLOR_OK,
+    skill_done = COLOR_OK,
+    waiting_watches = COLOR_WARN,
+    waiting_potions = COLOR_WARN,
+    waiting_plants = COLOR_WARN,
+    waiting_seed_buffer = COLOR_WARN,
+    no_seeds = COLOR_BLOCK,
+    need_vendor = COLOR_BLOCK,
+    autobuy_off = COLOR_BLOCK,
+    no_vendor_seed = COLOR_BLOCK,
+    need_mats = COLOR_BLOCK,
+    need_resin = COLOR_BLOCK,
+    unstable = COLOR_BLOCK,
+    need_container_vendor = COLOR_BLOCK,
+    no_vendor_container = COLOR_BLOCK,
+}
+
 local function ApplyStatusColor(labelWin, statusKey)
     statusKey = tostring(statusKey or "")
-    local c = COLOR_GRAY
-    if statusKey == "potion_stocked" or statusKey == "plant_stocked" or statusKey == "ready_to_craft"
-        or statusKey == "planting" or statusKey == "buffer_plant" or statusKey == "growing"
-        or statusKey == "fallback_blocked" or statusKey == "skill_done"
-    then
-        c = COLOR_OK
-    elseif statusKey == "ready_to_craft_shared"
-        or statusKey == "restocking"
-        or statusKey == "craft_bag_full"
-        or statusKey == "need_seeds"
-        or statusKey == "upgrading_seed"
-        or statusKey == "refining"
-        or statusKey == "wait_cult"
-        or statusKey == "seed_buffer"
-        or statusKey == "idle"
-        or statusKey == "waiting_watches"
-        or statusKey == "waiting_potions"
-        or statusKey == "waiting_plants"
-        or statusKey == "waiting_seed_buffer"
-    then
-        c = COLOR_WARN
-    elseif statusKey == "no_recipe"
-        or statusKey == "no_target"
-        or statusKey == "enable_autogrow"
-        or statusKey == "need_apothecary"
-        or statusKey == "need_skill"
-        or statusKey == "buy_ingredients"
-        or statusKey == "no_seeds"
-        or statusKey == "need_vendor"
-        or statusKey == "autobuy_off"
-        or statusKey == "no_vendor_seed"
-        or statusKey == "need_mats"
-        or statusKey == "need_resin"
-        or statusKey == "unstable"
-        or statusKey == "need_container_vendor"
-        or statusKey == "no_vendor_container"
-    then
-        c = COLOR_BLOCK
-    end
+    local c = STATUS_TIP_COLORS[statusKey] or COLOR_GRAY
     LabelSetTextColor(labelWin, c[1], c[2], c[3])
 end
 
@@ -397,11 +398,6 @@ function StockPiler3TabWatch.BindSortedList(rows)
     BindSortedList(rows)
 end
 
---- True when listData is a sorted copy of the given plan.rows table (shared row objects).
-function StockPiler3TabWatch.IsBoundToPlanRows(planRows)
-    return type(planRows) == "table" and StockPiler3TabWatch._boundPlanRows == planRows
-end
-
 local function UpdateSortHeaderLabels()
     local labels = {
         prio = T("watch.col.prio"),
@@ -549,23 +545,12 @@ local function GetRowCraftUiState(data)
     return "idle"
 end
 
---- True when Craftable label is green: bags can craft and seed buffer is safe.
---- Shared mats do not block green (Status may still show Ready-shared).
 local function RowCraftableGreen(data)
-    if type(data) ~= "table" then
-        return false
+    local Brew = StockPiler3.Brew
+    if Brew and Brew.RowCraftableGreen then
+        return Brew.RowCraftableGreen(data)
     end
-    if data.craftableSafe == true then
-        return true
-    end
-    if data.craftableSafe == false then
-        return false
-    end
-    -- Fallback if plan row lacks stamp (tests / partial rows).
-    if (tonumber(data.craftable) or 0) <= 0 then
-        return false
-    end
-    return data.seedBufferShort ~= true
+    return false
 end
 
 --- Load chip must not look enabled off a craftable number from a prior bag snap.
@@ -697,8 +682,6 @@ local function AfterWatchSettingsChanged()
     local Bus = StockPiler3.EventBus
     if Bus and Bus.FireWatchUiDirty then
         Bus.FireWatchUiDirty({ immediate = true, recount = true, reason = "watch-settings" })
-    elseif StockPiler3.Ui and StockPiler3.Ui.MarkWatchUiDirty then
-        StockPiler3.Ui.MarkWatchUiDirty()
     end
     -- Optimistic row paint: do not wait for coalesced flush / plan rebuild.
     StockPiler3TabWatch._rowPaintKey = nil
@@ -726,8 +709,6 @@ local function AfterSoftMoneySetting()
     local Bus = StockPiler3.EventBus
     if Bus and Bus.FireWatchUiDirty then
         Bus.FireWatchUiDirty({ immediate = true, reason = "money-settings" })
-    elseif StockPiler3.Ui and StockPiler3.Ui.MarkWatchUiDirty then
-        StockPiler3.Ui.MarkWatchUiDirty()
     end
     if Bus and Bus.FireFooterDirty then
         Bus.FireFooterDirty({ reason = "money-settings" })
@@ -2494,45 +2475,6 @@ local function RgbDef(rgb)
         b = tonumber(rgb[3]) or 255,
     }
 end
-
-local STATUS_TIP_COLORS = {
-    no_recipe = COLOR_BLOCK,
-    no_target = COLOR_BLOCK,
-    potion_stocked = COLOR_OK,
-    plant_stocked = COLOR_OK,
-    ready_to_craft = COLOR_OK,
-    ready_to_craft_shared = COLOR_WARN,
-    restocking = COLOR_WARN,
-    craft_bag_full = COLOR_WARN,
-    enable_autogrow = COLOR_BLOCK,
-    need_apothecary = COLOR_BLOCK,
-    need_skill = COLOR_BLOCK,
-    buy_ingredients = COLOR_BLOCK,
-    need_seeds = COLOR_WARN,
-    upgrading_seed = COLOR_WARN,
-    seed_buffer = COLOR_WARN,
-    planting = COLOR_OK,
-    buffer_plant = COLOR_OK,
-    growing = COLOR_OK,
-    refining = COLOR_WARN,
-    wait_cult = COLOR_WARN,
-    idle = COLOR_WARN,
-    fallback_blocked = COLOR_OK,
-    skill_done = COLOR_OK,
-    waiting_watches = COLOR_WARN,
-    waiting_potions = COLOR_WARN,
-    waiting_plants = COLOR_WARN,
-    waiting_seed_buffer = COLOR_WARN,
-    no_seeds = COLOR_BLOCK,
-    need_vendor = COLOR_BLOCK,
-    autobuy_off = COLOR_BLOCK,
-    no_vendor_seed = COLOR_BLOCK,
-    need_mats = COLOR_BLOCK,
-    need_resin = COLOR_BLOCK,
-    unstable = COLOR_BLOCK,
-    need_container_vendor = COLOR_BLOCK,
-    no_vendor_container = COLOR_BLOCK,
-}
 
 local function StatusTitleColor(statusKey)
     local def = RgbDef(STATUS_TIP_COLORS[statusKey or ""])

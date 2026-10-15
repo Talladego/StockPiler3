@@ -2705,11 +2705,6 @@ function SM.BuildAllFamilyLadders()
     return families
 end
 
-function SM.InvalidateFamilyLadderCache()
-    SM._familyLadderCache = nil
-    SM._familyLadderCacheGen = nil
-end
-
 function SM.GetFamilyLadder(familyKey)
     familyKey = tostring(familyKey or "")
     if familyKey == "" then

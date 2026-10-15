@@ -13,6 +13,9 @@ Brew.BREW_OP_LOCK_SEC = 1.25
 -- After load-done, engine SuccessChance / GetSlottedItem can lag a few frames.
 -- Unloading immediately loops load->unload while the footer stays lit.
 Brew.LOAD_SETTLE_SEC = 1.25
+Brew.LOAD_ABORT_BACKOFF_SEC = 4
+Brew.LOAD_STEP_WAIT_TICKS = 60
+Brew.LOAD_VERIFY_TICKS = 12
 -- A manual board left in phase "loaded" keeps Orch.IsBrewSessionActive true,
 -- so AutoGrow never plants. Unload after this long with no perform or bag move.
 Brew.MANUAL_LOADED_IDLE_SEC = 60
@@ -813,21 +816,10 @@ local function AutoBrewBlocked()
     return false, nil
 end
 
---- Green Craftable: bags can craft and seed buffer is safe (shared mats OK).
-local function RowCraftableGreen(row)
-    if type(row) ~= "table" then
-        return false
-    end
-    if row.craftableSafe == true then
-        return true
-    end
-    if row.craftableSafe == false then
-        return false
-    end
-    if (tonumber(row.craftable) or 0) <= 0 then
-        return false
-    end
-    return row.seedBufferShort ~= true
+--- Same gate as manual premature load: green Craftable, shared mats allowed.
+local RowCraftableGreen = RowCanPrematureLoad
+function Brew.RowCraftableGreen(row)
+    return RowCanPrematureLoad(row)
 end
 
 local function NonemptyKey(v)
@@ -907,12 +899,6 @@ local function RequestFooterRefresh(payload)
     local Bus = StockPiler3.EventBus
     if Bus and Bus.FireFooterDirty then
         Bus.FireFooterDirty(type(payload) == "table" and payload or {})
-        return
-    end
-    if StockPiler3Window and StockPiler3Window.RequestFooterRefresh then
-        StockPiler3Window.RequestFooterRefresh()
-    elseif StockPiler3.Ui and StockPiler3.Ui.RequestFooterRefresh then
-        StockPiler3.Ui.RequestFooterRefresh()
     end
 end
 
@@ -946,11 +932,6 @@ local function ForceBrewUiRefresh(opts)
             rows = wantRows,
             recount = opts.recount == true,
             reason = tostring(opts.reason or "force-ui"),
-        })
-    elseif Bus and Bus.FireWatchUiDirty then
-        Bus.FireWatchUiDirty({
-            immediate = wantRows,
-            recount = opts.recount == true,
         })
     end
     -- Same-frame fallback chrome (Ui listeners may coalesce under plant quiet).
@@ -2064,7 +2045,7 @@ local function AdvanceLoadJob()
             SetSessionPhase("loaded", "load-verified")
             local session = GetSession()
             session.phase = "loaded"
-            Brew._loadSettleUntil = NowSec() + (tonumber(Brew.LOAD_SETTLE_SEC) or 0.75)
+            Brew._loadSettleUntil = NowSec() + (tonumber(Brew.LOAD_SETTLE_SEC) or 1.25)
             ForceBrewUiRefresh()
             return true
         end
@@ -2111,11 +2092,7 @@ function Brew.BeginForRow(row, opts)
         if opts.performAfter == true and source == "manual" then
             Brew._performAfterManualLoad = true
             Brew._performAfterLoadIgnoreSource = false
-            local now = 0
-            if type(GetGameTime) == "function" then
-                now = tonumber(GetGameTime()) or 0
-            end
-            Brew._performAfterLoadUntil = now + (tonumber(Brew.PERFORM_AFTER_LOAD_TTL_SEC) or 5)
+            Brew._performAfterLoadUntil = NowSec() + (tonumber(Brew.PERFORM_AFTER_LOAD_TTL_SEC) or 5)
         end
         Brew.ArmWatchUiHold()
         KickLoadJob()
@@ -2171,11 +2148,7 @@ function Brew.OnRowCraftClick(row)
             Brew._performAfterManualLoad = true
             -- Click on an auto-loaded board must still Perform after settle.
             Brew._performAfterLoadIgnoreSource = true
-            local now = 0
-            if type(GetGameTime) == "function" then
-                now = tonumber(GetGameTime()) or 0
-            end
-            Brew._performAfterLoadUntil = now + (tonumber(Brew.PERFORM_AFTER_LOAD_TTL_SEC) or 5)
+            Brew._performAfterLoadUntil = NowSec() + (tonumber(Brew.PERFORM_AFTER_LOAD_TTL_SEC) or 5)
             return true
         end
         local ok = Brew.TryPerform(nil)
@@ -2552,10 +2525,7 @@ function Brew.MaybePerformAfterManualLoad()
     if Brew._performAfterManualLoad ~= true then
         return false
     end
-    local now = 0
-    if type(GetGameTime) == "function" then
-        now = tonumber(GetGameTime()) or 0
-    end
+    local now = NowSec()
     local untilT = tonumber(Brew._performAfterLoadUntil) or 0
     if untilT > 0 and now > untilT then
         Brew._performAfterManualLoad = false
@@ -2974,19 +2944,6 @@ function Brew.RegisterEventHandlers()
     local E = StockPiler3.Events
     Brew._busTokens = Brew._busTokens or {}
     if B and E then
-        if E.CMD_BREW_LOAD then
-            Brew._busTokens[#Brew._busTokens + 1] = B.Subscribe(E.CMD_BREW_LOAD, function(payload)
-                local row = type(payload) == "table" and payload.row or nil
-                if type(row) == "table" then
-                    Brew.BeginForRow(row, { manual = payload and payload.manual == true })
-                else
-                    local ready = Brew.PickReadyWatch()
-                    if ready then
-                        Brew.BeginForRow(ready, { manual = false })
-                    end
-                end
-            end)
-        end
         if E.PLAN_UPDATED then
             Brew._busTokens[#Brew._busTokens + 1] = B.Subscribe(E.PLAN_UPDATED, function()
                 Brew.InvalidateCanBrewCache()

@@ -186,8 +186,3 @@ function RP.ExpireStuck()
     end
     return changed
 end
-
-function RP.Clear()
-    RP._outstanding = {}
-    RP.MarkDirty("clear")
-end

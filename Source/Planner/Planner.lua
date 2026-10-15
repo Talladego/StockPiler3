@@ -1,11 +1,12 @@
 ----------------------------------------------------------------
--- StockPiler3 Planner - pure gen-keyed plan from store snapshots
--- Have/demand caches live here. Callees above callers (Lua 5.0).
--- Stub-safe vs missing RecipeSpec / Grow / Refine.
+-- StockPiler3 Planner - gen-keyed plan from store snapshots.
+-- Have/demand caches live here. The client is Lua 5.1.
+-- Build reads watches, bags, and the garden; it is not a pure function.
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
 StockPiler3.Planner = StockPiler3.Planner or {}
+local WatchStillNeedsGrow
 local Planner = StockPiler3.Planner
 
 Planner._planGen = 0
@@ -995,10 +996,7 @@ local function BuildBalancedSpecDemand(opts)
                 local target = tonumber(watch.targetStock) or 0
                 local have = PotionHave(resolved, potion, uid)
                 local deficit = math.max(0, target - have)
-                local stillNeeds = true
-                if RS.WatchStillNeedsGrow then
-                    stillNeeds = RS.WatchStillNeedsGrow(potion, recipe, target, watchKey) == true
-                end
+                local stillNeeds = WatchStillNeedsGrow(potion, recipe, target, watchKey) == true
                 if uid > 0 and deficit > 0 and target > 0 and stillNeeds then
                     local group = byUid[uid]
                     if group == nil then
@@ -1297,9 +1295,7 @@ local function CollectFocus(mode)
                             local still = gap > 0
                             if not still then
                                 -- Plan-backed shared contest / grow still-needed.
-                                if RS.WatchStillNeedsGrow then
-                                    still = RS.WatchStillNeedsGrow(potion, recipe, target, watchKey) == true
-                                end
+                                still = WatchStillNeedsGrow(potion, recipe, target, watchKey) == true
                             end
                             if still then
                                 local priorityTier = 1
@@ -1415,7 +1411,7 @@ end
 
 --- Deficit remains and craftable does not yet cover target (or craftable is contested).
 --- Prefer polished plan-row fields (SoT); fall back to live craftable when no plan.
-local function WatchStillNeedsGrow(potion, recipe, target, watchKey)
+WatchStillNeedsGrow = function(potion, recipe, target, watchKey)
     target = tonumber(target) or 0
     if target <= 0 or type(potion) ~= "table" then
         return false
@@ -2495,7 +2491,7 @@ local function PropagateSharedSeedBufferStatus(rows)
                 end
                 if hit then
                     row.seedBufferShort = true
-                    row.craftableSafe = (tonumber(row.craftable) or 0) > 0 and false
+                    row.craftableSafe = false
                     local prev = tostring(row.statusKey or "")
                     -- Ready/stocked only: buffer gates brew, not buy shortages.
                     if prev == "ready_to_craft"
@@ -4000,8 +3996,6 @@ local function RefreshSkillUpWatchRows(rows, opts)
             local Bus = StockPiler3.EventBus
             if Bus and Bus.FireWatchUiDirty then
                 Bus.FireWatchUiDirty({ reason = "ephemeral-cleared" })
-            elseif StockPiler3.Ui and StockPiler3.Ui.MarkWatchUiDirty then
-                StockPiler3.Ui.MarkWatchUiDirty()
             end
         end
         local Grow = StockPiler3.Grow
@@ -4359,8 +4353,6 @@ local function PatchWatchRowsLiveCounts(rows, opts)
         local Bus = StockPiler3.EventBus
         if Bus and Bus.FireFooterDirty then
             Bus.FireFooterDirty({ reason = "seed-buffer" })
-        elseif StockPiler3.Ui and StockPiler3.Ui.RequestFooterRefresh then
-            StockPiler3.Ui.RequestFooterRefresh()
         end
     end
     -- Fire CRAFT_READY_CHANGED only after stamps/propagate (no mid-patch re-entry).
@@ -4375,8 +4367,6 @@ local function PatchWatchRowsLiveCounts(rows, opts)
             end
             if Bus and Bus.FireFooterDirty then
                 Bus.FireFooterDirty({ reason = "craft-ready" })
-            elseif StockPiler3.Ui and StockPiler3.Ui.RequestFooterRefresh then
-                StockPiler3.Ui.RequestFooterRefresh()
             end
         end
         if craftReadyBrew.MaybeNotifyBrewReady then
@@ -4652,18 +4642,12 @@ local function BuildFull(opts)
     local planGen = (tonumber(Planner._planGen) or 0) + 1
     Planner._planGen = planGen
     local rows, seedBufferTipData, demand = BuildWatchRows(ctx)
-    local Res = StockPiler3.Reservations
-    local reservations = Res and Res.FromDemand and Res.FromDemand(demand) or {}
     local plan = {
         planGen = planGen,
         cacheKey = key,
         ctx = ctx,
         rows = rows,
         seedBufferTipData = seedBufferTipData,
-        growJobs = {},
-        refineIntents = {},
-        brewBlocks = {},
-        reservations = reservations,
         builtAt = (type(GetGameTime) == "function" and GetGameTime()) or 0,
     }
     PublishPlan(plan, key, nil)
@@ -5036,8 +5020,6 @@ function Planner.SyncLiveStatusClosedWindow()
         end
         if Bus and Bus.FireFooterDirty then
             Bus.FireFooterDirty({ reason = "closed-live" })
-        elseif StockPiler3.Ui and StockPiler3.Ui.RequestFooterRefresh then
-            StockPiler3.Ui.RequestFooterRefresh()
         end
     end
     if Brew and Brew.MaybeNotifyBrewReady then

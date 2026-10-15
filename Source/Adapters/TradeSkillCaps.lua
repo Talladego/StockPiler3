@@ -312,8 +312,6 @@ function Caps.OnTradeSkillPulse()
                     local Bus = StockPiler3.EventBus
                     if Bus and Bus.FireWatchUiDirty then
                         Bus.FireWatchUiDirty({ reason = "trade-caps" })
-                    elseif Ui.MarkWatchUiDirty then
-                        Ui.MarkWatchUiDirty()
                     end
                 end
             end
@@ -383,8 +381,6 @@ function Caps.OnTradeSkillPulse()
             local Bus = StockPiler3.EventBus
             if Bus and Bus.FireWatchUiDirty then
                 Bus.FireWatchUiDirty({ reason = "trade-skill" })
-            elseif Ui and Ui.MarkWatchUiDirty then
-                Ui.MarkWatchUiDirty()
             end
             local Grow = StockPiler3.Grow
             if Grow and Grow.InvalidatePlantQueue then
