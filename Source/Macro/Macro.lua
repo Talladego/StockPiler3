@@ -1524,17 +1524,25 @@ local function installUpdateEnabledStateHook()
             -- after the footer button has already been disabled.
             if Macro._clearingBind ~= true then
                 Macro._clearingBind = true
-                if isCraft then
-                    clearHarvestGameActionForButton(self)
-                    clearBrewGameActionForButton(self)
-                elseif Macro.IsBrewMacroButton(self) then
-                    clearBrewGameActionForButton(self)
-                elseif Macro.IsMacroButton(self) then
-                    clearHarvestGameActionForButton(self)
-                end
+                local cleared, clearErr = pcall(function()
+                    if isCraft then
+                        clearHarvestGameActionForButton(self)
+                        clearBrewGameActionForButton(self)
+                    elseif Macro.IsBrewMacroButton(self) then
+                        clearBrewGameActionForButton(self)
+                    elseif Macro.IsMacroButton(self) then
+                        clearHarvestGameActionForButton(self)
+                    end
+                    forceGreyMacroIcon(self)
+                end)
                 Macro._clearingBind = false
+                if cleared ~= true and StockPiler3.Debug
+                    and StockPiler3.Debug.ReportProtectedCallFailure
+                then
+                    StockPiler3.Debug.ReportProtectedCallFailure(
+                        "Macro.UpdateEnabledState", clearErr, true)
+                end
             end
-            forceGreyMacroIcon(self)
         end
     end
     ActionButton.UpdateEnabledState = hookedUpdateEnabledStateFn
@@ -1557,31 +1565,38 @@ local function installUpdateIconHook()
             return
         end
         Macro._inIconRefresh = true
-        local canHarvest = Macro._commitCanHarvest
-        local canBrew = Macro._commitCanBrew
-        if Macro.IsCraftMacroButton(self) then
-            if canHarvest == nil then
-                canHarvest = canHarvestMacro()
+        local painted, paintErr = pcall(function()
+            local canHarvest = Macro._commitCanHarvest
+            local canBrew = Macro._commitCanBrew
+            if Macro.IsCraftMacroButton(self) then
+                if canHarvest == nil then
+                    canHarvest = canHarvestMacro()
+                end
+                if canBrew == nil then
+                    canBrew = canBrewMacro()
+                end
+                Macro.ApplyCraftButtonAppearance(self, {
+                    canHarvest = canHarvest == true,
+                    canBrew = canBrew == true,
+                })
+            elseif Macro.IsMacroButton(self) then
+                if canHarvest == nil then
+                    canHarvest = canHarvestMacro()
+                end
+                Macro.ApplyButtonAppearance(self, { canUse = canHarvest == true })
+            elseif Macro.IsBrewMacroButton(self) then
+                if canBrew == nil then
+                    canBrew = canBrewMacro()
+                end
+                Macro.ApplyBrewButtonAppearance(self, { canUse = canBrew == true })
             end
-            if canBrew == nil then
-                canBrew = canBrewMacro()
-            end
-            Macro.ApplyCraftButtonAppearance(self, {
-                canHarvest = canHarvest == true,
-                canBrew = canBrew == true,
-            })
-        elseif Macro.IsMacroButton(self) then
-            if canHarvest == nil then
-                canHarvest = canHarvestMacro()
-            end
-            Macro.ApplyButtonAppearance(self, { canUse = canHarvest == true })
-        elseif Macro.IsBrewMacroButton(self) then
-            if canBrew == nil then
-                canBrew = canBrewMacro()
-            end
-            Macro.ApplyBrewButtonAppearance(self, { canUse = canBrew == true })
-        end
+        end)
         Macro._inIconRefresh = false
+        if painted ~= true and StockPiler3.Debug
+            and StockPiler3.Debug.ReportProtectedCallFailure
+        then
+            StockPiler3.Debug.ReportProtectedCallFailure("Macro.UpdateIcon", paintErr, true)
+        end
     end
     ActionButton.UpdateIcon = hookedUpdateIconFn
     Macro._updateIconHooked = true

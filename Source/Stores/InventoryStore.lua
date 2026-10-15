@@ -187,8 +187,10 @@ function Inv.AdjustUid(uid, delta, reason)
     end
     local nextCount = (tonumber(Inv._countByUid[uid]) or 0) + delta
     if nextCount < 0 then
-        Inv._dirtyFull = true
         nextCount = 0
+        -- Underflow means the slot index and the bag disagree. Queue a full
+        -- flush; setting the flag alone left it until some later MarkDirty (PLN-9).
+        Inv.MarkDirty({ full = true, reason = reason or "underflow" })
     end
     if nextCount == 0 then
         Inv._countByUid[uid] = nil
@@ -290,7 +292,8 @@ function Inv.OnSlotUpdated(bagType, slot, bagTable)
         bagSlots[slot] = nil
         itemSlots[slot] = nil
     end
-    Inv._dirty = false
+    -- Leave Inv._dirty. Clearing it here dropped a rebuild that a different
+    -- slot or caller had already requested (PLN-8).
     return true
 end
 

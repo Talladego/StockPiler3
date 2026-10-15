@@ -8,6 +8,9 @@ local RP = StockPiler3.RefinePipeline
 
 RP.MAX_OUTSTANDING = 6
 RP.OUTSTANDING_TTL_SEC = 30
+-- Soft clear only marks the bag dirty. Hard-clear after this, not on the
+-- next frame (ExpireStuck runs every frame, so a boolean grace never waited).
+RP.SOFT_GRACE_SEC = 3
 
 RP._gen = 0
 RP._dirty = false
@@ -91,9 +94,9 @@ function RP.MarkPending(seedUid, plantUid)
     if plantUid > 0 then
         row.plantUid = plantUid
     end
-    if (tonumber(row.at) or 0) <= 0 then
-        row.at = NowSec()
-    end
+    -- Later refines of the same seed restart the stuck clock.
+    row.at = NowSec()
+    row.softAt = nil
     row.softTried = false
     RP.MarkDirty("mark-pending")
     return true
@@ -161,13 +164,16 @@ function RP.ExpireStuck()
                 if at <= 0 then
                     row.at = now
                 elseif (now - at) >= ttl then
-                    if row.softTried ~= true then
+                    local softAt = tonumber(row.softAt) or 0
+                    local grace = tonumber(RP.SOFT_GRACE_SEC) or 3
+                    if softAt <= 0 then
+                        row.softAt = now
                         row.softTried = true
                         if StockPiler3.Inventory and StockPiler3.Inventory.MarkDirty then
                             StockPiler3.Inventory.MarkDirty({ reason = "refine-expire" })
                         end
                         changed = true
-                    else
+                    elseif (now - softAt) >= grace then
                         RP._outstanding[seedUid] = nil
                         changed = true
                     end

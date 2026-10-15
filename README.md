@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.399** - Skill drops to 0 no longer look like a later skill-up; repair quarantine stays for the session; macro clicks with an item on the cursor pass through; a player macro that only shares our name is left alone.
+**Version 0.3.400** - Plan rebuilds are no longer held forever by a stuck prewarm, and a heavy frame no longer drops the AutoGrow tick. Manual brew boards unload after a minute of idle. Explicit skill 0 waits for a second reading.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -142,6 +142,7 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.400 | Plan warm-hold expires even while prewarm is busy. A heavy frame keeps the AutoGrow tick owed. `PLAN_UPDATED` fires once per real publish. Apothecary close no longer clears a board StockPiler3 does not own. A manual loaded board unloads after 60s idle. Refine outstanding uses a real soft-grace. Slot updates no longer drop a pending bag rebuild, and an underflow queues one. Explicit trade-skill 0 needs two sources or two pulses. Urgent plan rebuilds survive a bag flush. Fast AutoGrow ticks beat the fill-block interval. Additive wakes wait out storm and quiet. Refine-first does not plant when refine fails. Macro icon latches clear if paint throws. The harvest countdown skips foreign action buttons. |
 | 0.3.399 | Skill 0-drops are recorded before the baseline moves. Repair quarantine is session-only. Apothecary open no longer leaves the ability swallowed if init throws. Crafting chat is ignored when the crafting filter id is missing. Vendor buy refuses the buyback tab. Dead seed-line prewarm is gone. Pending harvest falls back when the seed uid is 0. Item specs copy bonus maps. Craft and Harvest buttons pass cursor drops through. Macro lookup requires both name and text. Icon hook restore leaves a later wrapper in place. |
 | 0.3.398 | Watch scrub keeps every character's watches, including disabled; `/sp3 audit` is report-only (`audit fix` repairs). AutoBuy reserves unconfirmed spend and will not credit another purchase's gold drop. Refine re-resolves the bag slot before use. |
 | 0.3.397 | Hidden Watch: bag snaps keep pending recount only (no StartOnce no-ops); flush on Watch tab show / dirty paint |

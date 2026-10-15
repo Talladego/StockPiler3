@@ -41,6 +41,7 @@ Sch._suppressInvTicks = 0
 Sch._pendingBagFlushAfterSuppress = false
 Sch._pendingBagNeedQueueAfterSuppress = false
 Sch._pendingPlanAfterSuppress = false
+Sch._pendingPlanUrgent = false
 Sch._pendingPrewarmAfterQuiet = false
 Sch._pendingPrewarmReason = nil
 Sch._pendingPlanAfterPrewarm = false
@@ -196,7 +197,11 @@ local function DecaySuppressInventorySideEffects()
         Sch._bagNeedQueue = true
     end
     if needPlan then
-        Sch.EnqueuePlanRebuild()
+        local urgent = Sch._pendingPlanUrgent == true
+        Sch._pendingPlanUrgent = false
+        Sch.EnqueuePlanRebuild(urgent and { urgent = true } or nil)
+    else
+        Sch._pendingPlanUrgent = false
     end
 end
 
@@ -252,7 +257,9 @@ local function FlushBagIfDue()
     end
     Sch._bagDue = false
     local needQueue = Sch._bagNeedQueue == true
+    local planUrgent = Sch._pendingPlanUrgent == true
     Sch._bagNeedQueue = false
+    Sch._pendingPlanUrgent = false
     local Inv = StockPiler3.Inventory
     if Inv and Inv.Flush then
         if StockPiler3.Perf and StockPiler3.Perf.Begin then
@@ -263,8 +270,8 @@ local function FlushBagIfDue()
             StockPiler3.Perf.End("BagFlush")
         end
     end
-    if needQueue then
-        Sch.EnqueuePlanRebuild()
+    if needQueue or planUrgent then
+        Sch.EnqueuePlanRebuild(planUrgent and { urgent = true } or nil)
     end
     RequestCachePrewarm("bag-flush")
     return true
@@ -300,23 +307,25 @@ local function RebuildPlanIfDue()
     end
     local Planner = StockPiler3.Planner
     local FW = StockPiler3.FrameWork
-    -- Hold full rebuild while FrameWork prewarm is mid-flight (collect/bag/demand/seeds).
-    if FW and FW.IsPrewarmBusy and FW.IsPrewarmBusy() == true then
-        return false
-    end
-    if FW and FW.Busy and FW.Busy() == true then
+    -- A non-prewarm FrameWork job still waits. Prewarm uses the hold cap below.
+    local fwBusyOther = FW and FW.Busy and FW.Busy() == true
+        and not (FW.IsPrewarmBusy and FW.IsPrewarmBusy() == true)
+    if fwBusyOther then
         return false
     end
     -- Hold rebuild until WarmHave finishes — including Cheap/Garden paths.
     -- Snap bumps InvalidateHaveWarm; without this wait CheapRebuild sync-warms
     -- under a remounted cache and stamps stale craftable after the first move.
+    -- Start the hold clock before treating prewarm-busy as a reason to wait.
+    -- Both busy returns used to sit above this clock, so a stuck prewarm held
+    -- rebuilds forever (CORE-1).
     local warm = Planner and Planner.IsHaveCacheWarmForSnap
         and Planner.IsHaveCacheWarmForSnap() == true
-    if not warm then
-        RequestCachePrewarm("plan-hold-warm")
-        -- Never cold-build while a prewarm job is still queued after RequestCachePrewarm.
-        if FW and FW.IsPrewarmBusy and FW.IsPrewarmBusy() == true then
-            return false
+    local prewarmBusy = FW and FW.IsPrewarmBusy and FW.IsPrewarmBusy() == true
+    if not warm or prewarmBusy then
+        if not warm then
+            RequestCachePrewarm("plan-hold-warm")
+            prewarmBusy = FW and FW.IsPrewarmBusy and FW.IsPrewarmBusy() == true
         end
         local holdMax = tonumber(Sch.PLAN_WARM_HOLD_MAX_SEC) or 3.0
         local holdStart = tonumber(Sch._planWarmHoldAt) or 0
@@ -327,17 +336,15 @@ local function RebuildPlanIfDue()
         if (Now() - holdStart) < holdMax then
             return false
         end
-        -- Hold expired still cold: re-enqueue prewarm and extend hold (avoid sync
-        -- Build.WarmHave hitch) up to a few retries, then fall through.
+        -- Hold expired still cold or still busy: re-enqueue and extend, then
+        -- fall through so the cap overrides a stuck prewarm.
         local retries = tonumber(Sch._planWarmHoldRetries) or 0
         local maxRetries = 2
         if retries < maxRetries then
             Sch._planWarmHoldRetries = retries + 1
             Sch._planWarmHoldAt = Now()
             RequestCachePrewarm("plan-hold-warm-retry")
-            if FW and FW.IsPrewarmBusy and FW.IsPrewarmBusy() == true then
-                return false
-            end
+            return false
         end
     end
     Sch._planWarmHoldAt = 0
@@ -395,12 +402,14 @@ local function AutoTickIntervalSec()
     end
     local Watch = StockPiler3.Watch
     if Watch and Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() == true then
+        -- Fast ticks win over the fill-block idle interval. Checking fill
+        -- first forced 5s ticks while empty plots were still waiting (CORE-11).
+        if Sch._autoGrowFast == true then
+            return Sch.AUTO_TICK_SEC
+        end
         local Orch = StockPiler3.Orchestrator
         if Orch and Orch.IsFillBlocked and Orch.IsFillBlocked() == true then
             return Sch.AUTO_TICK_IDLE_SEC
-        end
-        if Sch._autoGrowFast == true then
-            return Sch.AUTO_TICK_SEC
         end
         return Sch.AUTO_TICK_IDLE_SEC
     end
@@ -937,10 +946,18 @@ function Sch.EnqueuePlanRebuild(opts)
     local urgent = opts.urgent == true
     if Sch.IsInventorySideEffectsSuppressed() then
         Sch._pendingPlanAfterSuppress = true
+        if urgent == true then
+            Sch._pendingPlanUrgent = true
+        end
         return
     end
+    -- A pending bag flush used to drop the rebuild, including urgent ones,
+    -- and the post-flush enqueue was always the slow coalesce (CORE-9).
     if Sch._bagDue == true then
         Sch._bagNeedQueue = true
+        if urgent == true then
+            Sch._pendingPlanUrgent = true
+        end
         return
     end
     if nudge == true and urgent ~= true and Sch._planDue == true and (tonumber(Sch._planAt) or 0) > 0 then
@@ -1134,28 +1151,36 @@ function Sch.OnUpdate(timeElapsed)
     Sch._autoAccum = (tonumber(Sch._autoAccum) or 0) + (tonumber(timeElapsed) or 0)
     local tickSec = AutoTickIntervalSec()
     if Sch._autoAccum >= tickSec then
-        Sch._autoAccum = Sch._autoAccum - tickSec
-        if StockPiler3.Refine and StockPiler3.Refine.DecayRefineWaitTicks then
-            StockPiler3.Refine.DecayRefineWaitTicks()
-        end
-        if StockPiler3.Grow and StockPiler3.Grow.DecayPlantWaitTicks then
-            StockPiler3.Grow.DecayPlantWaitTicks()
-        end
-        if StockPiler3.Grow and StockPiler3.Grow.DecayHarvestOpLock then
-            StockPiler3.Grow.DecayHarvestOpLock()
-        end
-        if StockPiler3.Orchestrator and StockPiler3.Orchestrator.DecayFillBlocked then
-            StockPiler3.Orchestrator.DecayFillBlocked()
-        end
-        -- Skip Orch while brew load job runs (AddItem path). Keep Orch when
-        -- phase=loaded with no job so ProbeStuckAutoLoaded still ticks.
-        local skipOrch = StockPiler3.Brew
-            and StockPiler3.Brew.IsLoadJobActive
-            and StockPiler3.Brew.IsLoadJobActive() == true
-        if not didHeavy and not skipOrch
-            and StockPiler3.Orchestrator and StockPiler3.Orchestrator.Tick
-        then
-            StockPiler3.Orchestrator.Tick()
+        -- Heavy work skips the Orchestrator tick. Consuming the accumulator
+        -- here dropped that whole interval (CORE-2). Keep one tick owed.
+        if didHeavy == true then
+            if Sch._autoAccum > tickSec then
+                Sch._autoAccum = tickSec
+            end
+        else
+            Sch._autoAccum = Sch._autoAccum - tickSec
+            if StockPiler3.Refine and StockPiler3.Refine.DecayRefineWaitTicks then
+                StockPiler3.Refine.DecayRefineWaitTicks()
+            end
+            if StockPiler3.Grow and StockPiler3.Grow.DecayPlantWaitTicks then
+                StockPiler3.Grow.DecayPlantWaitTicks()
+            end
+            if StockPiler3.Grow and StockPiler3.Grow.DecayHarvestOpLock then
+                StockPiler3.Grow.DecayHarvestOpLock()
+            end
+            if StockPiler3.Orchestrator and StockPiler3.Orchestrator.DecayFillBlocked then
+                StockPiler3.Orchestrator.DecayFillBlocked()
+            end
+            -- Skip Orch while brew load job runs (AddItem path). Keep Orch when
+            -- phase=loaded with no job so ProbeStuckAutoLoaded still ticks.
+            local skipOrch = StockPiler3.Brew
+                and StockPiler3.Brew.IsLoadJobActive
+                and StockPiler3.Brew.IsLoadJobActive() == true
+            if not skipOrch
+                and StockPiler3.Orchestrator and StockPiler3.Orchestrator.Tick
+            then
+                StockPiler3.Orchestrator.Tick()
+            end
         end
     end
 end
@@ -1195,6 +1220,7 @@ function Sch.Shutdown()
     Sch._pendingPrewarmAfterQuiet = false
     Sch._pendingPrewarmReason = nil
     Sch._pendingPlanAfterPrewarm = false
+    Sch._pendingPlanUrgent = false
     Sch._orchDecisionHoldTicks = 0
     Sch._awaitingSessionLoad = false
     Sch._heavyWorkFrame = -1

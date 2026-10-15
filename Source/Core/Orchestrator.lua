@@ -617,7 +617,13 @@ function Orch._TickBody()
             EndTick()
             return
         end
-        -- After failed refine, re-probe once and plant same tick (IssuePlantOne hits cache).
+        -- Refine-first must not fill the plot when the refine did not run (CORE-17).
+        if usRefineFirst then
+            if Sch and Sch.SetAutoGrowIdle then
+                Sch.SetAutoGrowIdle(false)
+            end
+        else
+        -- After a failed non-refine-first refine, re-probe once and plant same tick.
         if canPlant and Grow and Grow.MarkPlantJobDirty then
             Grow.MarkPlantJobDirty("refine-miss")
             if Grow.GetPlantJob then
@@ -639,6 +645,7 @@ function Orch._TickBody()
             if not ClearFillIfBufferOk() then
                 Orch.SetFillBlocked(5)
             end
+        end
         end
     elseif canPlant and not hasSeeds then
         if not ClearFillIfBufferOk() then

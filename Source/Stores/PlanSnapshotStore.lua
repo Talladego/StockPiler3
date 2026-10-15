@@ -17,22 +17,16 @@ local function FireInvalidated()
     end
 end
 
-local function FireUpdated()
-    local B = StockPiler3.EventBus
-    local E = StockPiler3.Events
-    if B and E and E.PLAN_UPDATED then
-        B.Fire(E.PLAN_UPDATED, { hasPlan = type(PS._plan) == "table" })
-    end
-end
-
 function PS.Get()
     return PS._plan
 end
 
+--- Store only. PublishPlan fires PLAN_UPDATED once. Firing here as well
+--- delivered the event twice per rebuild, and GetOrBuild fired it again on
+--- cache hits (CORE-4 / PLN-1).
 function PS.Set(plan, cacheKey)
     PS._plan = plan
     PS._cacheKey = cacheKey
-    FireUpdated()
 end
 
 function PS.GetCacheKey()
@@ -96,11 +90,9 @@ function PS.GetOrBuild(refresh)
     if Planner and type(Planner.Build) == "function" then
         local plan = Planner.Build(opts)
         if type(plan) == "table" then
-            local key = nil
-            if Planner.CacheKeyFromGens then
-                key = Planner.CacheKeyFromGens()
-            end
-            PS.Set(plan, key)
+            -- Fresh builds are stored and announced in PublishPlan. A cache
+            -- hit is already the current snapshot; storing it again fired
+            -- PLAN_UPDATED with no new plan.
             return plan
         end
     end

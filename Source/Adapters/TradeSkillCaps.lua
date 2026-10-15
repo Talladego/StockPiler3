@@ -220,8 +220,59 @@ function Caps.BeginLoadSkillRefresh()
     Caps._loadEmptyPulses = 0
 end
 
+--- GetTradeSkillLevel and TradeSkillLevels both report 0.
+local function ExplicitZeroConfirmed(skillId)
+    skillId = tonumber(skillId) or 0
+    if skillId <= 0 then
+        return false
+    end
+    local hits = 0
+    local zeros = 0
+    if type(GetTradeSkillLevel) == "function" then
+        local ok, level = pcall(GetTradeSkillLevel, skillId)
+        if ok == true and level ~= nil then
+            hits = hits + 1
+            if (tonumber(level) or 0) <= 0 then
+                zeros = zeros + 1
+            end
+        end
+    end
+    if GameData and type(GameData.TradeSkillLevels) == "table" then
+        local level = GameData.TradeSkillLevels[skillId]
+        if level ~= nil then
+            hits = hits + 1
+            if (tonumber(level) or 0) <= 0 then
+                zeros = zeros + 1
+            end
+        end
+    end
+    return hits >= 2 and zeros == hits
+end
+
+--- Explicit 0 sticks only when two sources agree, or on the second
+--- consecutive pulse. A one-frame combat blip must not wipe sticky (ADP-1).
+local function ResolveStickyLevel(skillId, live, explicit, prev, streakKey)
+    live = tonumber(live) or 0
+    prev = tonumber(prev) or 0
+    if explicit == true and live <= 0 and prev > 0 then
+        local streak = (tonumber(Caps[streakKey]) or 0) + 1
+        Caps[streakKey] = streak
+        if ExplicitZeroConfirmed(skillId) or streak >= 2 then
+            Caps[streakKey] = 0
+            return 0
+        end
+        return prev
+    end
+    Caps[streakKey] = 0
+    if explicit == true or live > 0 then
+        return live
+    end
+    return prev
+end
+
 --- Apply a TRADE_SKILL_UPDATED pulse.
---- Explicit TradeSkillLevels / GetTradeSkillLevel (including 0) update sticky.
+--- Positive explicit levels update sticky immediately.
+--- Explicit 0 waits for a second source or a second pulse (ADP-1).
 --- Unknown empties never wipe sticky (combat / scenario blips).
 function Caps.OnTradeSkillPulse()
     HydrateStickyFromPersist()
@@ -237,15 +288,13 @@ function Caps.OnTradeSkillPulse()
         then
             local newCult = prevCult
             local newApo = prevApo
-            if cultExplicit == true then
-                newCult = liveCult
-            elseif liveCult > 0 then
-                newCult = liveCult
+            if cultExplicit == true or liveCult > 0 then
+                newCult = ResolveStickyLevel(
+                    Caps.CultivationId(), liveCult, cultExplicit, prevCult, "_cultZeroPulses")
             end
-            if apoExplicit == true then
-                newApo = liveApo
-            elseif liveApo > 0 then
-                newApo = liveApo
+            if apoExplicit == true or liveApo > 0 then
+                newApo = ResolveStickyLevel(
+                    Caps.ApothecaryId(), liveApo, apoExplicit, prevApo, "_apoZeroPulses")
             end
             Caps._lastCult = newCult
             Caps._lastApo = newApo
@@ -291,18 +340,22 @@ function Caps.OnTradeSkillPulse()
         end
     else
         -- Trainer unlearn reports explicit 0 here (TRADE_SKILL_UPDATED).
-        -- GetCultSkill/GetApoSkill do not honor 0, so this is the clear path.
+        -- A single explicit 0 is not enough: levels blip to 0 in combat (ADP-1).
         if cultExplicit == true or liveCult > 0 then
-            if liveCult ~= prevCult then
+            local nextCult = ResolveStickyLevel(
+                Caps.CultivationId(), liveCult, cultExplicit, prevCult, "_cultZeroPulses")
+            if nextCult ~= prevCult then
                 changed = true
             end
-            Caps._lastCult = liveCult
+            Caps._lastCult = nextCult
         end
         if apoExplicit == true or liveApo > 0 then
-            if liveApo ~= prevApo then
+            local nextApo = ResolveStickyLevel(
+                Caps.ApothecaryId(), liveApo, apoExplicit, prevApo, "_apoZeroPulses")
+            if nextApo ~= prevApo then
                 changed = true
             end
-            Caps._lastApo = liveApo
+            Caps._lastApo = nextApo
         end
         if cultExplicit == true or apoExplicit == true
             or liveCult > 0 or liveApo > 0
