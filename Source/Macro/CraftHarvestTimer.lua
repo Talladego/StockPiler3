@@ -512,7 +512,41 @@ function Timer.Install()
     Timer._orgUpdateInventory = org
     ActionButton.UpdateInventory = function(self)
         org(self)
-        Timer.Paint(self)
+        local actions = GameData and GameData.PlayerActions
+        local doMacro = actions and actions.DO_MACRO
+        if not self or doMacro == nil or self.m_ActionType ~= doMacro then
+            return
+        end
+        local Macro = StockPiler3.Macro
+        local craftId = Macro and tonumber(Macro.CraftMacroId) or 0
+        if craftId <= 0 and Macro and Macro.GetCraftMacroId then
+            local frame = tonumber(StockPiler3.FrameCounter) or 0
+            if Timer._craftIdFrame ~= frame then
+                Timer._craftIdFrame = frame
+                craftId = tonumber(Macro.GetCraftMacroId()) or 0
+            end
+        end
+        if craftId <= 0 or self.m_ActionId ~= craftId then
+            local label = LabelOf(self)
+            local name = label and LabelName(label, self)
+            if name ~= nil and fitted[name] == true then
+                local restored, restoreErr = pcall(RestoreLabel, label, self)
+                if restored ~= true and StockPiler3.Debug
+                    and StockPiler3.Debug.ReportProtectedCallFailure
+                then
+                    StockPiler3.Debug.ReportProtectedCallFailure(
+                        "CraftHarvestTimer.Restore", restoreErr, true)
+                end
+            end
+            return
+        end
+        local painted, paintErr = pcall(Timer.Paint, self)
+        if painted ~= true and StockPiler3.Debug
+            and StockPiler3.Debug.ReportProtectedCallFailure
+        then
+            StockPiler3.Debug.ReportProtectedCallFailure(
+                "CraftHarvestTimer.Paint", paintErr, true)
+        end
     end
     Timer._hooked = true
 end

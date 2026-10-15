@@ -519,10 +519,6 @@ function AA.CloseWindow(session)
     local playerVisible = AA.IsWindowOpen()
     local apoSkillActive = AA.CraftingSkillType() == apo
 
-    AA.ClearSlots()
-    AA.ReleaseBackpackLocks()
-    AA.ClearEngineShowSuppress()
-
     if session then
         session._brewOpenedApo = false
         session._brewOpenedBackpack = false
@@ -536,6 +532,12 @@ function AA.CloseWindow(session)
         AA.EndStealthUi()
         return
     end
+
+    -- Only after the session is ours. Clearing first wiped a player's
+    -- visible Apothecary board (ADP-20).
+    AA.ClearSlots()
+    AA.ReleaseBackpackLocks()
+    AA.ClearEngineShowSuppress()
 
     if CraftingSystem and type(CraftingSystem.SetCurrentTradeSkill) == "function" then
         TryQuiet("SetCurrentTradeSkill", CraftingSystem.SetCurrentTradeSkill, apo)

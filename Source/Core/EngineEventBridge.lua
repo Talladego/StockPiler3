@@ -121,10 +121,14 @@ function Bridge.OnCraftingSlotUpdated(updatedSlots)
     CoalesceSlots(Bridge._pendingCraftSlots, Bridge._pendingCraftSlotSet, updatedSlots)
     Bridge._pendingCraftApply = true
     local Grow = StockPiler3.Grow
+    local Sch = StockPiler3.Scheduler
+    local storm = Sch and Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true
+    local quiet = Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true
     if Grow and Grow.NeedsCurrentStageAdditive and Grow.NeedsCurrentStageAdditive()
-        and StockPiler3.Scheduler and StockPiler3.Scheduler.WakeAutoGrow
+        and Sch and Sch.WakeAutoGrow
+        and not storm and not quiet
     then
-        StockPiler3.Scheduler.WakeAutoGrow()
+        Sch.WakeAutoGrow()
     end
 end
 
@@ -244,7 +248,7 @@ function Bridge.OnCultivationUpdated()
     end
     if Grow and Grow.NeedsCurrentStageAdditive and Grow.NeedsCurrentStageAdditive()
         and Sch and Sch.WakeAutoGrow
-        and not storm
+        and not storm and not quiet
     then
         Sch.WakeAutoGrow()
     end

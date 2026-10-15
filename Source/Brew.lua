@@ -13,6 +13,9 @@ Brew.BREW_OP_LOCK_SEC = 1.25
 -- After load-done, engine SuccessChance / GetSlottedItem can lag a few frames.
 -- Unloading immediately loops load->unload while the footer stays lit.
 Brew.LOAD_SETTLE_SEC = 1.25
+-- A manual board left in phase "loaded" keeps Orch.IsBrewSessionActive true,
+-- so AutoGrow never plants. Unload after this long with no perform or bag move.
+Brew.MANUAL_LOADED_IDLE_SEC = 60
 -- Probe interval for auto-loaded boards that never get another crafting-updated
 -- (settle hold then silence). Stuck loaded blocks AutoGrow + plan rebuild.
 Brew.STUCK_PROBE_SEC = 0.5
@@ -91,6 +94,13 @@ local function SetSessionPhase(phase, reason)
     local Orch = StockPiler3.Orchestrator
     if Orch and Orch.SetBrewPhase then
         Orch.SetBrewPhase(phase == "idle" and nil or phase)
+    end
+    if phase == "loaded" or phase == "loading" then
+        if Brew._loadSource == "manual" then
+            Brew._manualLoadedActivityAt = NowSec()
+        end
+    else
+        Brew._manualLoadedActivityAt = 0
     end
     if prev ~= phase then
         LogBrew("session " .. prev .. "->" .. phase .. " reason=" .. tostring(reason or "?"))
@@ -2248,6 +2258,9 @@ function Brew.ValidateApothecaryPerform()
 end
 
 function Brew.TryPerform(opId)
+    if Brew._loadSource == "manual" then
+        Brew._manualLoadedActivityAt = NowSec()
+    end
     local a = AA()
     Brew._lastPerformBlockWhy = nil
     -- Seed buffer is enforced via Ready status (and shared demotion); not a global perform gate.
@@ -2386,6 +2399,35 @@ end
 
 function Brew.FirePerform()
     return Brew.TryPerform(nil)
+end
+
+--- Manual Load leaves the board up on purpose. After MANUAL_LOADED_IDLE_SEC
+--- with no perform, crafting update, or bag snap, unload so AutoGrow can plant.
+function Brew.ExpireManualLoadedIdle()
+    if Brew._loadSource ~= "manual" then
+        return false
+    end
+    if Brew.IsLoadJobActive and Brew.IsLoadJobActive() == true then
+        Brew._manualLoadedActivityAt = NowSec()
+        return false
+    end
+    local session = GetSession()
+    if tostring(session.phase or "") ~= "loaded" then
+        return false
+    end
+    local idleSec = tonumber(Brew.MANUAL_LOADED_IDLE_SEC) or 60
+    local at = tonumber(Brew._manualLoadedActivityAt) or 0
+    local now = NowSec()
+    if at <= 0 then
+        Brew._manualLoadedActivityAt = now
+        return false
+    end
+    if now <= 0 or (now - at) < idleSec then
+        return false
+    end
+    LogBrew("manual loaded idle timeout")
+    Brew.ClearLoadedSession({ reason = "manual-idle" })
+    return true
 end
 
 ----------------------------------------------------------------
@@ -2585,6 +2627,7 @@ function Brew.OnUpdate(timeElapsed)
     if StockPiler3.Macro and StockPiler3.Macro.ExpireBrewFiredGuard then
         StockPiler3.Macro.ExpireBrewFiredGuard()
     end
+    Brew.ExpireManualLoadedIdle()
 
     local now = NowSec()
     local interval = tonumber(Brew.STUCK_PROBE_SEC) or 0.5
