@@ -500,7 +500,9 @@ function AA.OpenWindow(session)
 
     ArmEngineShowSuppress(2.5)
     AA._sp3Opening = true
-    AA.InitHeadlessSession()
+    -- A throw here used to leave the latch set and swallow the player's
+    -- Apothecary ability until the window closed (ADP-19).
+    TryCall("AA.InitHeadlessSession", AA.InitHeadlessSession)
     AA._sp3Opening = false
     if AA.IsWindowOpen() and AA.ParkApoRoot() and session then
         session._brewApoStealth = true

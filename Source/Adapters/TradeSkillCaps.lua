@@ -97,11 +97,13 @@ local function HydrateStickyFromPersist()
     if Caps._persistedHydrated == true then
         return
     end
-    Caps._persistedHydrated = true
     local row = CharBucket(false)
     if type(row) ~= "table" then
+        -- Latch only after the character row exists. An early call used to
+        -- skip hydration for the rest of the session (ADP-3).
         return
     end
+    Caps._persistedHydrated = true
     local pc = tonumber(row.lastCultSkill) or 0
     local pa = tonumber(row.lastApoSkill) or 0
     if (tonumber(Caps._lastCult) or 0) <= 0 and pc > 0 then

@@ -1739,7 +1739,11 @@ end
 --- Arm pending harvest; actual learn runs in TryCompletePendingHarvest.
 function SM.BeginPendingHarvest(plotNum, seedUid)
     plotNum = tonumber(plotNum) or 0
-    seedUid = tonumber(seedUid) or SM.ResolvePlotSeed(plotNum, 0)
+    -- tonumber(0) is truthy, so `or ResolvePlotSeed` never ran for a zero uid (KNW-16).
+    seedUid = tonumber(seedUid) or 0
+    if seedUid <= 0 then
+        seedUid = tonumber(SM.ResolvePlotSeed(plotNum, 0)) or 0
+    end
     if seedUid <= 0 then
         seedUid = tonumber(SM._harvestWatch[plotNum] and SM._harvestWatch[plotNum].seedUid) or 0
     end

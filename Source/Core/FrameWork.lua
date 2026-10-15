@@ -241,22 +241,12 @@ function FW.EnqueueDemand(gen)
     end)
 end
 
-function FW.EnqueueSeedLines(gen)
-    return FW.StartOnce("prewarm-seed-lines", gen, function()
-        local Grow = StockPiler3.Grow
-        if Grow and Grow.WarmSeedLines then
-            Grow.WarmSeedLines()
-        elseif Grow and Grow.CollectAutoGrowSeedLines then
-            Grow.CollectAutoGrowSeedLines({ cacheOnly = true })
-        end
-    end)
-end
-
 --- True while any prewarm job is queued/running (hold PlanRebuild + Watch flush).
+--- Seed-line prewarm called Grow.WarmSeedLines / CollectAutoGrowSeedLines, which
+--- do not exist, and still occupied a heavy frame (CORE-13).
 function FW.IsPrewarmBusy()
     return FW.IsActive("prewarm-warm-have")
         or FW.IsActive("prewarm-demand")
-        or FW.IsActive("prewarm-seed-lines")
 end
 
 --- Drain up to frame budget (default 1). Returns true if any step ran.

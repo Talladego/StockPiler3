@@ -80,7 +80,11 @@ local function InvalidatePlantQueue(reason)
         return
     end
     if Grow.InvalidatePlantQueue then
-        Grow.InvalidatePlantQueue(reason)
+        if type(reason) == "table" then
+            Grow.InvalidatePlantQueue(reason)
+        else
+            Grow.InvalidatePlantQueue({ reason = reason })
+        end
     elseif Grow.MarkPlantJobDirty then
         Grow.MarkPlantJobDirty(reason)
     end
@@ -113,9 +117,6 @@ local function RequestCachePrewarm(reason)
     end
     if FW.EnqueueDemand then
         FW.EnqueueDemand(genKey)
-    end
-    if FW.EnqueueSeedLines then
-        FW.EnqueueSeedLines(genKey)
     end
 end
 

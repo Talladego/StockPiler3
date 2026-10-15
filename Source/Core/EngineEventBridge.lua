@@ -286,16 +286,21 @@ function Bridge.OnTradeSkillUpdated()
         Bridge._skillPrev = { cult = cult, apo = apo }
         hashChanged = true
     else
-        local dCult = cult - (tonumber(prev.cult) or cult)
-        local dApo = apo - (tonumber(prev.apo) or apo)
+        -- Read the previous sample before overwriting it. liveDrop used to see
+        -- the new value, so a real drop (200 -> 0) was missed and the next
+        -- pulse recorded a +200 skill-up (CORE-3).
+        local prevCult = tonumber(prev.cult) or cult
+        local prevApo = tonumber(prev.apo) or apo
+        local dCult = cult - prevCult
+        local dApo = apo - prevApo
         prev.cult = cult
         prev.apo = apo
         -- Logout / char switch: ignore large negative jumps.
         -- Use live reads so sticky cache cannot hide a real char swap.
         local liveCult = Caps and Caps.ReadCultSkillLive and Caps.ReadCultSkillLive() or cult
         local liveApo = Caps and Caps.ReadApoSkillLive and Caps.ReadApoSkillLive() or apo
-        local liveDrop = (liveCult <= 0 and (tonumber(prev.cult) or 0) >= 5)
-            or (liveApo <= 0 and (tonumber(prev.apo) or 0) >= 5)
+        local liveDrop = (liveCult <= 0 and prevCult >= 5)
+            or (liveApo <= 0 and prevApo >= 5)
         if (dCult <= -5 or dApo <= -5) and liveDrop and Caps and Caps._pendingLoadRefresh == true then
             if Caps.ResetTradeSkillsReady then
                 Caps.ResetTradeSkillsReady()

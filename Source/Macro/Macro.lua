@@ -39,6 +39,7 @@ local orgOnLButtonUpFn = nil
 local orgCreateMacroTooltipFn = nil
 local hookedSetActionDataFn = nil
 local hookedUpdateEnabledStateFn = nil
+local hookedUpdateIconFn = nil
 local hookedOnLButtonUpFn = nil
 local hookedCreateMacroTooltipFn = nil
 
@@ -245,17 +246,12 @@ local function FindMacroSlot(name, text, cachedId)
     if cachedId > 0 and MacroSlotMatches(cachedId, name, text) then
         return cachedId
     end
-    local macros = GetMacroTable()
+    -- Name and text together. A player macro that only shares our name
+    -- (different body) must not be treated as ours and overwritten at login.
     local limit = NumMacroSlots()
     for slot = 1, limit do
-        local macro = macros[slot]
-        if type(macro) == "table" and not IsLegacyMacroName(macro.name) then
-            if MacroText(macro) == text then
-                return slot
-            end
-            if macro.name == name then
-                return slot
-            end
+        if MacroSlotMatches(slot, name, text) then
+            return slot
         end
     end
     return nil
@@ -1555,7 +1551,7 @@ local function installUpdateIconHook()
         return
     end
     orgUpdateIconFn = ActionButton.UpdateIcon
-    ActionButton.UpdateIcon = function(self)
+    hookedUpdateIconFn = function(self)
         orgUpdateIconFn(self)
         if Macro._inIconRefresh == true or not ButtonIsOurs(self) then
             return
@@ -1587,6 +1583,7 @@ local function installUpdateIconHook()
         end
         Macro._inIconRefresh = false
     end
+    ActionButton.UpdateIcon = hookedUpdateIconFn
     Macro._updateIconHooked = true
 end
 
@@ -1653,6 +1650,12 @@ local function installActionButtonHooks()
             return orgOnLButtonUp(self, flags, x, y)
         end
         if Macro.IsCraftMacroButton(self) then
+            -- Disabled and idle branches return before harvest activation,
+            -- which is where the cursor check lives. Pass the click through
+            -- so a held item or ability can still land on this button.
+            if Cursor and Cursor.IconOnCursor and Cursor.IconOnCursor() then
+                return orgOnLButtonUp(self, flags, x, y)
+            end
             local snap = Macro.ResolveCraftMode()
             if snap.craftCanUse == true then
                 Macro.ApplyCraftButtonAppearance(self, { snap = snap })
@@ -1696,6 +1699,9 @@ local function installActionButtonHooks()
                 return
             end
         elseif Macro.IsMacroButton(self) then
+            if Cursor and Cursor.IconOnCursor and Cursor.IconOnCursor() then
+                return orgOnLButtonUp(self, flags, x, y)
+            end
             if not canHarvestMacro() then
                 clearHarvestGameActionForButton(self)
                 clearPickupIfMouse(flags)
@@ -2045,9 +2051,12 @@ function Macro.Shutdown()
     if ActionButton and hookedUpdateEnabledStateFn and ActionButton.UpdateEnabledState == hookedUpdateEnabledStateFn then
         ActionButton.UpdateEnabledState = orgUpdateEnabledStateFn
     end
-    if ActionButton and orgUpdateIconFn and Macro._updateIconHooked == true then
+    -- Restore only our wrapper. A later addon that wrapped UpdateIcon
+    -- after us keeps its function; clobbering it would drop that hook.
+    if ActionButton and hookedUpdateIconFn and ActionButton.UpdateIcon == hookedUpdateIconFn then
         ActionButton.UpdateIcon = orgUpdateIconFn
         orgUpdateIconFn = nil
+        hookedUpdateIconFn = nil
         Macro._updateIconHooked = false
     end
     if ActionButton and hookedOnLButtonUpFn and ActionButton.OnLButtonUp == hookedOnLButtonUpFn then
