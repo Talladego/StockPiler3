@@ -31,6 +31,7 @@ Buy._fillChatPending = Buy._fillChatPending or {}
 Buy._allowPlantBuys = false
 Buy._planArmedAfterFill = false
 Buy._pendingBuy = nil
+Buy._issueSeq = 0
 Buy._noSpendCooldownUntil = Buy._noSpendCooldownUntil or {}
 Buy._lateBuyAttempts = Buy._lateBuyAttempts or {}
 Buy._nextBuyAfter = 0
@@ -167,8 +168,11 @@ end
 
 --- Brass reserved by unexpired late attempts plus any in-flight pending buy.
 --- Live money and lifetime spent do not include these until they confirm (EXE-2).
+--- Late attempts whose money drop already matches their cost are skipped so the
+--- same brass is not reserved twice while waiting for bag evidence (#26 L2).
 local function OpenLateCostBrass()
     local now = NowSec()
+    local live = PlayerMoneyBrass()
     local total = 0
     local list = Buy._lateBuyAttempts
     if type(list) == "table" then
@@ -177,7 +181,17 @@ local function OpenLateCostBrass()
             if type(pending) == "table" then
                 local expires = tonumber(pending.expiresAt) or 0
                 if expires <= 0 or now <= 0 or now < expires then
-                    total = total + math.max(0, tonumber(pending.costTotal) or 0)
+                    local cost = math.max(0, tonumber(pending.costTotal) or 0)
+                    local before = tonumber(pending.beforeMoney) or 0
+                    local foreign = tonumber(pending.foreignSpend) or 0
+                    local alreadyDropped = false
+                    if live > 0 and before > 0 and cost > 0 then
+                        local unexplained = (before - live) - foreign
+                        alreadyDropped = unexplained + 1 >= cost and unexplained <= cost + 1
+                    end
+                    if alreadyDropped ~= true then
+                        total = total + cost
+                    end
                 end
             end
         end
@@ -189,20 +203,34 @@ local function OpenLateCostBrass()
     return total
 end
 
---- Other confirmed purchases since this attempt's beforeMoney snapshot.
---- Visit spent is cleared when the vendor reopens, so the amount is stored
+--- Credit confirmed cost onto other open attempts whose wallet snapshot still
+--- included that drop. Attempts issued after the money already left must not
+--- get foreignSpend (#31). Visit spent clears on reopen, so the amount lives
 --- on the attempt itself (EXE-1, EXE-3).
-local function NoteForeignSpend(exceptUid, costTotal)
-    costTotal = math.max(0, tonumber(costTotal) or 0)
+local function NoteForeignSpend(confirmed)
+    if type(confirmed) ~= "table" then
+        return
+    end
+    local costTotal = math.max(0, tonumber(confirmed.costTotal) or 0)
     if costTotal <= 0 then
         return
     end
-    exceptUid = tonumber(exceptUid) or 0
+    local exceptUid = tonumber(confirmed.uid) or 0
+    local confirmedSeq = tonumber(confirmed.issueSeq) or 0
+    local confirmedBefore = tonumber(confirmed.beforeMoney) or 0
     local function add(pending)
         if type(pending) ~= "table" then
             return
         end
         if exceptUid > 0 and (tonumber(pending.uid) or 0) == exceptUid then
+            return
+        end
+        local pSeq = tonumber(pending.issueSeq) or 0
+        local pBefore = tonumber(pending.beforeMoney) or 0
+        if pSeq > confirmedSeq
+            and confirmedBefore > 0
+            and pBefore <= (confirmedBefore - costTotal + 1)
+        then
             return
         end
         pending.foreignSpend = (tonumber(pending.foreignSpend) or 0) + costTotal
@@ -406,7 +434,7 @@ local function AccountConfirmedBuy(pending, liveMoney)
     local unitCost = tonumber(pending.unitCost) or 0
     local costTotal = tonumber(pending.costTotal) or (unitCost * qty)
     -- Count this spend against other open attempts before dropping same-uid rows.
-    NoteForeignSpend(pending.uid, costTotal)
+    NoteForeignSpend(pending)
     -- A live confirm owns this uid - do not also late-confirm the same bag gain.
     ClearLateAttemptsForUid(pending.uid)
     ClearNoSpendCooldown(pending.uid)
@@ -542,6 +570,34 @@ local function UniqueMoneySubset(attempts, live)
     return found
 end
 
+--- Late attempts plus the in-flight pending buy (one row per uid).
+--- Equal-cost drops must see both so UniqueMoneySubset can stay ambiguous (#30).
+local function MoneyCandidates()
+    local open = {}
+    local seen = {}
+    local rows = Buy._lateBuyAttempts
+    if type(rows) == "table" then
+        for i = 1, #rows do
+            local pending = rows[i]
+            if type(pending) == "table" then
+                local uid = tonumber(pending.uid) or 0
+                if uid > 0 and seen[uid] ~= true then
+                    seen[uid] = true
+                    open[#open + 1] = pending
+                end
+            end
+        end
+    end
+    local pending = Buy._pendingBuy
+    if type(pending) == "table" then
+        local uid = tonumber(pending.uid) or 0
+        if uid > 0 and seen[uid] ~= true then
+            open[#open + 1] = pending
+        end
+    end
+    return open
+end
+
 --- Keep a timed-out pending buy so a late bag/money snap can still chat.
 local function StashLateBuyAttempt(pending)
     if type(pending) ~= "table" then
@@ -569,13 +625,16 @@ local function StashLateBuyAttempt(pending)
         item = pending.item,
         remainingWas = pending.remainingWas,
         foreignSpend = tonumber(pending.foreignSpend) or 0,
+        issueSeq = tonumber(pending.issueSeq) or 0,
         late = true,
     }
 end
 
 --- Confirm buys that timed out as no-spend before inventory/money caught up.
---- Bag evidence is per uid. Money evidence must be a unique subset of the
---- open attempts, so one purchase cannot confirm a different item (EXE-1).
+--- Bag evidence is per uid. Money evidence must be a unique subset of late
+--- attempts plus the in-flight pending buy, so one purchase cannot confirm a
+--- different item (EXE-1 / #30). Only late members are confirmed here; the
+--- pending buy is left to ResolvePendingBuy.
 local function TryLateConfirmBuys()
     local list = Buy._lateBuyAttempts
     if type(list) ~= "table" or #list < 1 then
@@ -585,7 +644,7 @@ local function TryLateConfirmBuys()
     local any = false
     local live = PlayerMoneyBrass()
 
-    local function activeAttempts()
+    local function activeLateAttempts()
         local open = {}
         local seen = {}
         local rows = Buy._lateBuyAttempts
@@ -624,7 +683,7 @@ local function TryLateConfirmBuys()
         return true
     end
 
-    local open = activeAttempts()
+    local open = activeLateAttempts()
     for i = 1, #open do
         local pending = open[i]
         if BagEvidenceOk(pending) then
@@ -637,16 +696,19 @@ local function TryLateConfirmBuys()
     while guard < 8 do
         guard = guard + 1
         local beforeCount = type(Buy._lateBuyAttempts) == "table" and #Buy._lateBuyAttempts or 0
-        open = activeAttempts()
-        local subset = UniqueMoneySubset(open, live)
+        local subset = UniqueMoneySubset(MoneyCandidates(), live)
         if type(subset) ~= "table" or #subset < 1 then
             break
         end
+        local confirmedAny = false
         for i = 1, #subset do
-            confirm(subset[i], "money")
+            if subset[i].late == true then
+                confirm(subset[i], "money")
+                confirmedAny = true
+            end
         end
         local afterCount = type(Buy._lateBuyAttempts) == "table" and #Buy._lateBuyAttempts or 0
-        if afterCount >= beforeCount then
+        if confirmedAny ~= true or afterCount >= beforeCount then
             break
         end
         live = PlayerMoneyBrass()
@@ -680,6 +742,9 @@ local function TryLateConfirmBuys()
 end
 
 --- Resolve open pending buy: confirm spend, timeout no-spend, or still waiting.
+--- Money alone confirms only when the pending buy is in the unique money
+--- subset of MoneyCandidates (late + pending). Equal-cost ambiguity falls
+--- through to bag evidence (#30).
 --- @return "confirmed"|"waiting"|"no-spend"|nil
 local function ResolvePendingBuy()
     local pending = Buy._pendingBuy
@@ -693,7 +758,22 @@ local function ResolvePendingBuy()
     local uid = tonumber(pending.uid) or 0
     local bagNow = BagCountUid(uid)
     local bagBefore = tonumber(pending.bagBefore) or 0
-    local ok = select(1, PendingEvidenceOk(pending, live, bagNow))
+    local bagOk = BagEvidenceOk(pending, bagNow)
+    local moneyOk = CostsMatchDrop(costTotal, UnexplainedMoneyDrop(pending, live))
+    local ok = bagOk
+    if not bagOk and moneyOk then
+        local subset = UniqueMoneySubset(MoneyCandidates(), live)
+        local pendingInSubset = false
+        if type(subset) == "table" then
+            for i = 1, #subset do
+                if subset[i] == pending then
+                    pendingInSubset = true
+                    break
+                end
+            end
+        end
+        ok = pendingInSubset
+    end
     if ok then
         AccountConfirmedBuy(pending, live > 0 and live or before)
         Buy._pendingBuy = nil
@@ -752,7 +832,21 @@ local function FinalizePendingBuyForStop()
     local uid = tonumber(pending.uid) or 0
     local live = PlayerMoneyBrass()
     local bagNow = BagCountUid(uid)
-    local ok = select(1, PendingEvidenceOk(pending, live, bagNow))
+    local costTotal = tonumber(pending.costTotal) or 0
+    local bagOk = BagEvidenceOk(pending, bagNow)
+    local moneyOk = CostsMatchDrop(costTotal, UnexplainedMoneyDrop(pending, live))
+    local ok = bagOk
+    if not bagOk and moneyOk then
+        local subset = UniqueMoneySubset(MoneyCandidates(), live)
+        if type(subset) == "table" then
+            for i = 1, #subset do
+                if subset[i] == pending then
+                    ok = true
+                    break
+                end
+            end
+        end
+    end
     if ok then
         AccountConfirmedBuy(pending, live)
         Buy._pendingBuy = nil
@@ -889,6 +983,10 @@ local function ResetVisit()
             StashLateBuyAttempt(Buy._pendingBuy)
             Buy._pendingBuy = nil
         end
+    end
+    -- Late confirms bump _visitBought; arm the plan before zeroing (#26 L3).
+    if (tonumber(Buy._visitBought) or 0) > 0 then
+        ArmPlanAfterBuyFill("visit-reset")
     end
     Buy._visitPurchases = 0
     Buy._visitSpentBrass = 0
@@ -1477,6 +1575,7 @@ function Buy.IssueOne(opId)
                             -- No open late stash for this uid (blocked above); clear any stale.
                             ClearLateAttemptsForUid(uid)
                             -- Broadcast only - confirm on money/bag movement next tick.
+                            Buy._issueSeq = (tonumber(Buy._issueSeq) or 0) + 1
                             Buy._pendingBuy = {
                                 beforeMoney = beforeMoney,
                                 bagBefore = bagBefore,
@@ -1491,6 +1590,7 @@ function Buy.IssueOne(opId)
                                 item = item,
                                 remainingWas = remaining,
                                 foreignSpend = 0,
+                                issueSeq = Buy._issueSeq,
                             }
                             LogBuy(string.format(
                                 "buy-pending uid=%s slot=%d qty=%d cost=%d before=%d opId=%s",
