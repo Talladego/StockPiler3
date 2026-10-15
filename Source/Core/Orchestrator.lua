@@ -18,6 +18,10 @@ Orch._fillBlockedWait = 0
 Orch._busTokens = nil
 Orch._seedBufferRefineArmed = false
 Orch._inTick = false
+-- After this many refine-first misses in a row, allow the plant re-probe so
+-- empty plots are not held forever when NeedsRefineFirst disagrees with Issue (#35 N3).
+Orch.REFINE_FIRST_MAX_MISSES = 3
+Orch._refineFirstMisses = 0
 
 local function TrackBus(token)
     if token == nil then
@@ -504,6 +508,8 @@ function Orch._TickBody()
         elseif Grow and Grow.GetPlantJob then
             Grow.GetPlantJob()
         end
+    else
+        Orch._refineFirstMisses = 0
     end
     -- One plant-queue probe per tick (nil-cache makes idle re-entry O(1)).
     local hasSeeds = false
@@ -600,6 +606,7 @@ function Orch._TickBody()
     if refineDue and Refine.TryTick then
         local ok = Refine.TryTick(opId)
         if ok == true then
+            Orch._refineFirstMisses = 0
             SetPhase("refining", "auto")
             if Grow and Grow.MarkPlantJobDirty then
                 Grow.MarkPlantJobDirty("refine")
@@ -610,13 +617,22 @@ function Orch._TickBody()
             EndTick()
             return
         end
-        -- Refine-first must not fill the plot when the refine did not run (CORE-17).
+        -- Refine-first must not fill the plot when the refine did not run (CORE-17),
+        -- but after N misses allow the plant re-probe so plots are not held empty
+        -- forever when NeedsRefineFirst disagrees with CollectIntents/Issue (#35 N3).
+        local maxMisses = tonumber(Orch.REFINE_FIRST_MAX_MISSES) or 3
         if usRefineFirst then
+            Orch._refineFirstMisses = (tonumber(Orch._refineFirstMisses) or 0) + 1
+        end
+        local holdPlantForRefine = usRefineFirst
+            and (tonumber(Orch._refineFirstMisses) or 0) < maxMisses
+        if holdPlantForRefine then
             if Sch and Sch.SetAutoGrowIdle then
                 Sch.SetAutoGrowIdle(false)
             end
         else
-        -- After a failed non-refine-first refine, re-probe once and plant same tick.
+        -- After a failed non-refine-first refine (or refine-first miss budget),
+        -- re-probe once and plant same tick.
         if canPlant and Grow and Grow.MarkPlantJobDirty then
             Grow.MarkPlantJobDirty("refine-miss")
             if Grow.GetPlantJob then
@@ -627,6 +643,7 @@ function Orch._TickBody()
         if canPlant and hasSeeds and not holdHarvestBatch then
             local planted = Grow and Grow.IssuePlantOne and Grow.IssuePlantOne(opId) == true
             if planted then
+                Orch._refineFirstMisses = 0
                 SetPhase("planting", "auto")
                 if Sch and Sch.WakeAutoGrow then
                     Sch.WakeAutoGrow()
