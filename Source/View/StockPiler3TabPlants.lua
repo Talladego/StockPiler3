@@ -487,8 +487,9 @@ function StockPiler3TabPlants.OnToggleWatch()
             StockPiler3.Scheduler.EnqueuePlanRebuild({ urgent = true })
         end
         if StockPiler3.Ui then
-            StockPiler3.Ui._watchUiLastKey = nil
-            StockPiler3.Ui._watchUiFlushedAt = 0
+            if StockPiler3.Ui.BypassWatchThrottle then
+                StockPiler3.Ui.BypassWatchThrottle()
+            end
             if StockPiler3.Ui.MarkWatchUiDirty then
                 StockPiler3.Ui.MarkWatchUiDirty()
             end

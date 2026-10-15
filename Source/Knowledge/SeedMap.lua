@@ -44,6 +44,10 @@ local function ToNarrow(text)
     return StockPiler3.Util.ToNarrow(text)
 end
 
+-- Defined with the family-ladder section. Forward-declared so
+-- ResolveSeedUidForPlant does not call an undefined global (BUG-1).
+local ItemSkillReq
+
 local function NowSec()
     return StockPiler3.Util and StockPiler3.Util.NowSec and StockPiler3.Util.NowSec() or 0
 end
@@ -2313,7 +2317,7 @@ end
 -- Family ladders (Upgrade Seed / SkillUp graduation)
 ----------------------------------------------------------------
 
-local function ItemSkillReq(item)
+ItemSkillReq = function(item)
     if type(item) ~= "table" then
         return 0
     end

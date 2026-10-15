@@ -2200,23 +2200,34 @@ local function RecipeOutcomesOverlap(a, b)
     return false
 end
 
---- Recipe fingerprints still pointed at by character potion watches.
+local function AddWatchRecipeKey(out, watchKey, watch)
+    if type(watch) ~= "table" then
+        return
+    end
+    local parsed = RS.ParsePotionRecipeKey(tostring(watchKey))
+    if type(parsed) == "table" and type(parsed.recipeSpecKey) == "string" then
+        out[parsed.recipeSpecKey] = true
+    end
+    local rk = watch.recipeSpecKey or watch.activeRecipeKey
+    if type(rk) == "string" and rk ~= "" then
+        out[rk] = true
+    end
+end
+
+--- Recipe fingerprints pointed at by any character's potion watches.
+--- Disabled watches are included. Scrubbing only the current character's
+--- enabled set let a later pass delete other characters' watches (KNW-1).
+--- Reads Settings directly: Watch.GetWatches() creates a character row.
 local function WatchReferencedRecipeKeys()
     local out = {}
-    local Watch = StockPiler3.Watch
-    local watches = Watch and Watch.GetWatches and Watch.GetWatches() or nil
-    if type(watches) ~= "table" then
+    local settings = StockPiler3.Settings
+    if type(settings) ~= "table" or type(settings.characters) ~= "table" then
         return out
     end
-    for watchKey, watch in pairs(watches) do
-        if type(watch) == "table" and watch.enabled ~= false then
-            local parsed = RS.ParsePotionRecipeKey(tostring(watchKey))
-            if type(parsed) == "table" and type(parsed.recipeSpecKey) == "string" then
-                out[parsed.recipeSpecKey] = true
-            end
-            local rk = watch.recipeSpecKey or watch.activeRecipeKey
-            if type(rk) == "string" and rk ~= "" then
-                out[rk] = true
+    for _, char in pairs(settings.characters) do
+        if type(char) == "table" and type(char.watches) == "table" then
+            for watchKey, watch in pairs(char.watches) do
+                AddWatchRecipeKey(out, watchKey, watch)
             end
         end
     end
@@ -2338,7 +2349,7 @@ end
 
 --- Drop dangling / dominated alternate fingerprints on potions.
 --- Removes keys missing from recipes, and role-subset keys of a richer sibling.
---- Never drop fingerprints still referenced by an enabled Watch.
+--- Never drop fingerprints still referenced by any character's watch.
 function RS.ScrubSubsetPotionRecipeKeys()
     local potions = PotionsTable()
     local recipes = RecipesTable()
@@ -2387,7 +2398,7 @@ function RS.ScrubSubsetPotionRecipeKeys()
 end
 
 --- Delete unreferenced recipes that are role-subsets of a richer recipe sharing outcomes.
---- Never delete fingerprints still referenced by an enabled Watch.
+--- Never delete fingerprints still referenced by any character's watch.
 function RS.ScrubOrphanSubsetRecipes()
     local recipes = RecipesTable()
     local potions = PotionsTable()

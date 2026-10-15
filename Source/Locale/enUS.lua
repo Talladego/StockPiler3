@@ -29,7 +29,7 @@ StockPiler3.Locale.Packs[LANG] = {
     ["boot.help.fingerprint"] = L"/sp3 fingerprint <uidA> [uidB] - ProductKey / ProductMatches",
     ["boot.help.events"] = L"/sp3 events [on|off|dump] - event trace",
     ["boot.help.perf"] = L"/libperf StockPiler3 on 250 - hitch log (LibPerf; use >=250ms)",
-    ["boot.help.audit"] = L"/sp3 audit - validate/repair saved data + health",
+    ["boot.help.audit"] = L"/sp3 audit - report saved-data health; /sp3 audit fix applies repair",
     ["boot.help.mem"] = L"/sp3 mem - live table key counts (safe; do not d(StockPiler3))",
     ["boot.help.harvest"] = L"/sp3 harvest - prepare next ready plot",
     ["boot.help.chat"] = L"/sp3 chat [on|quiet|off] - all lines, changes and harvest/brew only, or none",

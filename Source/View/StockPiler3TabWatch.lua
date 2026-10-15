@@ -690,8 +690,9 @@ local function AfterWatchSettingsChanged()
     end
     if StockPiler3.Ui then
         -- Bypass 5s Watch flush throttle so status text updates on this click.
-        StockPiler3.Ui._watchUiLastKey = nil
-        StockPiler3.Ui._watchUiFlushedAt = 0
+        if StockPiler3.Ui.BypassWatchThrottle then
+            StockPiler3.Ui.BypassWatchThrottle()
+        end
     end
     local Bus = StockPiler3.EventBus
     if Bus and Bus.FireWatchUiDirty then
@@ -1674,8 +1675,9 @@ function StockPiler3TabWatch.AfterCatalogWatchToggle(opts)
         Sch.EnqueuePlanRebuild({ urgent = true })
     end
     if StockPiler3.Ui then
-        StockPiler3.Ui._watchUiLastKey = nil
-        StockPiler3.Ui._watchUiFlushedAt = 0
+        if StockPiler3.Ui.BypassWatchThrottle then
+            StockPiler3.Ui.BypassWatchThrottle()
+        end
         if StockPiler3.Ui.MarkWatchUiDirty then
             StockPiler3.Ui.MarkWatchUiDirty()
         end
@@ -2516,6 +2518,7 @@ local STATUS_TIP_COLORS = {
     wait_cult = COLOR_WARN,
     idle = COLOR_WARN,
     fallback_blocked = COLOR_OK,
+    skill_done = COLOR_OK,
     waiting_watches = COLOR_WARN,
     waiting_potions = COLOR_WARN,
     waiting_plants = COLOR_WARN,
