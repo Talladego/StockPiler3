@@ -71,10 +71,7 @@ local function SoftReadyCount()
 end
 
 local function StageEmpty()
-    if GameData and GameData.CultivationStage then
-        return GameData.CultivationStage.EMPTY or 0
-    end
-    return 0
+    return StockPiler3.CultivatorAdapter.StageEmpty()
 end
 
 local function StageGrown()

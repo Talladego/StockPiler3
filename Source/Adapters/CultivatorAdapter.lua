@@ -13,12 +13,14 @@ local function TryCall(label, fn, ...)
     return StockPiler3.Util.TryCall(label, fn, ...)
 end
 
-local function StageEmpty()
+function CA.StageEmpty()
     if GameData and GameData.CultivationStage then
         return GameData.CultivationStage.EMPTY or 0
     end
     return 0
 end
+
+local StageEmpty = CA.StageEmpty
 
 local function SeedUidFromSeedTable(seed)
     if type(seed) ~= "table" then

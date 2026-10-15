@@ -557,12 +557,6 @@ function Items.ValidateAndRepairSavedItems()
     return { stamped = stamped }
 end
 
---- @deprecated use Items.ValidateAndRepairSavedItems
-function Items.MigrateStampMainEffectsFromDescriptions()
-    local r = Items.ValidateAndRepairSavedItems()
-    return type(r) == "table" and (tonumber(r.stamped) or 0) or 0
-end
-
 --- Stamp EFFECT onto a learned plant from its seed (harvest/refine / migrate).
 --- Only EFFECT transfers seed→plant. Cultivation SPECIAL_CHANCE / FAIL_CHANCE on
 --- seeds must never be copied (different meaning than apo Super-Crit on plants).

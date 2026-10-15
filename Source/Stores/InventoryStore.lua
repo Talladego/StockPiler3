@@ -383,11 +383,6 @@ function Inv.ApplySlotUpdates(bagType, updatedSlots, reason)
     return true
 end
 
-function Inv.Flatten(opts)
-    opts = type(opts) == "table" and opts or {}
-    return RebuildFromBags(opts.force == true or opts.forceEngine == true)
-end
-
 function Inv.Flush(opts)
     opts = type(opts) == "table" and opts or {}
     local forceEngine = opts.forceEngine == true or Inv._dirtyEngine == true

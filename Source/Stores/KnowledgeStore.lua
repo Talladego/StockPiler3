@@ -6,7 +6,10 @@ StockPiler3 = StockPiler3 or {}
 StockPiler3.Knowledge = StockPiler3.Knowledge or {}
 local Know = StockPiler3.Knowledge
 
-local ACCOUNT_TABLES = { "items", "grows", "refines", "recipes", "potions", "additives" }
+-- Same list Persistence allows through shutdown. Includes skillUpRates so
+-- Ensure creates the table when a fresh account has not filled it yet.
+local ACCOUNT_TABLES = StockPiler3.Persistence.ACCOUNT_TABLES
+    or { "items", "grows", "refines", "recipes", "potions", "additives", "skillUpRates" }
 
 Know._gen = 0
 Know._ensuring = false

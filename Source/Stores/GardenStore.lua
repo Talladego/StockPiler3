@@ -237,8 +237,3 @@ function Garden.OnCultivationUpdated()
         Garden._syncAllDue = true
     end
 end
-
-function Garden.MarkSoftDirty(plotNum)
-    Garden._gen = (tonumber(Garden._gen) or 0) + 1
-    FireGardenChanged(Garden._gen, tonumber(plotNum) or 0, true)
-end

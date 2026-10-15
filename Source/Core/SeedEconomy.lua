@@ -1,6 +1,6 @@
 ----------------------------------------------------------------
--- StockPiler3 Core/SeedEconomy -- shared seed budget / deficit
--- Grow, Refine, UpgradeSeed, and SkillUp all consult these.
+-- StockPiler3 Core/SeedEconomy -- seed budget lookup.
+-- GetSeedBudget delegates to Refine, then UpgradeSeed. SkillUp keeps its own deficit math.
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
@@ -35,40 +35,4 @@ function SE.GetSeedBudget(seedUid)
         end
     end
     return EmptyBudget()
-end
-
-function SE.SeedDeficit(seedUid, mode)
-    local US = StockPiler3.UpgradeSeed
-    if US and US.SeedDeficit then
-        return tonumber(US.SeedDeficit(seedUid, mode)) or 0
-    end
-    local SkillUp = StockPiler3.SkillUp
-    if SkillUp and SkillUp.SeedDeficit then
-        return tonumber(SkillUp.SeedDeficit(seedUid)) or 0
-    end
-    return 0
-end
-
-function SE.PlantableSurplus(seedUid, bagSeeds, empty, opts)
-    local US = StockPiler3.UpgradeSeed
-    if US and US.PlantableSurplus then
-        return tonumber(US.PlantableSurplus(seedUid, bagSeeds, empty, opts)) or 0
-    end
-    local SkillUp = StockPiler3.SkillUp
-    if SkillUp and SkillUp.PlantableSurplus then
-        return tonumber(SkillUp.PlantableSurplus(seedUid, bagSeeds, empty, opts)) or 0
-    end
-    return 0
-end
-
-function SE.CountEmptyPlots()
-    local Grow = StockPiler3.Grow
-    if Grow and Grow.CountEmptyPlots then
-        return tonumber(Grow.CountEmptyPlots()) or 0
-    end
-    local US = StockPiler3.UpgradeSeed
-    if US and US.CountEmptyPlots then
-        return tonumber(US.CountEmptyPlots()) or 0
-    end
-    return 0
 end

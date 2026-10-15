@@ -64,10 +64,6 @@ local function ApplyTokens(template, tokens)
     return out
 end
 
-function Locale.GetLanguage()
-    return Locale._langId or EnglishLangId()
-end
-
 --- id: SystemData.Settings.Language.* or 0/nil for game language (auto).
 function Locale.SetLanguage(id)
     id = tonumber(id) or 0

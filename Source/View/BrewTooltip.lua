@@ -114,21 +114,12 @@ function BrewTooltip.Show(mouseoverWindow, anchor)
     )
 end
 
---- Same green Craftable gate as Watch Load/Brew chip (manual over-target OK).
 local function RowCraftableGreen(row)
-    if type(row) ~= "table" then
-        return false
+    local Brew = StockPiler3.Brew
+    if Brew and Brew.RowCraftableGreen then
+        return Brew.RowCraftableGreen(row)
     end
-    if row.craftableSafe == true then
-        return true
-    end
-    if row.craftableSafe == false then
-        return false
-    end
-    if (tonumber(row.craftable) or 0) <= 0 then
-        return false
-    end
-    return row.seedBufferShort ~= true
+    return false
 end
 
 local function RowSessionPhase(row)

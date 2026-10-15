@@ -8,6 +8,7 @@ local P = StockPiler3.Persistence
 
 -- vendorItems is session-only (see Knowledge.VendorItems); do not persist.
 local ACCOUNT_TABLES = { "items", "grows", "refines", "recipes", "potions", "additives", "skillUpRates" }
+P.ACCOUNT_TABLES = ACCOUNT_TABLES
 
 -- Historical leak keys (settings flags written onto Account). Strip on load.
 local ACCOUNT_LEAKED_SETTINGS_KEYS = {

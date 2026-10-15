@@ -48,7 +48,6 @@ Sch._pendingPlanAfterPrewarm = false
 Sch._initialized = false
 Sch._harvestStormUntil = 0
 Sch._plantQuietUntil = 0
-Sch._holds = {}
 Sch._pollAt = 0
 Sch._brewLightAt = 0
 Sch._skipPlanThisFrame = false
@@ -663,23 +662,7 @@ function Sch.RequestCachePrewarm(reason)
     return RequestCachePrewarm(reason)
 end
 
-function Sch.Hold(reason, seconds)
-    reason = tostring(reason or "")
-    seconds = tonumber(seconds) or 0
-    if reason == "" then
-        return
-    end
-    if type(Sch._holds) ~= "table" then
-        Sch._holds = {}
-    end
-    local untilT = Now() + math.max(0, seconds)
-    local cur = tonumber(Sch._holds[reason]) or 0
-    if untilT > cur then
-        Sch._holds[reason] = untilT
-    end
-end
-
---- Expire named holds and storm/quiet windows once per frame.
+--- Expire storm/quiet windows once per frame.
 function Sch.Advance(now)
     now = tonumber(now) or Now()
     if Sch.IsHarvestStorm then
@@ -687,13 +670,6 @@ function Sch.Advance(now)
     end
     if Sch.IsPlantQuiet then
         Sch.IsPlantQuiet()
-    end
-    if type(Sch._holds) == "table" and now > 0 then
-        for reason, untilT in pairs(Sch._holds) do
-            if (tonumber(untilT) or 0) > 0 and now >= untilT then
-                Sch._holds[reason] = nil
-            end
-        end
     end
 end
 
@@ -715,8 +691,6 @@ function Sch.ArmHarvestStorm(seconds)
     if quietUntil > curQuiet then
         Sch._plantQuietUntil = quietUntil
     end
-    Sch.Hold("harvestStorm", seconds)
-    Sch.Hold("plantQuiet", quietSec)
 end
 
 function Sch.IsHarvestStorm()
@@ -771,7 +745,7 @@ function Sch.IsPlantQuiet()
 end
 
 function Sch.ArmPlantQuiet(seconds)
-    seconds = tonumber(seconds) or Sch.PLANT_QUIET_BASE_SEC or 0.75
+    seconds = tonumber(seconds) or Sch.PLANT_QUIET_BASE_SEC
     local minSec = tonumber(Sch.HARVEST_STORM_MIN_SEC) or 1.5
     if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true and seconds < minSec then
         seconds = minSec
@@ -781,7 +755,6 @@ function Sch.ArmPlantQuiet(seconds)
     if untilT > cur then
         Sch._plantQuietUntil = untilT
     end
-    Sch.Hold("plantQuiet", seconds)
 end
 
 function Sch.SkipPlanThisFrame()
@@ -843,8 +816,6 @@ local function MaybeFinishSessionSettle()
     local Bus = StockPiler3.EventBus
     if Bus and Bus.FireWatchUiDirty then
         Bus.FireWatchUiDirty({ reason = "session-settle" })
-    elseif Ui and Ui.MarkWatchUiDirty then
-        Ui.MarkWatchUiDirty()
     end
     Sch.EnqueuePlanRebuild({ urgent = true })
     if DoesWindowExist("StockPiler3Window")
@@ -1001,11 +972,6 @@ function Sch.MarkWatchUiDirty(payload)
     local Bus = StockPiler3.EventBus
     if Bus and Bus.FireWatchUiDirty then
         Bus.FireWatchUiDirty(type(payload) == "table" and payload or {})
-        return
-    end
-    local Ui = StockPiler3.Ui
-    if Ui and Ui.MarkWatchUiDirty then
-        Ui.MarkWatchUiDirty()
     end
 end
 
@@ -1225,7 +1191,6 @@ function Sch.Shutdown()
     Sch._awaitingSessionLoad = false
     Sch._heavyWorkFrame = -1
     Sch._pendingBufferFlagsRebuild = false
-    Sch._holds = {}
     Sch._pollAt = 0
     Sch._brewLightAt = 0
 end
