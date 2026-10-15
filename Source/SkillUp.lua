@@ -1773,8 +1773,9 @@ local function RepaintSkillUpWatch()
     end
     -- Content key ignores the stall latch, so an already-open window would
     -- keep the reload paint until /sp3 dumpall bumped snapGen.
-    Ui._watchUiLastKey = nil
-    Ui._watchUiFlushedAt = 0
+    if Ui.BypassWatchThrottle then
+        Ui.BypassWatchThrottle()
+    end
     local Bus = StockPiler3.EventBus
     if Bus and Bus.FireWatchUiDirty then
         Bus.FireWatchUiDirty({ immediate = true, reason = "skillup-stall" })

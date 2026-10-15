@@ -3,7 +3,7 @@
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
-StockPiler3.Version = L"0.3.397"
+StockPiler3.Version = L"0.3.398"
 
 local function T(key, tokens)
     return StockPiler3.Util.T(key, tokens)
@@ -121,7 +121,7 @@ local function DumpMem(emit)
     end
 end
 
-local function DumpAudit(emit)
+local function DumpAudit(emit, applyFix)
     emit = emit or EmitLog
     local unexpected = {}
     if StockPiler3.Persistence and StockPiler3.Persistence.AuditAccountKeys then
@@ -131,18 +131,25 @@ local function DumpAudit(emit)
     for i = 1, #unexpected do
         emit("audit|  " .. tostring(unexpected[i]))
     end
-    if StockPiler3.Knowledge and StockPiler3.Knowledge.ValidateAndRepairSavedData then
-        local r = StockPiler3.Knowledge.ValidateAndRepairSavedData() or {}
-        emit(string.format(
-            "audit| repair itemsStamped=%s recipesRemapped=%s merged=%s dropped=%s potionsDropped=%s watchesDropped=%s scrubbed=%s",
-            tostring(r.itemsStamped),
-            tostring(r.recipesRemapped),
-            tostring(r.recipesMerged),
-            tostring(r.recipesDropped),
-            tostring(r.potionsDropped),
-            tostring(r.watchesDropped),
-            tostring(r.scrubbed)
-        ))
+    -- Report-only unless the caller passes fix. ValidateAndRepair merges and
+    -- deletes; a diagnostic dump must not do that (KNW-20). Load-time repair
+    -- still runs from Knowledge.MigrateFingerprints.
+    if applyFix == true then
+        if StockPiler3.Knowledge and StockPiler3.Knowledge.ValidateAndRepairSavedData then
+            local r = StockPiler3.Knowledge.ValidateAndRepairSavedData() or {}
+            emit(string.format(
+                "audit| repair itemsStamped=%s recipesRemapped=%s merged=%s dropped=%s potionsDropped=%s watchesDropped=%s scrubbed=%s",
+                tostring(r.itemsStamped),
+                tostring(r.recipesRemapped),
+                tostring(r.recipesMerged),
+                tostring(r.recipesDropped),
+                tostring(r.potionsDropped),
+                tostring(r.watchesDropped),
+                tostring(r.scrubbed)
+            ))
+        end
+    else
+        emit("audit| report-only (use /sp3 audit fix to apply repair)")
     end
 end
 
@@ -465,8 +472,8 @@ function StockPiler3.OnSlash(input)
         Print(T("boot.mem_dumped"))
         return
     end
-    if lower == "audit" then
-        DumpAudit(function(msg) EmitLog(msg) end)
+    if lower == "audit" or lower == "audit fix" then
+        DumpAudit(function(msg) EmitLog(msg) end, lower == "audit fix")
         Print(T("boot.audit_dumped"))
         return
     end

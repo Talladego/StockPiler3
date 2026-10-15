@@ -826,8 +826,9 @@ local function MaybeFinishSessionSettle()
         if Ui.InvalidateSkillGates then
             Ui.InvalidateSkillGates()
         end
-        Ui._watchUiLastKey = nil
-        Ui._watchUiFlushedAt = 0
+        if Ui.BypassWatchThrottle then
+            Ui.BypassWatchThrottle()
+        end
     end
     local Bus = StockPiler3.EventBus
     if Bus and Bus.FireWatchUiDirty then

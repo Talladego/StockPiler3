@@ -59,7 +59,7 @@ function Know.Ensure()
 end
 
 --- Idempotent: correct recoverable saved-data issues; drop irreparable rows.
---- Safe to run every load and from /sp3 audit.
+--- Runs on load. /sp3 audit is report-only; /sp3 audit fix calls this.
 function Know.ValidateAndRepairSavedData()
     local report = {
         itemsStamped = 0,

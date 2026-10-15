@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.397** - Hidden Watch no longer queues no-op craftable recount jobs; flush when the tab becomes visible.
+**Version 0.3.398** - Watch repair keeps other characters' and disabled watches; AutoBuy no longer confirms or overspends on unconfirmed purchases; refine re-checks the bag slot before use.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -27,7 +27,7 @@ Local pack (same layout as Releases): `powershell -File ./scripts/pack.ps1` → 
 | `/sp3 fingerprint` `<uidA>` `[uidB]` | Dump ProductKey / ProductMatches compare |
 | `/sp3 dumpall` | Bags + every plan/diagnostic dump (one shot) |
 | `/sp3 plan` / `watchplan` / `state` / `growplan` / `brewplan` / `buyplan` / `skillplan` / `families` / `upgradeplan` | Dumps |
-| `/sp3 stats` / `bags` / `events` / `mem` / `audit` / `harvest` | Diagnostics |
+| `/sp3 stats` / `bags` / `events` / `mem` / `audit` / `harvest` | Diagnostics. `audit` reports only; `audit fix` repairs saved data |
 | `/sp3 stats clear` | Wipe Cult/Apo skill-up rate samples |
 | `/sp3 perf` | In-addon hitch summary when LibPerf absent |
 
@@ -142,6 +142,7 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.398 | Watch scrub keeps every character's watches, including disabled; `/sp3 audit` is report-only (`audit fix` repairs). AutoBuy reserves unconfirmed spend and will not credit another purchase's gold drop. Refine re-resolves the bag slot before use. |
 | 0.3.397 | Hidden Watch: bag snaps keep pending recount only (no StartOnce no-ops); flush on Watch tab show / dirty paint |
 | 0.3.396 | Apo ToggleShowing honors the 2.5s suppress TTL; zone mid-load CloseWindow (ability no longer dead until /reload); Watch Craftable recounts on bag snaps (deferred while brewing) |
 | 0.3.395 | Crafting chat: Bad seed / add-main-before abort load; blacklist refused main uid (false ProductMatches twins); CloseWindow on load/clear aborts |

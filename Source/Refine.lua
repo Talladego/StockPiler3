@@ -1337,6 +1337,65 @@ function Refine.CanIssue(intent)
     return true
 end
 
+local function ItemUidOf(item)
+    if type(item) ~= "table" then
+        return 0
+    end
+    return tonumber(item.uniqueID) or tonumber(item.uid) or 0
+end
+
+local function BagKeyForType(bagType)
+    if EA_Window_Backpack and EA_Window_Backpack.TYPE_INVENTORY ~= nil
+        and bagType == EA_Window_Backpack.TYPE_INVENTORY
+    then
+        return "main"
+    end
+    return "craft"
+end
+
+--- Intent cache omits snapGen, so the slot from CollectIntents can point at
+--- a different item after a bag move (EXE-8). Re-resolve and abort when the
+--- live slot is not this plant. A missing bag table falls back to the index.
+local function ResolveIntentSlot(intent)
+    local plantUid = tonumber(intent.plantUid) or 0
+    local spec = intent.spec
+    local reason = tostring(intent.reason or "")
+    local slot, item, bagType
+    if reason == "resin-need" then
+        slot, item, bagType = FindPlantSlotHighest(plantUid, spec)
+    else
+        slot, item, bagType = FindPlantSlot(plantUid, spec)
+    end
+    slot = tonumber(slot) or 0
+    if slot <= 0 or type(item) ~= "table" then
+        return nil
+    end
+    local expected = ItemUidOf(item)
+    if plantUid > 0 and expected > 0 and expected ~= plantUid then
+        return nil
+    end
+    local BA = StockPiler3.BagAdapter
+    if BA and BA.GetBagTable and BA.ReadSlot then
+        local bagKey = BagKeyForType(bagType)
+        local bag = BA.GetBagTable(bagKey)
+        if type(bag) == "table" then
+            local liveUid, liveQty, liveItem = BA.ReadSlot(bagKey, slot)
+            liveUid = tonumber(liveUid) or 0
+            liveQty = tonumber(liveQty) or 0
+            if expected > 0 and liveUid ~= expected then
+                return nil
+            end
+            if liveUid <= 0 or liveQty <= 0 then
+                return nil
+            end
+            if type(liveItem) == "table" then
+                item = liveItem
+            end
+        end
+    end
+    return slot, item, bagType
+end
+
 function Refine.IssueOne(intent, opId)
     if Refine.CanIssue(intent) ~= true then
         return false
@@ -1363,9 +1422,16 @@ function Refine.IssueOne(intent, opId)
         return ok == true
     end
 
-    local slot = tonumber(intent.slot) or 0
-    local item = intent.item
-    local bagType = tonumber(intent.bagType) or CraftingBackpackType()
+    local slot, item, bagType = ResolveIntentSlot(intent)
+    if slot == nil or type(item) ~= "table" then
+        LogRefine(string.format(
+            "stale-slot reason=%s plantUid=%s cachedSlot=%s",
+            tostring(intent.reason or ""),
+            tostring(intent.plantUid or 0),
+            tostring(intent.slot or 0)
+        ))
+        return done(false)
+    end
     local plantUid = tonumber(intent.plantUid) or tonumber(item.uniqueID) or 0
     local seedUid = tonumber(intent.seedUid) or 0
     local uses = tonumber(intent.uses) or 1

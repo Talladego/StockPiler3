@@ -25,6 +25,14 @@ Ui._watchUiLastBrewKey = nil
 -- only updates Have on existing rows; the Potions list needs a full Refresh.
 Ui._catalogStructureDirty = false
 
+--- Drop the Watch paint throttle so the next flush is not skipped.
+--- Callers used to write these two fields directly. The trade-skill load path
+--- still clears only LastKey; resetting FlushedAt there would change timing.
+function Ui.BypassWatchThrottle()
+    Ui._watchUiLastKey = nil
+    Ui._watchUiFlushedAt = 0
+end
+
 local function IsWatchTabVisible()
     if not DoesWindowExist("StockPiler3Window") then
         return false
@@ -1012,9 +1020,8 @@ function Ui.RegisterEventRefresh()
             -- (WarmHave used to hide inside WatchRows on the same frame as CultivationUpdated).
             -- Structural learn needs a full catalog list rebuild, not PatchLiveHave.
             Ui._catalogStructureDirty = true
-            Ui._watchUiLastKey = nil
+            Ui.BypassWatchThrottle()
             Ui._watchUiLastKnowledgeGen = 0
-            Ui._watchUiFlushedAt = 0
             Ui.MarkWatchUiDirty()
             -- Show newly learned potions while the catalog tab is open (no tab flip).
             if IsCatalogTabVisible() then
@@ -1030,9 +1037,8 @@ function Ui.RegisterEventRefresh()
             -- Session load: mark dirty only. Sync RefreshActiveTab here caused the
             -- SP2 Flatten hitch (Planner.Build + WarmHave + WatchRows + CultivationUpdated
             -- x4 on the same frame as Garden.SyncAll / first plan rebuild).
-            Ui._watchUiLastKey = nil
+            Ui.BypassWatchThrottle()
             Ui._watchUiLastBrewKey = nil
-            Ui._watchUiFlushedAt = 0
             Ui._watchUiLastPlanGen = 0
             Ui._watchUiLastKnowledgeGen = 0
             Ui.ClearWatchTipCaches()
