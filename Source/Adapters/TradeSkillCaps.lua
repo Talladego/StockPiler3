@@ -291,10 +291,14 @@ function Caps.OnTradeSkillPulse()
             if cultExplicit == true or liveCult > 0 then
                 newCult = ResolveStickyLevel(
                     Caps.CultivationId(), liveCult, cultExplicit, prevCult, "_cultZeroPulses")
+            else
+                Caps._cultZeroPulses = 0
             end
             if apoExplicit == true or liveApo > 0 then
                 newApo = ResolveStickyLevel(
                     Caps.ApothecaryId(), liveApo, apoExplicit, prevApo, "_apoZeroPulses")
+            else
+                Caps._apoZeroPulses = 0
             end
             Caps._lastCult = newCult
             Caps._lastApo = newApo
@@ -346,6 +350,9 @@ function Caps.OnTradeSkillPulse()
                 changed = true
             end
             Caps._lastCult = nextCult
+        else
+            -- No reading this pulse: do not count toward consecutive zero streak (#35 L7).
+            Caps._cultZeroPulses = 0
         end
         if apoExplicit == true or liveApo > 0 then
             local nextApo = ResolveStickyLevel(
@@ -354,6 +361,8 @@ function Caps.OnTradeSkillPulse()
                 changed = true
             end
             Caps._lastApo = nextApo
+        else
+            Caps._apoZeroPulses = 0
         end
         if cultExplicit == true or apoExplicit == true
             or liveCult > 0 or liveApo > 0

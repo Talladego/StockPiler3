@@ -251,6 +251,8 @@ end
 
 function Bridge.OnTradeSkillUpdated()
     local Caps = StockPiler3.TradeSkillCaps
+    -- Pulse clears _pendingLoadRefresh; capture before so CORE-3 reset can fire (#34).
+    local pendingAtPulse = Caps and Caps._pendingLoadRefresh == true
     if Caps and Caps.OnTradeSkillPulse then
         Caps.OnTradeSkillPulse()
     elseif Caps and Caps.MarkTradeSkillsReady then
@@ -277,9 +279,39 @@ function Bridge.OnTradeSkillUpdated()
         Bridge._cultSkillSeen = true
     end
 
+    local function RunSkillDropReset()
+        if Caps and Caps.ResetTradeSkillsReady then
+            Caps.ResetTradeSkillsReady()
+        end
+        Bridge._skillsWereReady = false
+        Bridge._apoSkillSeen = false
+        Bridge._cultSkillSeen = false
+        Bridge._skillLevelsHash = nil
+        Bridge._skillPrev = nil
+        Bridge._skillPrevAtLoad = nil
+    end
+
     local prev = Bridge._skillPrev
     if type(prev) ~= "table" then
+        -- First sample after load: compare against the pre-load sample when a
+        -- pending refresh drop is live (#34).
+        local atLoad = Bridge._skillPrevAtLoad
+        if pendingAtPulse and type(atLoad) == "table" then
+            local prevCult = tonumber(atLoad.cult) or 0
+            local prevApo = tonumber(atLoad.apo) or 0
+            local liveCult = Caps and Caps.ReadCultSkillLive and Caps.ReadCultSkillLive() or cult
+            local liveApo = Caps and Caps.ReadApoSkillLive and Caps.ReadApoSkillLive() or apo
+            local dCult = cult - prevCult
+            local dApo = apo - prevApo
+            local liveDrop = (liveCult <= 0 and prevCult >= 5)
+                or (liveApo <= 0 and prevApo >= 5)
+            if (dCult <= -5 or dApo <= -5) and liveDrop then
+                RunSkillDropReset()
+                return
+            end
+        end
         Bridge._skillPrev = { cult = cult, apo = apo }
+        Bridge._skillPrevAtLoad = nil
         hashChanged = true
     else
         -- Read the previous sample before overwriting it. liveDrop used to see
@@ -297,15 +329,8 @@ function Bridge.OnTradeSkillUpdated()
         local liveApo = Caps and Caps.ReadApoSkillLive and Caps.ReadApoSkillLive() or apo
         local liveDrop = (liveCult <= 0 and prevCult >= 5)
             or (liveApo <= 0 and prevApo >= 5)
-        if (dCult <= -5 or dApo <= -5) and liveDrop and Caps and Caps._pendingLoadRefresh == true then
-            if Caps.ResetTradeSkillsReady then
-                Caps.ResetTradeSkillsReady()
-            end
-            Bridge._skillsWereReady = false
-            Bridge._apoSkillSeen = false
-            Bridge._cultSkillSeen = false
-            Bridge._skillLevelsHash = nil
-            Bridge._skillPrev = nil
+        if (dCult <= -5 or dApo <= -5) and liveDrop and pendingAtPulse then
+            RunSkillDropReset()
             return
         end
         local SkillUp = StockPiler3.SkillUp
@@ -389,6 +414,16 @@ function Bridge.OnLoadingEnd()
     end
     if Caps and Caps.ResetTradeSkillsReady then
         Caps.ResetTradeSkillsReady()
+    end
+    -- Keep the last sample so the first post-load pulse can detect a real drop (#34).
+    local prev = Bridge._skillPrev
+    if type(prev) == "table" then
+        Bridge._skillPrevAtLoad = {
+            cult = tonumber(prev.cult) or 0,
+            apo = tonumber(prev.apo) or 0,
+        }
+    else
+        Bridge._skillPrevAtLoad = nil
     end
     Bridge._skillLevelsHash = nil
     Bridge._skillPrev = nil
