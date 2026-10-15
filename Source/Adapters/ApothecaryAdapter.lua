@@ -508,6 +508,7 @@ function AA.CloseWindow(session)
     local closeApo = session and session._brewOpenedApo == true
     local ownedSession = session and session._brewOwnedSession == true
     local stealth = session and session._brewApoStealth == true
+    local placedOnBoard = session and session._brewPlacedOnBoard == true
     local playerVisible = AA.IsWindowOpen()
     local apoSkillActive = AA.CraftingSkillType() == apo
 
@@ -516,11 +517,17 @@ function AA.CloseWindow(session)
         session._brewOpenedBackpack = false
         session._brewOwnedSession = false
         session._brewApoStealth = false
+        session._brewPlacedOnBoard = false
     end
 
     local endEngine = ownedSession or stealth or closeApo
         or (apoSkillActive == true and not playerVisible)
     if not endEngine then
+        -- Player-opened Apo: still clear slots SP3 itself placed (#35 N4 / ADP-20).
+        if placedOnBoard then
+            AA.ClearSlots()
+            AA.ReleaseBackpackLocks()
+        end
         AA.EndStealthUi()
         return
     end

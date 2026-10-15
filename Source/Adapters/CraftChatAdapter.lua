@@ -501,7 +501,18 @@ function CC.OnChatTextArrived()
     local craftFilter = filters and filters.CRAFTING
     local msgType = tonumber(GameData.ChatData.type)
     -- Missing filter id used to accept every channel (ADP-16).
-    if craftFilter == nil or msgType ~= tonumber(craftFilter) then
+    if craftFilter == nil then
+        if CC._loggedMissingCraftFilter ~= true then
+            CC._loggedMissingCraftFilter = true
+            if StockPiler3.Debug and StockPiler3.Debug.LogAlways then
+                StockPiler3.Debug.LogAlways(
+                    "craft-chat| SystemData.ChatLogFilters.CRAFTING is nil; ignoring all chat"
+                )
+            end
+        end
+        return
+    end
+    if msgType ~= tonumber(craftFilter) then
         return
     end
     local text = NormalizeChat(GameData.ChatData.text)

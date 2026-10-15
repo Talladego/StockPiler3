@@ -3,7 +3,7 @@
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
-StockPiler3.Version = L"0.3.404"
+StockPiler3.Version = L"0.3.405"
 
 local function T(key, tokens)
     return StockPiler3.Util.T(key, tokens)
@@ -152,6 +152,29 @@ local function DumpAudit(emit, applyFix)
         end
     else
         emit("audit| report-only (use /sp3 audit fix to apply repair)")
+    end
+    -- Session-only quarantine counts (#28 L3); nothing is restored from here.
+    local RS = StockPiler3.RecipeSpec
+    local q = RS and RS._repairQuarantine
+    if type(q) == "table" then
+        local function countKeys(t)
+            if type(t) ~= "table" then
+                return 0
+            end
+            local n = 0
+            for _ in pairs(t) do
+                n = n + 1
+            end
+            return n
+        end
+        emit(string.format(
+            "audit| quarantine recipes=%s potions=%s watches=%s (session RecipeSpec._repairQuarantine)",
+            tostring(countKeys(q.recipes)),
+            tostring(countKeys(q.potions)),
+            tostring(countKeys(q.watches))
+        ))
+    else
+        emit("audit| quarantine empty (no RecipeSpec._repairQuarantine this session)")
     end
 end
 
