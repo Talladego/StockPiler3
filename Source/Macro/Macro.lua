@@ -189,12 +189,14 @@ local function GetMacroTable()
     return {}
 end
 
-local function NumMacroSlots()
+local function NumMacroSlots(macros)
     if EA_Window_Macro and tonumber(EA_Window_Macro.NUM_MACROS) then
         return tonumber(EA_Window_Macro.NUM_MACROS)
     end
-    local macros = GetMacroTable()
-    return #macros
+    if type(macros) == "table" then
+        return #macros
+    end
+    return #GetMacroTable()
 end
 
 local function MacroText(macroData)
@@ -266,8 +268,8 @@ local function FindMacroSlot(name, text, cachedId)
     end
     -- Name and text together. A player macro that only shares our name
     -- (different body) must not be treated as ours and overwritten at login.
-    -- One GetMacroTable for the whole walk (#33).
-    local limit = NumMacroSlots()
+    -- One GetMacroTable for the whole walk (#33); pass macros into NumMacroSlots.
+    local limit = NumMacroSlots(macros)
     for slot = 1, limit do
         if MacroSlotMatchesIn(macros, slot, name, text) then
             return slot
@@ -505,7 +507,7 @@ end
 
 function Macro.UpdateCraftMacro()
     local macros = GetMacroTable()
-    local limit = NumMacroSlots()
+    local limit = NumMacroSlots(macros)
     local iconMode = Macro._craftIconMode or "harvest"
     local iconId = CraftIconIdForMode(iconMode)
 

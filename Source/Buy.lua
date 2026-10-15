@@ -166,14 +166,21 @@ local function OpenLateQtyForUid(uid)
     return total
 end
 
---- Brass reserved by unexpired late attempts plus any in-flight pending buy.
---- Live money and lifetime spent do not include these until they confirm (EXE-2).
---- Late attempts whose money drop already matches their cost are skipped so the
---- same brass is not reserved twice while waiting for bag evidence (#26 L2).
+--- Brass reserved / budgeted by unexpired late attempts plus any in-flight pending buy.
+--- Returns reserveLate, budgetLate (EXE-2).
+--- budgetLate sums every unexpired late cost (plus pending) with no skip: GetSpentBrass
+--- does not include these until confirm (#46).
+--- reserveLate skips late attempts whose money drop already matches their cost so the
+--- same brass is not reserved twice while waiting for bag evidence (#26 L2). The skip
+--- is window-aware: before testing P, subtract costs of already-skipped attempts S whose
+--- drop falls inside P's window (same gate as #45), so an equal-cost pair with one real
+--- drop only skips one row (L11).
 local function OpenLateCostBrass()
     local now = NowSec()
     local live = PlayerMoneyBrass()
-    local total = 0
+    local reserveLate = 0
+    local budgetLate = 0
+    local skipped = {}
     local list = Buy._lateBuyAttempts
     if type(list) == "table" then
         for i = 1, #list do
@@ -184,13 +191,27 @@ local function OpenLateCostBrass()
                     local cost = math.max(0, tonumber(pending.costTotal) or 0)
                     local before = tonumber(pending.beforeMoney) or 0
                     local foreign = tonumber(pending.foreignSpend) or 0
+                    budgetLate = budgetLate + cost
                     local alreadyDropped = false
                     if live > 0 and before > 0 and cost > 0 then
                         local unexplained = (before - live) - foreign
+                        for s = 1, #skipped do
+                            local S = skipped[s]
+                            local sBefore = tonumber(S.beforeMoney) or 0
+                            local sForeign = tonumber(S.foreignSpend) or 0
+                            local sCost = math.max(0, tonumber(S.costTotal) or 0)
+                            -- S's drop is inside P's window when P.before still
+                            -- included it (same threshold shape as #45).
+                            if before > (sBefore - sForeign - sCost + 1) then
+                                unexplained = unexplained - sCost
+                            end
+                        end
                         alreadyDropped = unexplained + 1 >= cost and unexplained <= cost + 1
                     end
-                    if alreadyDropped ~= true then
-                        total = total + cost
+                    if alreadyDropped == true then
+                        skipped[#skipped + 1] = pending
+                    else
+                        reserveLate = reserveLate + cost
                     end
                 end
             end
@@ -198,15 +219,18 @@ local function OpenLateCostBrass()
     end
     local openPending = Buy._pendingBuy
     if type(openPending) == "table" then
-        total = total + math.max(0, tonumber(openPending.costTotal) or 0)
+        local pendingCost = math.max(0, tonumber(openPending.costTotal) or 0)
+        reserveLate = reserveLate + pendingCost
+        budgetLate = budgetLate + pendingCost
     end
-    return total
+    return reserveLate, budgetLate
 end
 
 --- Credit confirmed cost onto other open attempts whose wallet snapshot still
 --- included that drop. Attempts issued after the money already left must not
 --- get foreignSpend (#31). Visit spent clears on reopen, so the amount lives
---- on the attempt itself (EXE-1, EXE-3).
+--- on the attempt itself (EXE-1, EXE-3). Threshold subtracts the confirmed
+--- attempt's own foreignSpend so equal-cost late buys stay credited (#45).
 local function NoteForeignSpend(confirmed)
     if type(confirmed) ~= "table" then
         return
@@ -218,6 +242,7 @@ local function NoteForeignSpend(confirmed)
     local exceptUid = tonumber(confirmed.uid) or 0
     local confirmedSeq = tonumber(confirmed.issueSeq) or 0
     local confirmedBefore = tonumber(confirmed.beforeMoney) or 0
+    local confirmedForeign = math.max(0, tonumber(confirmed.foreignSpend) or 0)
     local function add(pending)
         if type(pending) ~= "table" then
             return
@@ -229,7 +254,7 @@ local function NoteForeignSpend(confirmed)
         local pBefore = tonumber(pending.beforeMoney) or 0
         if pSeq > confirmedSeq
             and confirmedBefore > 0
-            and pBefore <= (confirmedBefore - costTotal + 1)
+            and pBefore <= (confirmedBefore - confirmedForeign - costTotal + 1)
         then
             return
         end
@@ -517,17 +542,6 @@ local function BagEvidenceOk(pending, bagNow)
     return uid > 0 and bagNow >= (bagBefore + qty)
 end
 
-local function PendingEvidenceOk(pending, live, bagNow)
-    if type(pending) ~= "table" then
-        return false
-    end
-    live = tonumber(live) or PlayerMoneyBrass()
-    local costTotal = tonumber(pending.costTotal) or 0
-    local moneyOk = CostsMatchDrop(costTotal, UnexplainedMoneyDrop(pending, live))
-    local bagOk = BagEvidenceOk(pending, bagNow)
-    return moneyOk or bagOk, live
-end
-
 local function MaskHasBit(mask, index)
     local bit = 2 ^ (index - 1)
     return math.floor(mask / bit) % 2 >= 1
@@ -628,6 +642,33 @@ local function StashLateBuyAttempt(pending)
         issueSeq = tonumber(pending.issueSeq) or 0,
         late = true,
     }
+end
+
+--- Bag evidence, or money evidence when the pending buy is in the unique
+--- money subset of MoneyCandidates (late + pending). Equal-cost ambiguity
+--- falls through to bag (#30 / L12).
+local function PendingConfirmable(pending, live)
+    if type(pending) ~= "table" then
+        return false
+    end
+    live = tonumber(live) or PlayerMoneyBrass()
+    if BagEvidenceOk(pending) then
+        return true
+    end
+    local costTotal = tonumber(pending.costTotal) or 0
+    if not CostsMatchDrop(costTotal, UnexplainedMoneyDrop(pending, live)) then
+        return false
+    end
+    local subset = UniqueMoneySubset(MoneyCandidates(), live)
+    if type(subset) ~= "table" then
+        return false
+    end
+    for i = 1, #subset do
+        if subset[i] == pending then
+            return true
+        end
+    end
+    return false
 end
 
 --- Confirm buys that timed out as no-spend before inventory/money caught up.
@@ -758,23 +799,7 @@ local function ResolvePendingBuy()
     local uid = tonumber(pending.uid) or 0
     local bagNow = BagCountUid(uid)
     local bagBefore = tonumber(pending.bagBefore) or 0
-    local bagOk = BagEvidenceOk(pending, bagNow)
-    local moneyOk = CostsMatchDrop(costTotal, UnexplainedMoneyDrop(pending, live))
-    local ok = bagOk
-    if not bagOk and moneyOk then
-        local subset = UniqueMoneySubset(MoneyCandidates(), live)
-        local pendingInSubset = false
-        if type(subset) == "table" then
-            for i = 1, #subset do
-                if subset[i] == pending then
-                    pendingInSubset = true
-                    break
-                end
-            end
-        end
-        ok = pendingInSubset
-    end
-    if ok then
+    if PendingConfirmable(pending, live) then
         AccountConfirmedBuy(pending, live > 0 and live or before)
         Buy._pendingBuy = nil
         return "confirmed"
@@ -820,6 +845,8 @@ local function ResolvePendingBuy()
 end
 
 --- Confirm or drop open pending before visit-stop chat (store often closes mid-confirm).
+--- After ResolvePendingBuy returns "waiting", inputs are unchanged this frame, so
+--- re-evaluating cannot succeed; stash for late confirm instead (L12).
 local function FinalizePendingBuyForStop()
     local pending = Buy._pendingBuy
     if type(pending) ~= "table" then
@@ -832,26 +859,6 @@ local function FinalizePendingBuyForStop()
     local uid = tonumber(pending.uid) or 0
     local live = PlayerMoneyBrass()
     local bagNow = BagCountUid(uid)
-    local costTotal = tonumber(pending.costTotal) or 0
-    local bagOk = BagEvidenceOk(pending, bagNow)
-    local moneyOk = CostsMatchDrop(costTotal, UnexplainedMoneyDrop(pending, live))
-    local ok = bagOk
-    if not bagOk and moneyOk then
-        local subset = UniqueMoneySubset(MoneyCandidates(), live)
-        if type(subset) == "table" then
-            for i = 1, #subset do
-                if subset[i] == pending then
-                    ok = true
-                    break
-                end
-            end
-        end
-    end
-    if ok then
-        AccountConfirmedBuy(pending, live)
-        Buy._pendingBuy = nil
-        return
-    end
     local bagBefore = tonumber(pending.bagBefore) or 0
     local qty = math.max(1, tonumber(pending.qty) or 1)
     local before = tonumber(pending.beforeMoney) or 0
@@ -976,16 +983,22 @@ local function ResetVisit()
     -- Vendor reopen used to drop unconfirmed buys before their bag/money
     -- evidence arrived (EXE-3). Confirm what we can, stash the in-flight
     -- broadcast, and let the rest expire by time only.
-    TryLateConfirmBuys()
+    local lateConfirmed = TryLateConfirmBuys() == true
+    local pendingConfirmed = false
     if type(Buy._pendingBuy) == "table" then
         local state = ResolvePendingBuy()
-        if state ~= "confirmed" and type(Buy._pendingBuy) == "table" then
+        if state == "confirmed" then
+            pendingConfirmed = true
+        elseif type(Buy._pendingBuy) == "table" then
             StashLateBuyAttempt(Buy._pendingBuy)
             Buy._pendingBuy = nil
         end
     end
-    -- Late confirms bump _visitBought; arm the plan before zeroing (#26 L3).
-    if (tonumber(Buy._visitBought) or 0) > 0 then
+    -- Only re-arm when this reopen actually confirmed something. Store-close
+    -- may have already armed; clearing the latch lets late confirms wake Brew
+    -- without an extra rebuild on every reopen (L10 / #26 L3).
+    if lateConfirmed or pendingConfirmed then
+        Buy._planArmedAfterFill = false
         ArmPlanAfterBuyFill("visit-reset")
     end
     Buy._visitPurchases = 0
@@ -1545,9 +1558,9 @@ function Buy.IssueOne(opId)
                     if stackCount > 1 then
                         vendorMax = stackCount
                     end
-                    local reservedLate = OpenLateCostBrass()
-                    local maxByReserve = math.floor((money - reserve - reservedLate) / unitCost)
-                    local maxByBudget = math.floor((budget - spent - reservedLate) / unitCost)
+                    local reserveLate, budgetLate = OpenLateCostBrass()
+                    local maxByReserve = math.floor((money - reserve - reserveLate) / unitCost)
+                    local maxByBudget = math.floor((budget - spent - budgetLate) / unitCost)
                     local qty = math.min(remaining, vendorMax, maxByReserve, maxByBudget)
                     if qty < 1 then
                         if maxByReserve < 1 then
@@ -1557,7 +1570,7 @@ function Buy.IssueOne(opId)
                         end
                     else
                         local costTotal = unitCost * qty
-                        if money - reservedLate - costTotal < reserve then
+                        if money - reserveLate - costTotal < reserve then
                             reserveBlock = true
                         else
                             local beforeMoney = money
@@ -1758,8 +1771,14 @@ function Buy.OnInventorySnapshot()
         end
     end
     -- Bag often arrives after PENDING_BUY_TIMEOUT marked no-spend - still chat.
-    if TryLateConfirmBuys() then
+    local lateConfirmed = TryLateConfirmBuys() == true
+    if lateConfirmed then
         woke = true
+        -- After store close, plan rebuilds from the bag flush; still wake Brew
+        -- so Watch/footer see the late fill (L10).
+        if Buy._storeWasOpen ~= true then
+            WakeBrewAfterBuyFill("late-confirm")
+        end
     end
     if woke and StockPiler3.Scheduler and StockPiler3.Scheduler.WakeAutoBuy then
         StockPiler3.Scheduler.WakeAutoBuy()

@@ -294,18 +294,19 @@ function Bridge.OnTradeSkillUpdated()
     local prev = Bridge._skillPrev
     if type(prev) ~= "table" then
         -- First sample after load: compare against the pre-load sample when a
-        -- pending refresh drop is live (#34).
+        -- pending refresh drop is live (#34). Sticky may still hold the old
+        -- level on the first explicit 0, so drop deltas use live reads (#47).
         local atLoad = Bridge._skillPrevAtLoad
         if pendingAtPulse and type(atLoad) == "table" then
             local prevCult = tonumber(atLoad.cult) or 0
             local prevApo = tonumber(atLoad.apo) or 0
             local liveCult = Caps and Caps.ReadCultSkillLive and Caps.ReadCultSkillLive() or cult
             local liveApo = Caps and Caps.ReadApoSkillLive and Caps.ReadApoSkillLive() or apo
-            local dCult = cult - prevCult
-            local dApo = apo - prevApo
+            local dropCult = liveCult - prevCult
+            local dropApo = liveApo - prevApo
             local liveDrop = (liveCult <= 0 and prevCult >= 5)
                 or (liveApo <= 0 and prevApo >= 5)
-            if (dCult <= -5 or dApo <= -5) and liveDrop then
+            if (dropCult <= -5 or dropApo <= -5) and liveDrop then
                 RunSkillDropReset()
                 return
             end
@@ -324,15 +325,19 @@ function Bridge.OnTradeSkillUpdated()
         prev.cult = cult
         prev.apo = apo
         -- Logout / char switch: ignore large negative jumps.
-        -- Use live reads so sticky cache cannot hide a real char swap.
+        -- Use live reads so sticky cache cannot hide a real char swap (#47).
         local liveCult = Caps and Caps.ReadCultSkillLive and Caps.ReadCultSkillLive() or cult
         local liveApo = Caps and Caps.ReadApoSkillLive and Caps.ReadApoSkillLive() or apo
         local liveDrop = (liveCult <= 0 and prevCult >= 5)
             or (liveApo <= 0 and prevApo >= 5)
-        if (dCult <= -5 or dApo <= -5) and liveDrop and pendingAtPulse then
+        local dropCult = (pendingAtPulse and liveCult or cult) - prevCult
+        local dropApo = (pendingAtPulse and liveApo or apo) - prevApo
+        if (dropCult <= -5 or dropApo <= -5) and liveDrop and pendingAtPulse then
             RunSkillDropReset()
             return
         end
+        -- Positive skill-up deltas stay on sticky values so a char-switch
+        -- upward cannot record a live-read skill-up.
         local SkillUp = StockPiler3.SkillUp
         if dCult > 0 and SkillUp and SkillUp.OnCultSkillDelta then
             SkillUp.OnCultSkillDelta(dCult)

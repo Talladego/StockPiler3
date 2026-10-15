@@ -524,9 +524,18 @@ function AA.CloseWindow(session)
         or (apoSkillActive == true and not playerVisible)
     if not endEngine then
         -- Player-opened Apo: still clear slots SP3 itself placed (#35 N4 / ADP-20).
+        -- Also reset bottle UI / nextFreeSlot when not mid-perform (L13).
         if placedOnBoard then
             AA.ClearSlots()
             AA.ReleaseBackpackLocks()
+            if type(ApothecaryWindow) == "table"
+                and ApothecaryWindow.PerformingLock ~= true
+            then
+                if type(ApothecaryWindow.Clear) == "function" then
+                    TryCall("ApothecaryWindow.Clear", ApothecaryWindow.Clear)
+                end
+                ApothecaryWindow.nextFreeSlot = 0
+            end
         end
         AA.EndStealthUi()
         return
