@@ -1356,6 +1356,8 @@ end
 --- Intent cache omits snapGen, so the slot from CollectIntents can point at
 --- a different item after a bag move (EXE-8). Re-resolve and abort when the
 --- live slot is not this plant. A missing bag table falls back to the index.
+--- resin-need: FindPlantSlotHighest may pick a larger same-spec twin uid; adopt
+--- that live uid instead of stale-slot looping (#32).
 local function ResolveIntentSlot(intent)
     local plantUid = tonumber(intent.plantUid) or 0
     local spec = intent.spec
@@ -1372,14 +1374,20 @@ local function ResolveIntentSlot(intent)
     end
     local expected = ItemUidOf(item)
     if plantUid > 0 and expected > 0 and expected ~= plantUid then
-        return nil
+        if reason == "resin-need" then
+            intent.plantUid = expected
+            plantUid = expected
+        else
+            return nil
+        end
     end
     local BA = StockPiler3.BagAdapter
-    if BA and BA.GetBagTable and BA.ReadSlot then
+    if BA and BA.GetBagTable and BA.ReadSlotFromTable then
         local bagKey = BagKeyForType(bagType)
         local bag = BA.GetBagTable(bagKey)
         if type(bag) == "table" then
-            local liveUid, liveQty, liveItem = BA.ReadSlot(bagKey, slot)
+            -- One bag fetch: ReadSlot would call GetBagTable again (#26 L1).
+            local liveUid, liveQty, liveItem = BA.ReadSlotFromTable(bag, slot)
             liveUid = tonumber(liveUid) or 0
             liveQty = tonumber(liveQty) or 0
             if expected > 0 and liveUid ~= expected then

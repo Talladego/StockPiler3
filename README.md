@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.402** - AutoBuy equal-cost drops no longer confirm the wrong purchase; foreign spend only credits attempts that still saw the money leave.
+**Version 0.3.403** - Resin refine adopts the live same-spec plant uid; refine-first misses no longer hold empty plots forever.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -142,6 +142,7 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.403 | Refine resin-need adopts live twin uid (no stale-slot loop); ReadSlotFromTable avoids double bag fetch; refine-first miss budget (3) then re-probes plant |
 | 0.3.402 | AutoBuy: pending buy joins money-subset search (equal-cost no longer false-confirms); foreignSpend gated by issueSeq; late cost already dropped is not double-reserved; ResetVisit arms plan after late confirms |
 | 0.3.401 | Unreachable bus fallbacks removed. Stage-empty and the green Craftable check each live in one place. Planner calls its own grow check. Account tables, including skill-up rates, come from Persistence. Status colors use one table. Obsolete `tools/_*.py` scripts moved to `tools/archive/`. |
 | 0.3.400 | Plan warm-hold expires even while prewarm is busy. A heavy frame keeps the AutoGrow tick owed. `PLAN_UPDATED` fires once per real publish. Apothecary close no longer clears a board StockPiler3 does not own. A manual loaded board unloads after 60s idle. Refine outstanding uses a real soft-grace. Slot updates no longer drop a pending bag rebuild, and an underflow queues one. Explicit trade-skill 0 needs two sources or two pulses. Urgent plan rebuilds survive a bag flush. Fast AutoGrow ticks beat the fill-block interval. Additive wakes wait out storm and quiet. Refine-first does not plant when refine fails. Macro icon latches clear if paint throws. The harvest countdown skips foreign action buttons. |
