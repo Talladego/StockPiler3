@@ -512,9 +512,28 @@ function Timer.Install()
     Timer._orgUpdateInventory = org
     ActionButton.UpdateInventory = function(self)
         org(self)
+        if not self then
+            return
+        end
+        -- Restore fitted countdown chrome before the DO_MACRO gate so replacing
+        -- the Craft macro with an item/ability does not leave a sticky label (#35 L6).
+        local function maybeRestoreFitted()
+            local label = LabelOf(self)
+            local name = label and LabelName(label, self)
+            if name ~= nil and fitted[name] == true then
+                local restored, restoreErr = pcall(RestoreLabel, label, self)
+                if restored ~= true and StockPiler3.Debug
+                    and StockPiler3.Debug.ReportProtectedCallFailure
+                then
+                    StockPiler3.Debug.ReportProtectedCallFailure(
+                        "CraftHarvestTimer.Restore", restoreErr, true)
+                end
+            end
+        end
         local actions = GameData and GameData.PlayerActions
         local doMacro = actions and actions.DO_MACRO
-        if not self or doMacro == nil or self.m_ActionType ~= doMacro then
+        if doMacro == nil or self.m_ActionType ~= doMacro then
+            maybeRestoreFitted()
             return
         end
         local Macro = StockPiler3.Macro
@@ -527,17 +546,7 @@ function Timer.Install()
             end
         end
         if craftId <= 0 or self.m_ActionId ~= craftId then
-            local label = LabelOf(self)
-            local name = label and LabelName(label, self)
-            if name ~= nil and fitted[name] == true then
-                local restored, restoreErr = pcall(RestoreLabel, label, self)
-                if restored ~= true and StockPiler3.Debug
-                    and StockPiler3.Debug.ReportProtectedCallFailure
-                then
-                    StockPiler3.Debug.ReportProtectedCallFailure(
-                        "CraftHarvestTimer.Restore", restoreErr, true)
-                end
-            end
+            maybeRestoreFitted()
             return
         end
         local painted, paintErr = pcall(Timer.Paint, self)

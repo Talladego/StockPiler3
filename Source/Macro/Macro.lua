@@ -218,12 +218,12 @@ local function IsLegacyMacroName(name)
     return false
 end
 
-local function MacroSlotMatches(slot, name, text)
+--- Match against a pre-fetched macros table (one GetMacrosData per FindMacroSlot).
+local function MacroSlotMatchesIn(macros, slot, name, text)
     slot = tonumber(slot) or 0
-    if slot <= 0 then
+    if slot <= 0 or type(macros) ~= "table" then
         return false
     end
-    local macros = GetMacroTable()
     local macro = macros[slot]
     if type(macro) ~= "table" or IsLegacyMacroName(macro.name) then
         return false
@@ -238,19 +238,38 @@ local function MacroSlotMatches(slot, name, text)
     return textMatch or nameMatch
 end
 
+local function MacroSlotMatches(slot, name, text)
+    return MacroSlotMatchesIn(GetMacroTable(), slot, name, text)
+end
+
+--- Same name+text rule for tooltip data (not slot-indexed).
+local function IsOurMacroData(macroData, name, text)
+    if type(macroData) ~= "table" or IsLegacyMacroName(macroData.name) then
+        return false
+    end
+    local textMatch = MacroText(macroData) == text
+    local nameMatch = macroData.name == name
+    if text ~= nil and text ~= L"" and name ~= nil and name ~= L"" then
+        return textMatch and nameMatch
+    end
+    return textMatch or nameMatch
+end
+
 local function FindMacroSlot(name, text, cachedId)
     cachedId = tonumber(cachedId) or 0
+    local macros = GetMacroTable()
     -- Never trust a cached id without re-checking the slot contents. A stale
     -- id pointing at the player's Assist macro makes ButtonIsOurs true and
     -- WindowSetGameActionData(NONE) turns WindowGameAction into a no-op.
-    if cachedId > 0 and MacroSlotMatches(cachedId, name, text) then
+    if cachedId > 0 and MacroSlotMatchesIn(macros, cachedId, name, text) then
         return cachedId
     end
     -- Name and text together. A player macro that only shares our name
     -- (different body) must not be treated as ours and overwritten at login.
+    -- One GetMacroTable for the whole walk (#33).
     local limit = NumMacroSlots()
     for slot = 1, limit do
-        if MacroSlotMatches(slot, name, text) then
+        if MacroSlotMatchesIn(macros, slot, name, text) then
             return slot
         end
     end
@@ -1794,18 +1813,18 @@ local function installMacroTooltipHook()
         if type(macroData) == "table" then
             if craftId and (macroData.slot == craftId or macroData.index == craftId or macroData.macroIndex == craftId) then
                 isCraft = true
-            elseif macroData.name == CRAFT_MACRO_NAME or MacroText(macroData) == CRAFT_MACRO_TEXT then
+            elseif IsOurMacroData(macroData, CRAFT_MACRO_NAME, CRAFT_MACRO_TEXT) then
                 isCraft = true
             end
             if not isCraft then
                 if harvestId and (macroData.slot == harvestId or macroData.index == harvestId or macroData.macroIndex == harvestId) then
                     isHarvest = true
-                elseif macroData.name == MACRO_NAME or MacroText(macroData) == MACRO_TEXT then
+                elseif IsOurMacroData(macroData, MACRO_NAME, MACRO_TEXT) then
                     isHarvest = true
                 end
                 if brewId and (macroData.slot == brewId or macroData.index == brewId or macroData.macroIndex == brewId) then
                     isBrew = true
-                elseif macroData.name == BREW_MACRO_NAME or MacroText(macroData) == BREW_MACRO_TEXT then
+                elseif IsOurMacroData(macroData, BREW_MACRO_NAME, BREW_MACRO_TEXT) then
                     isBrew = true
                 end
             end
