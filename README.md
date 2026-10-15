@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.404** - Macro slot lookup reads the macro table once; skill-drop reset across loads works again.
+**Version 0.3.405** - Clearing a board SP3 loaded into a player-opened Apothecary now empties those slots.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -142,6 +142,7 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.405 | ``_brewPlacedOnBoard`` clears SP3-loaded slots on player-open Apo; warm-hold cap log; missing CRAFTING chat filter one-time log; ``/sp3 audit`` prints quarantine counts |
 | 0.3.404 | FindMacroSlot one GetMacroTable; tooltip name+text; Craft timer restores fitted label before DO_MACRO gate; skill-drop uses pendingAtPulse + pre-load sample; zero-streak resets on no-reading pulses |
 | 0.3.403 | Refine resin-need adopts live twin uid (no stale-slot loop); ReadSlotFromTable avoids double bag fetch; refine-first miss budget (3) then re-probes plant |
 | 0.3.402 | AutoBuy: pending buy joins money-subset search (equal-cost no longer false-confirms); foreignSpend gated by issueSeq; late cost already dropped is not double-reserved; ResetVisit arms plan after late confirms |

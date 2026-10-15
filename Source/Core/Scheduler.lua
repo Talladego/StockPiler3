@@ -345,6 +345,15 @@ local function RebuildPlanIfDue()
             RequestCachePrewarm("plan-hold-warm-retry")
             return false
         end
+        -- Cap fired: cold-build may run while a prewarm slice is still mid-flight (#35 L8).
+        if StockPiler3.Debug and StockPiler3.Debug.LogAlways then
+            StockPiler3.Debug.LogAlways(string.format(
+                "plan-warm-hold-cap warm=%s prewarmBusy=%s retries=%s",
+                tostring(warm),
+                tostring(prewarmBusy),
+                tostring(retries)
+            ))
+        end
     end
     Sch._planWarmHoldAt = 0
     Sch._planWarmHoldRetries = 0

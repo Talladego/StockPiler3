@@ -1936,6 +1936,11 @@ local function AdvanceLoadJob()
                     job.reserved[rkey] = (tonumber(job.reserved[rkey]) or 0) + 1
                     slot.reservedOk = true
                 end
+                -- SP3 placed items on this board (player-open Apo may not be "owned").
+                local sess = GetSession()
+                if type(sess) == "table" then
+                    sess._brewPlacedOnBoard = true
+                end
                 LogBrew(string.format(
                     "load confirmed role=%s craftSlot=%s",
                     tostring(slot.role), tostring(StepCraftSlot(slot))
@@ -2375,7 +2380,9 @@ function Brew.FirePerform()
 end
 
 --- Manual Load leaves the board up on purpose. After MANUAL_LOADED_IDLE_SEC
---- with no perform, crafting update, or bag snap, unload so AutoGrow can plant.
+--- with no perform or phase change, unload so AutoGrow can plant.
+--- Only TryPerform and phase changes reset _manualLoadedActivityAt; crafting
+--- updates and bag snaps do not (#35 L9).
 function Brew.ExpireManualLoadedIdle()
     if Brew._loadSource ~= "manual" then
         return false
