@@ -2870,18 +2870,13 @@ local function MergeRecipeStats(dest, recipe)
     end
 end
 
---- Rematerialize Account.recipes under current SlotsFingerprint / RecipeIdentityKey.
---- Merges collisions, drops empty/irreparable recipes, remaps potion + watch keys.
---- Idempotent. Returns { keyMap, merged, dropped, remapped, watchesDropped, potionsDropped }.
+--- Session-only. Account._repairQuarantine is not on the shutdown allow-list,
+--- so anything stored there was deleted on reload (KNW-2).
 local function RepairQuarantine()
-    local acct = StockPiler3.Account
-    if type(acct) ~= "table" then
-        return nil
+    if type(RS._repairQuarantine) ~= "table" then
+        RS._repairQuarantine = { recipes = {}, potions = {}, watches = {} }
     end
-    if type(acct._repairQuarantine) ~= "table" then
-        acct._repairQuarantine = { recipes = {}, potions = {}, watches = {} }
-    end
-    local q = acct._repairQuarantine
+    local q = RS._repairQuarantine
     if type(q.recipes) ~= "table" then
         q.recipes = {}
     end
@@ -2894,6 +2889,9 @@ local function RepairQuarantine()
     return q
 end
 
+--- Rematerialize Account.recipes under current SlotsFingerprint / RecipeIdentityKey.
+--- Merges collisions, drops empty/irreparable recipes, remaps potion + watch keys.
+--- Idempotent. Returns { keyMap, merged, dropped, remapped, watchesDropped, potionsDropped }.
 local function RematerializeRecipeFingerprints()
     local report = {
         keyMap = {},

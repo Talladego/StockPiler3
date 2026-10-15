@@ -291,7 +291,7 @@ function CA.PlantSeed(plotNum, bagSlot, backpackType)
     backpackType = tonumber(backpackType) or CA.CraftingBackpackType()
     local ok, err = TryCall("AddCraftingItem", AddCraftingItem, CA.TradeSkill(), plotNum, bagSlot, backpackType)
     if not ok then
-        return false, err
+        return false, err or "pcall-failed"
     end
     return true
 end
@@ -312,7 +312,7 @@ function CA.HarvestPlot(plotNum)
     end
     local ok, err = TryCall("PerformCrafting", PerformCrafting, CA.TradeSkill(), 1)
     if not ok then
-        return false, err
+        return false, err or "pcall-failed"
     end
     return true
 end

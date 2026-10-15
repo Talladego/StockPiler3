@@ -503,7 +503,8 @@ function CC.OnChatTextArrived()
     local filters = SystemData and SystemData.ChatLogFilters
     local craftFilter = filters and filters.CRAFTING
     local msgType = tonumber(GameData.ChatData.type)
-    if craftFilter ~= nil and msgType ~= tonumber(craftFilter) then
+    -- Missing filter id used to accept every channel (ADP-16).
+    if craftFilter == nil or msgType ~= tonumber(craftFilter) then
         return
     end
     local text = NormalizeChat(GameData.ChatData.text)

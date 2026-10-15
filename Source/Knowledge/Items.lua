@@ -32,6 +32,18 @@ local function SignedBonus(val)
     return val
 end
 
+--- Shallow copy so a spec cannot write back into Account.items or a caller table.
+local function CopyBonusMap(bonuses)
+    local out = {}
+    if type(bonuses) ~= "table" then
+        return out
+    end
+    for ref, val in pairs(bonuses) do
+        out[ref] = val
+    end
+    return out
+end
+
 local function BonusesFromCrafting(item)
     local out = {}
     if type(item) ~= "table" then
@@ -659,7 +671,7 @@ function Items.ToSpec(item)
         end
         row = uid > 0 and Items.GetByUid(uid) or nil
         if row == nil and (item.role or item.power or item.bonuses) then
-            local bonuses = type(item.bonuses) == "table" and item.bonuses or {}
+            local bonuses = CopyBonusMap(item.bonuses)
             local out = {
                 uid = uid,
                 role = item.role or "ingredient",
@@ -688,7 +700,7 @@ function Items.ToSpec(item)
     if type(row) ~= "table" then
         return nil
     end
-    local bonuses = type(row.bonuses) == "table" and row.bonuses or {}
+    local bonuses = CopyBonusMap(row.bonuses)
     local incomplete = row.incomplete == true
     local out = {
         uid = tonumber(row.uniqueID) or uid,

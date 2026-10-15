@@ -124,7 +124,7 @@ function Know.ValidateAndRepairSavedData()
             end
             if #keys > n then
                 StockPiler3.Debug.LogAlways(
-                    string.format("validate| %s … +%d more (see Account._repairQuarantine)", label, #keys - n)
+                    string.format("validate| %s … +%d more (session RecipeSpec._repairQuarantine)", label, #keys - n)
                 )
             end
         end

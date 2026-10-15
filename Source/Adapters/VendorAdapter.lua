@@ -255,13 +255,16 @@ function VA.BuyItem(itemData, buyCount)
     if type(itemData) ~= "table" or buyCount < 1 then
         return false, "invalid-args"
     end
+    if VA.IsBuybackView() == true then
+        return false, "buyback"
+    end
     local store = EA_Window_InteractionStore
     if type(store) ~= "table" or type(store.BuyItem) ~= "function" then
         return false, "no-api"
     end
     local ok, err = TryCall("VendorAdapter.BuyItem", store.BuyItem, itemData, buyCount)
     if not ok then
-        return false, err
+        return false, err or "pcall-failed"
     end
     return true
 end
