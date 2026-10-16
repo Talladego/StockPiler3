@@ -956,15 +956,8 @@ local function BuildBalancedSpecDemand(opts)
         return Planner._demandCache
     end
     -- Plant/refine quiet / Orch decision hold: reuse last demand (ignore snap bump).
+    -- The old watch/plan suffix test returned the same cache on both sides (PLN-4).
     if HoldHaveCacheQuiet() and type(Planner._demandCache) == "table" then
-        local prev = tostring(Planner._demandCacheKey or "")
-        local suffix = ":" .. tostring(watchGen) .. ":" .. tostring(planGen)
-        if string.len(prev) >= string.len(suffix)
-            and string.sub(prev, -string.len(suffix)) == suffix
-        then
-            return Planner._demandCache
-        end
-        -- Decision hold: remount onto new snap when watch/plan gens match.
         return Planner._demandCache
     end
     -- Orch PickPlantCandidate: never bag-walk; FrameWork prewarm owns cold fills.

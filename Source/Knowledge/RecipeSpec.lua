@@ -3165,7 +3165,7 @@ function RS.SlotsFingerprint(slots)
 end
 
 ----------------------------------------------------------------
--- Planner shims - Grow/Refine call RecipeSpec; demand lives on Planner
+-- Planner shims. Grow, Refine and UpgradeSeed call these; the work lives on Planner.
 ----------------------------------------------------------------
 
 local function PlannerMod()
