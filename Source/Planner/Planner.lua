@@ -234,12 +234,22 @@ local function FormatCacheKey(g)
 end
 
 --- Demand, focus, and seed-line caches include every ReadGens field (PLN-5).
+--- The base is read once per frame. SettingsHash hits Watch, SkillUp, and both
+--- trade skills; the three cache probes were paying that on every hit (L19).
 local function FullCacheKey(suffix)
-    local key = FormatCacheKey(ReadGens())
-    if suffix == nil or suffix == "" then
-        return key
+    local frame = tonumber(StockPiler3.FrameCounter) or 0
+    local base = Planner._fullCacheBase
+    if frame <= 0 or Planner._fullCacheFrame ~= frame or type(base) ~= "string" then
+        base = FormatCacheKey(ReadGens())
+        if frame > 0 then
+            Planner._fullCacheFrame = frame
+            Planner._fullCacheBase = base
+        end
     end
-    return key .. "|" .. tostring(suffix)
+    if suffix == nil or suffix == "" then
+        return base
+    end
+    return base .. "|" .. tostring(suffix)
 end
 
 --- Structural (non-snap, non-refine): gardenPlan + watch + knowledge + settings.
@@ -659,8 +669,8 @@ end
 
 local function RecipeYield(recipe, potionUid)
     local RS = RecipeSpec()
-    if RS and RS.RecipeOutputYield then
-        local y = tonumber(RS.RecipeOutputYield(recipe, potionUid)) or 0
+    if RS and RS.StableCraftYield then
+        local y = tonumber(RS.StableCraftYield(recipe, potionUid)) or 0
         if y >= 1 then
             return y
         end
@@ -4462,11 +4472,9 @@ local function RefreshStaleCtx(stale)
     return FormatCacheKey(stale.ctx)
 end
 
---- Potion rows with a recipe must have craftable stamped for this snap + recipe-
---- structural key (watch/knowledge/settings) before cheap/garden publish advances
---- the plan cache key (else Build early-returns stale). Settings-only changes
---- (Optimistic mode) used to leave craftable stamped for the bag snap while
---- counts were still best-case until /sp3 dumpall force-built.
+--- Potion rows with a recipe must have craftable stamped for this snap and
+--- recipe key before a cheap or garden publish advances the plan cache key.
+--- Otherwise Build early-returns a stale plan.
 local function RowsCraftableCurrentForSnap(rows, snapGen, structKey)
     snapGen = tonumber(snapGen) or CurrentSnapGen()
     structKey = structKey or RecipeStructuralKey(ReadGens())
@@ -4924,7 +4932,7 @@ end
 --- Patches plan.rows, then a distinct unbound listData with syncSnapshot false
 --- so the snapshot is not written twice. Callers keep their own UI events.
 --- opts.clearClosedSnap, opts.invalidateStamps, plus the patch flags
---- allowWarmHave, syncSnapshot, and forceRecountCraftable.
+--- allowWarmHave, syncSnapshot, forceRecountCraftable, and recountCraftable.
 function Planner.LiveRecount(opts)
     opts = type(opts) == "table" and opts or {}
     if opts.clearClosedSnap == true then
@@ -4941,17 +4949,38 @@ function Planner.LiveRecount(opts)
         allowWarmHave = opts.allowWarmHave,
         syncSnapshot = opts.syncSnapshot,
         forceRecountCraftable = opts.forceRecountCraftable,
+        recountCraftable = opts.recountCraftable,
     }
     if type(planRows) == "table" and #planRows > 0 then
         PatchWatchRowsLiveCounts(planRows, patchOpts)
     end
     if type(listData) == "table" and #listData > 0 and listData ~= planRows then
         local bound = StockPiler3TabWatch and StockPiler3TabWatch._boundPlanRows
-        if bound ~= planRows then
+        -- A sorted copy shares plan row objects, so the plan patch is enough.
+        -- preferPrev can keep the bound flag on a list of different row objects.
+        local shares = type(planRows) == "table" and bound == planRows
+        if shares then
+            local seen = {}
+            for i = 1, #planRows do
+                local row = planRows[i]
+                if type(row) == "table" then
+                    seen[row] = true
+                end
+            end
+            for i = 1, #listData do
+                local row = listData[i]
+                if type(row) ~= "table" or seen[row] ~= true then
+                    shares = false
+                    break
+                end
+            end
+        end
+        if shares ~= true then
             PatchWatchRowsLiveCounts(listData, {
                 allowWarmHave = opts.allowWarmHave,
                 syncSnapshot = false,
                 forceRecountCraftable = opts.forceRecountCraftable,
+                recountCraftable = opts.recountCraftable,
             })
         end
     end

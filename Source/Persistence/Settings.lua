@@ -44,6 +44,7 @@ local ACCOUNT_ALLOWED = {
     recipeFingerprintMigrateV2 = true,
     recipeFingerprintMigrateV3 = true,
     recipeFingerprintMigrateV4 = true,
+    recipeYieldIntegerMigrateV1 = true,
     plantEffectFromSeedMigrateV2 = true,
 }
 for i = 1, #ACCOUNT_TABLES do

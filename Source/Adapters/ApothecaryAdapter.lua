@@ -315,8 +315,8 @@ function AA.ParkApoRoot()
 end
 
 --- True while SP3 should ignore engine CRAFTING_SHOW_WINDOW echoes from SendInitCrafting.
---- The armed boolean used to return before the Until check, so the 2.5s TTL never
---- cleared and ToggleShowing never reached PlaceApoOnScreen.
+--- Check the TTL before returning sticky true, except the synchronous _sp3Opening
+--- latch. A sticky boolean swallows the Apothecary ability until reload.
 local function EngineShowSuppressed()
     -- Synchronous headless open only. Async echoes use the TTL below.
     if AA._sp3Opening == true then

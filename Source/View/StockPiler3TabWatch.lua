@@ -2651,7 +2651,9 @@ local function TrimStatusTooltipRows(rows, limit)
         local r = rows[i]
         if r.kind == "meta" then
             local t = ToNarrow(r.text)
-            if string.find(t, "Recipe yield", 1, true) then
+            if string.find(t, "Recipe yield", 1, true)
+                or string.find(t, "Observed bag yield", 1, true)
+            then
                 table.remove(rows, i)
             end
         end
@@ -2808,8 +2810,26 @@ local function BuildStatusTooltipRows(data)
         end
     end
     local yield = tonumber(data.recipeYield) or 0
-    if type(recipe) == "table" and yield <= 0 then
+    local potionUid = tonumber(data.uniqueID) or tonumber(data.potionUid) or 0
+    local RS = StockPiler3.RecipeSpec
+    if RS and RS.StableCraftYield and type(recipe) == "table" then
+        local stable = tonumber(RS.StableCraftYield(recipe, potionUid)) or 0
+        if stable >= 1 then
+            yield = stable
+        end
+    elseif type(recipe) == "table" and yield <= 0 then
         yield = tonumber(recipe.recipeYield) or 0
+    end
+    if yield > 0 then
+        local nearest = math.floor(yield + 0.5)
+        if math.abs(yield - nearest) <= 0.05 then
+            yield = nearest
+        else
+            yield = math.floor(yield)
+            if yield < 1 then
+                yield = 1
+            end
+        end
     end
 
     if type(slots) == "table" and #slots > 0 then
@@ -2823,6 +2843,19 @@ local function BuildStatusTooltipRows(data)
             }
             if yield > 0 then
                 appendMeta(T("tip.watch.yield_best_case", { yield = tostring(yield) }))
+                if RS and RS.RecipeOutputYield and type(recipe) == "table" then
+                    local observed = tonumber(RS.RecipeOutputYield(recipe, potionUid)) or 0
+                    if observed > 0 and math.abs(observed - yield) > 0.05 then
+                        local obsText
+                        local obsNear = math.floor(observed + 0.5)
+                        if math.abs(observed - obsNear) < 0.05 then
+                            obsText = tostring(obsNear)
+                        else
+                            obsText = string.format("%.1f", observed)
+                        end
+                        appendMeta(T("tip.watch.yield_observed", { yield = obsText }))
+                    end
+                end
             end
             if data.statusKey == "enable_autogrow" then
                 rows[#rows + 1] = {

@@ -812,11 +812,82 @@ local function OutputQuality(out)
     return "good"
 end
 
+--- Bag deltas are noisy (double craft, missed stack). Multiplier does not
+--- determine yield: +1 yielded 1, +2 and +3 yielded 2, +16/+17/+18 yielded 5,
+--- and Stability +10 did not raise yield. There is no bottle formula.
+--- Trusted craftable yield is the repeated integer bottle count.
+local YIELD_INTEGER_EPS = 0.05
+local YIELD_MODE_MIN_HITS = 3
+
+local function WholeBottleQty(qty)
+    qty = tonumber(qty) or 0
+    if qty < 1 then
+        return nil
+    end
+    local nearest = math.floor(qty + 0.5)
+    if nearest < 1 or math.abs(qty - nearest) > YIELD_INTEGER_EPS then
+        return nil
+    end
+    return nearest
+end
+
+--- Integer with the most samples, once it has at least 3 hits and is
+--- strictly ahead of the next integer. Nil until that lead exists.
+local function ModeFromQtyCounts(counts)
+    if type(counts) ~= "table" then
+        return nil
+    end
+    local bestQty = nil
+    local bestN = 0
+    local secondN = 0
+    for key, raw in pairs(counts) do
+        local n = tonumber(raw) or 0
+        local q = tonumber(key) or 0
+        if q >= 1 and n > 0 then
+            if n > bestN then
+                secondN = bestN
+                bestN = n
+                bestQty = q
+            elseif n > secondN then
+                secondN = n
+            end
+        end
+    end
+    if bestQty ~= nil and bestN >= YIELD_MODE_MIN_HITS and bestN > secondN then
+        return bestQty
+    end
+    return nil
+end
+
+local function ResolveOutcome(recipe, potionUid)
+    if type(recipe) ~= "table" or type(recipe.outcomes) ~= "table" then
+        return nil
+    end
+    local uid = tonumber(potionUid) or 0
+    if uid <= 0 then
+        uid = tonumber(recipe.outputUid) or tonumber(recipe.activeOutcomeUid) or 0
+    end
+    if uid <= 0 then
+        return nil
+    end
+    local oc = recipe.outcomes[tostring(uid)]
+    if oc == nil then
+        oc = recipe.outcomes[uid]
+    end
+    if type(oc) ~= "table" then
+        return nil
+    end
+    return oc
+end
+
+--- Returns the bottle count added to yield totals, or nil when the delta is
+--- ignored. Successes always increment: a bad delta must not lower the
+--- success rate. Saved productSum / successes are not rewritten.
 local function RecordOutcome(recipe, potionUid, quality, qty)
     potionUid = tonumber(potionUid) or 0
     qty = tonumber(qty) or 1
     if potionUid <= 0 or type(recipe) ~= "table" then
-        return
+        return nil
     end
     EnsureBrewStats(recipe)
     local key = tostring(potionUid)
@@ -825,12 +896,44 @@ local function RecordOutcome(recipe, potionUid, quality, qty)
         oc = { successes = 0, productSum = 0, quality = quality }
         recipe.outcomes[key] = oc
     end
+    -- Historical rows counted every success in productSum. Keep that
+    -- denominator until a later reject splits yield samples from successes.
+    if oc.yieldSamples == nil then
+        oc.yieldSamples = tonumber(oc.successes) or 0
+    end
     oc.successes = (tonumber(oc.successes) or 0) + 1
-    oc.productSum = (tonumber(oc.productSum) or 0) + qty
     oc.quality = quality or oc.quality
-    oc.yield = (tonumber(oc.successes) or 0) > 0
-        and ((tonumber(oc.productSum) or 0) / oc.successes)
-        or qty
+    local qtyInt = WholeBottleQty(qty)
+    local mode = ModeFromQtyCounts(oc.qtyCounts)
+    -- Once one integer is strictly ahead, any other quantity is not a
+    -- plausible single craft. Leave it out of qtyCounts and productSum so
+    -- it cannot tie or replace that mode.
+    local acceptQty = nil
+    if mode ~= nil then
+        if qtyInt ~= nil and qtyInt == mode then
+            acceptQty = qtyInt
+        end
+    elseif qtyInt ~= nil then
+        acceptQty = qtyInt
+    elseif qty > 0 then
+        acceptQty = qty
+    end
+    if acceptQty == nil then
+        return nil
+    end
+    if qtyInt ~= nil then
+        if type(oc.qtyCounts) ~= "table" then
+            oc.qtyCounts = {}
+        end
+        local qk = tostring(qtyInt)
+        oc.qtyCounts[qk] = (tonumber(oc.qtyCounts[qk]) or 0) + 1
+    end
+    oc.productSum = (tonumber(oc.productSum) or 0) + acceptQty
+    oc.yieldSamples = (tonumber(oc.yieldSamples) or 0) + 1
+    if oc.yieldSamples > 0 then
+        oc.yield = oc.productSum / oc.yieldSamples
+    end
+    return acceptQty
 end
 
 local function NameLooksLiniment(name)
@@ -1487,9 +1590,10 @@ end
 --- Min brewAttempts before AutoGrow/craftable may trust outcome rates.
 local OUTCOME_RATE_MIN_ATTEMPTS = 5
 
---- Observed bottles of this potion per brew of its fingerprint.
+--- Observed bottles of this potion per brew (bag-diff average, may be fractional).
 --- Optional potionUid selects a shared-recipe outcome (potent / good).
-function RS.RecipeOutputYield(recipe, potionUid)
+--- Returns yield, sampleCount. Potions-tab Yield keeps this average.
+local function ObservedOutput(recipe, potionUid)
     potionUid = tonumber(potionUid) or 0
     if type(recipe) == "table" and type(recipe.outcomes) == "table" then
         local uid = potionUid
@@ -1504,25 +1608,216 @@ function RS.RecipeOutputYield(recipe, potionUid)
             if type(oc) == "table" then
                 local successes = tonumber(oc.successes) or 0
                 local productSum = tonumber(oc.productSum) or 0
-                if successes > 0 and productSum > 0 then
-                    return productSum / successes
+                local denom = tonumber(oc.yieldSamples)
+                if denom == nil or denom <= 0 then
+                    denom = successes
+                end
+                if denom > 0 and productSum > 0 then
+                    return productSum / denom, denom
                 end
                 local y = tonumber(oc.yield) or 0
                 if y > 0 then
-                    return y
+                    return y, denom
                 end
             end
         end
     end
+    local samples = 0
+    if type(recipe) == "table" then
+        samples = tonumber(recipe.yieldSamples) or 0
+    end
     local observed = ObservedRecipeYield(recipe)
     if observed and observed > 0 then
-        return observed
+        return observed, samples
     end
     local yield = tonumber(recipe and recipe.recipeYield) or 1
     if yield < 1 then
         yield = 1
     end
+    return yield, samples
+end
+
+function RS.RecipeOutputYield(recipe, potionUid)
+    local yield = ObservedOutput(recipe, potionUid)
     return yield
+end
+
+--- Integer bottles/craft for Watch craftable and crafts-needed.
+--- Prefer the mode of per-brew bottle counts. Floor the observed mean only
+--- until that mode exists, so 2.9 and 5.1 never multiply craftable.
+--- Snap to the nearest integer only when samples >= OUTCOME_RATE_MIN_ATTEMPTS
+--- and the average is within YIELD_INTEGER_EPS. Otherwise floor.
+--- Rounding 2.9 up to 3 can paint Ready via have+craftable.
+--- Floor stays at or below that mean. Deficit 0 is potion_stocked first.
+--- No multiplier / stability yield formula: same Multiplier band yields 5,
+--- and +1 / +2 / +3 do not share one step.
+local function StableIntegerYield(value, samples)
+    value = tonumber(value) or 0
+    samples = tonumber(samples) or 0
+    if value <= 0 then
+        return nil
+    end
+    local nearest = math.floor(value + 0.5)
+    if nearest >= 1
+        and samples >= OUTCOME_RATE_MIN_ATTEMPTS
+        and math.abs(value - nearest) <= YIELD_INTEGER_EPS
+    then
+        return nearest
+    end
+    local floored = math.floor(value)
+    if floored < 1 then
+        floored = 1
+    end
+    return floored
+end
+
+function RS.StableCraftYield(recipe, potionUid)
+    local oc = ResolveOutcome(recipe, potionUid)
+    local mode = ModeFromQtyCounts(oc and oc.qtyCounts)
+    if mode ~= nil and mode >= 1 then
+        return mode
+    end
+    local value, samples = ObservedOutput(recipe, potionUid)
+    local stable = StableIntegerYield(value, samples)
+    if stable == nil or stable < 1 then
+        return 1
+    end
+    return stable
+end
+
+local function IsWholeNumber(value)
+    value = tonumber(value)
+    if value == nil then
+        return true
+    end
+    return math.abs(value - math.floor(value + 1e-8)) <= 1e-6
+end
+
+--- Same integer StableCraftYield trusts, from a saved mean or qtyCounts mode.
+local function TrustedIntegerFromStored(recipe, potionUid, oc)
+    local mode = ModeFromQtyCounts(oc and oc.qtyCounts)
+    if mode ~= nil and mode >= 1 then
+        return mode
+    end
+    local value, samples = ObservedOutput(recipe, potionUid)
+    if (tonumber(value) or 0) <= 0 and type(oc) == "table" then
+        value = tonumber(oc.yield) or 0
+        local denom = tonumber(oc.yieldSamples)
+        if denom == nil or denom <= 0 then
+            denom = tonumber(oc.successes) or 0
+        end
+        samples = denom
+    end
+    return StableIntegerYield(value, samples)
+end
+
+--- One-shot: snap fractional saved yields onto the trusted integer.
+--- Rewrites product sums so the mean stays on that integer. Sample and
+--- success counts are left alone. A later login does not run again.
+function RS.MigrateFractionalRecipeYields()
+    local acct = StockPiler3.Account
+    if type(acct) ~= "table" then
+        return false
+    end
+    if acct.recipeYieldIntegerMigrateV1 == true then
+        return false
+    end
+    local recipes = RecipesTable()
+    if type(recipes) ~= "table" then
+        acct.recipeYieldIntegerMigrateV1 = true
+        return false
+    end
+    for _, recipe in pairs(recipes) do
+        if type(recipe) == "table" then
+            local goodUid = 0
+            local goodOc = nil
+            if type(recipe.outcomes) == "table" then
+                local preferred = tonumber(recipe.activeOutcomeUid)
+                    or tonumber(recipe.outputUid) or 0
+                local function takeGood(uid)
+                    uid = tonumber(uid) or 0
+                    if uid <= 0 or goodOc ~= nil then
+                        return
+                    end
+                    local oc = recipe.outcomes[tostring(uid)]
+                    if oc == nil then
+                        oc = recipe.outcomes[uid]
+                    end
+                    if type(oc) == "table" and oc.quality == "good" then
+                        goodUid = uid
+                        goodOc = oc
+                    end
+                end
+                takeGood(preferred)
+                if goodOc == nil then
+                    for key, oc in pairs(recipe.outcomes) do
+                        if type(oc) == "table" and oc.quality == "good" then
+                            goodUid = tonumber(key) or 0
+                            goodOc = oc
+                            break
+                        end
+                    end
+                end
+                for key, oc in pairs(recipe.outcomes) do
+                    if type(oc) == "table" then
+                        local uid = tonumber(key) or 0
+                        local value = ObservedOutput(recipe, uid)
+                        local stored = tonumber(oc.yield)
+                        local fractional = ((tonumber(value) or 0) > 0 and not IsWholeNumber(value))
+                            or (stored ~= nil and stored > 0 and not IsWholeNumber(stored))
+                        if fractional then
+                            local trusted = TrustedIntegerFromStored(recipe, uid, oc)
+                            if trusted ~= nil and trusted >= 1 then
+                                local _, samples = ObservedOutput(recipe, uid)
+                                if (tonumber(samples) or 0) <= 0 then
+                                    samples = tonumber(oc.yieldSamples)
+                                    if samples == nil or samples <= 0 then
+                                        samples = tonumber(oc.successes) or 0
+                                    end
+                                end
+                                oc.yield = trusted
+                                if (tonumber(samples) or 0) > 0 then
+                                    oc.productSum = trusted * samples
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+            local recipeValue = ObservedRecipeYield(recipe)
+            local recipeStored = tonumber(recipe.recipeYield)
+            local recipeFractional = ((tonumber(recipeValue) or 0) > 0
+                    and not IsWholeNumber(recipeValue))
+                or (recipeStored ~= nil and recipeStored > 0
+                    and not IsWholeNumber(recipeStored))
+            if recipeFractional then
+                local trusted = nil
+                if goodOc ~= nil then
+                    trusted = TrustedIntegerFromStored(recipe, goodUid, goodOc)
+                end
+                if trusted == nil then
+                    local samples = tonumber(recipe.yieldSamples) or 0
+                    local value = recipeValue
+                    if (tonumber(value) or 0) <= 0 then
+                        value = recipeStored
+                    end
+                    trusted = StableIntegerYield(value, samples)
+                end
+                if trusted ~= nil and trusted >= 1 then
+                    recipe.recipeYield = trusted
+                    local samples = tonumber(recipe.yieldSamples) or 0
+                    if samples > 0 then
+                        recipe.yieldProductSum = trusted * samples
+                    end
+                end
+            end
+        end
+    end
+    acct.recipeYieldIntegerMigrateV1 = true
+    if StockPiler3.Knowledge and StockPiler3.Knowledge.Touch then
+        StockPiler3.Knowledge.Touch("recipe-yield-integer-migrate-v1")
+    end
+    return true
 end
 
 --- Fraction of fingerprint brews that produced this potion uid.
@@ -1551,17 +1846,17 @@ function RS.CraftsNeededForDeficit(deficit, recipe, potionUid)
     if deficit <= 0 then
         return 0
     end
-    local yield = RS.RecipeOutputYield(recipe, potionUid)
+    local yield = RS.StableCraftYield(recipe, potionUid)
     if yield < 1 then
         yield = 1
     end
     return math.max(1, math.ceil(deficit / yield))
 end
 
---- Best-case bottles from current materials (crafts × yield).
+--- Best-case bottles from current materials (crafts × integer yield).
 function RS.CountPotionsCraftable(recipe, opts, potionUid)
     local crafts = RS.CountCraftsPossible(recipe, opts)
-    local bottles = crafts * RS.RecipeOutputYield(recipe, potionUid)
+    local bottles = crafts * RS.StableCraftYield(recipe, potionUid)
     return math.floor((tonumber(bottles) or 0) + 0.5)
 end
 
@@ -1570,7 +1865,7 @@ end
 function RS.ExpectedCraftableBottles(recipe, potionUid, opts)
     potionUid = tonumber(potionUid) or tonumber(recipe and recipe.outputUid) or 0
     local crafts = RS.CountCraftsPossible(recipe, opts)
-    local yield = RS.RecipeOutputYield(recipe, potionUid)
+    local yield = RS.StableCraftYield(recipe, potionUid)
     if yield < 1 then
         yield = 1
     end
@@ -1597,7 +1892,7 @@ function RS.ExpectedCraftsForDeficit(deficit, recipe, potionUid)
     end
     potionUid = tonumber(potionUid) or tonumber(recipe and recipe.outputUid) or 0
     local rate = RS.OutcomeSuccessRate(recipe, potionUid)
-    local yield = RS.RecipeOutputYield(recipe, potionUid)
+    local yield = RS.StableCraftYield(recipe, potionUid)
     if yield < 1 then
         yield = 1
     end
@@ -2613,15 +2908,15 @@ function RS.StoreLearnedRecipeSpec(materials, outputs, opts)
         for uid, out in pairs(byUid) do
             local quality = OutputQuality(out)
             local qty = tonumber(out.lastDelta) or tonumber(out.crafts) or 1
-            RecordOutcome(recipe, uid, quality, qty)
+            local acceptedQty = RecordOutcome(recipe, uid, quality, qty)
             local _, potionIsNew, recipeKeyAdded = RS.RegisterKnownPotion(
                 uid, out, fingerprint, quality, skillUpOpts
             )
             if potionIsNew == true or recipeKeyAdded == true then
                 structuralChange = true
             end
-            if quality == "good" then
-                primaryQty = primaryQty + qty
+            if quality == "good" and (tonumber(acceptedQty) or 0) > 0 then
+                primaryQty = primaryQty + acceptedQty
             end
         end
         if primaryQty > 0 then
@@ -2854,10 +3149,29 @@ local function MergeRecipeStats(dest, recipe)
             if type(existing) ~= "table" then
                 dest.outcomes[uid] = row
             elseif type(row) == "table" then
+                local destYieldN = tonumber(existing.yieldSamples)
+                if destYieldN == nil then
+                    destYieldN = tonumber(existing.successes) or 0
+                end
+                local srcYieldN = tonumber(row.yieldSamples)
+                if srcYieldN == nil then
+                    srcYieldN = tonumber(row.successes) or 0
+                end
                 existing.successes = (tonumber(existing.successes) or 0)
                     + (tonumber(row.successes) or 0)
                 existing.productSum = (tonumber(existing.productSum) or 0)
                     + (tonumber(row.productSum) or 0)
+                existing.yieldSamples = destYieldN + srcYieldN
+                if type(row.qtyCounts) == "table" then
+                    if type(existing.qtyCounts) ~= "table" then
+                        existing.qtyCounts = {}
+                    end
+                    for qk, qn in pairs(row.qtyCounts) do
+                        local qkey = tostring(qk)
+                        existing.qtyCounts[qkey] = (tonumber(existing.qtyCounts[qkey]) or 0)
+                            + (tonumber(qn) or 0)
+                    end
+                end
                 if (tonumber(row.yield) or 0) > (tonumber(existing.yield) or 0) then
                     existing.yield = row.yield
                 end
@@ -3165,7 +3479,8 @@ function RS.SlotsFingerprint(slots)
 end
 
 ----------------------------------------------------------------
--- Planner shims. Grow, Refine and UpgradeSeed call these; the work lives on Planner.
+-- Planner shims. Grow, Refine, UpgradeSeed, Planner, and Brew call these.
+-- The work lives on Planner.
 ----------------------------------------------------------------
 
 local function PlannerMod()

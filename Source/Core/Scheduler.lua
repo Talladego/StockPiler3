@@ -1059,7 +1059,22 @@ function Sch.ShouldDeferAutoGrowPlant()
     return false, nil
 end
 
+function Sch.ArmPlantNextFrame()
+    Sch._armPlantNext = true
+    Sch._skipBuyThisFrame = true
+end
+
+function Sch.BuySkippedThisFrame()
+    return Sch._skipBuyThisFrame == true
+end
+
 function Sch.OnUpdate(timeElapsed)
+    local plantFrame = Sch._armPlantNext == true
+    if plantFrame then
+        Sch._skipPlanThisFrame = true
+        Sch._skipUiThisFrame = true
+        Sch._skipBuyThisFrame = true
+    end
     local now = Now()
     local pollSec = tonumber(Sch.POLL_SEC) or 0.25
     local pollDue = now <= 0 or (now - (tonumber(Sch._pollAt) or 0) >= pollSec)
@@ -1154,7 +1169,13 @@ function Sch.OnUpdate(timeElapsed)
             if not skipOrch
                 and StockPiler3.Orchestrator and StockPiler3.Orchestrator.Tick
             then
+                if plantFrame then
+                    Sch._armPlantNext = false
+                end
                 StockPiler3.Orchestrator.Tick()
+                if plantFrame and Sch._armPlantNext ~= true then
+                    Sch._skipBuyThisFrame = false
+                end
             end
         end
     end

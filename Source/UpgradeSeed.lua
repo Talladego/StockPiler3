@@ -1257,6 +1257,19 @@ function US.InvalidateUpgradeTargetsCache()
     US._activelyClimbingCached = nil
 end
 
+--- True only when the snap/watch cache is fresh and holds a climb target.
+--- Does not Collect. A stale cache is not a reason to bag-walk on an empty pick.
+function US.FreshTargetsPending()
+    if US.IsEnabled() ~= true then
+        return false
+    end
+    local key = UpgradeTargetsCacheKey()
+    if US._upgradeTargetsKey ~= key or type(US._upgradeTargetsCache) ~= "table" then
+        return false
+    end
+    return #US._upgradeTargetsCache > 0
+end
+
 --- Snap/watch-keyed cache over CollectUpgradeTargets (NeedsRefineFirst / PickPlantJob / status).
 local function GetUpgradeTargets()
     -- Re-entrancy: cache is only published after Collect finishes. GrowReserve →

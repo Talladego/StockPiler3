@@ -495,6 +495,7 @@ StockPiler3.Locale.Packs[LANG] = {
     ["tip.watch.craftable_none"] = L"Red: not craftable from current bags (missing ingredients).",
     ["tip.watch.need_crafts"] = L"Need {crafts} crafts for {deficit} more of this potion.",
     ["tip.watch.yield_best_case"] = L"Recipe yield {yield} is a best case; Potent / other rarities do not count.",
+    ["tip.watch.yield_observed"] = L"Observed bag yield {yield} (not used for Craftable).",
     ["tip.watch.enable_autogrow_row"] = L"Enable AutoGrow for this watch to plant short materials.",
     ["tip.watch.need_higher_skill"] = L"Need higher crafting skill.",
     ["watch.need_apo_skill"] = L"Need Apothecary {need} (have {have}) to watch this potion.",

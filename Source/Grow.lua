@@ -900,10 +900,8 @@ function Grow.InvalidatePlantQueue(opts)
     Grow._plantQueueDirty = true
     Grow._cachedPlantJob = nil
     Grow._plantJobProbed = false
-    local US = StockPiler3.UpgradeSeed
-    if US and US.InvalidateUpgradeTargetsCache then
-        US.InvalidateUpgradeTargetsCache()
-    end
+    -- Upgrade targets already key on snap, watch, and cult. Wiping that cache
+    -- here forced CollectUpgradeTargets on the next empty pick (1s no-job hitch).
     if opts.force == true then
         Grow._seedCommitted = {}
         Grow._wavePlantedBySeed = {}
@@ -1038,7 +1036,9 @@ local function CollectPlantWatchOrder(RS)
                         elseif RS.CountCraftsPossible then
                             local n = tonumber(RS.CountCraftsPossible(recipe)) or 0
                             local yield = 1
-                            if RS.RecipeOutputYield then
+                            if RS.StableCraftYield then
+                                yield = tonumber(RS.StableCraftYield(recipe, outUid)) or 1
+                            elseif RS.RecipeOutputYield then
                                 yield = tonumber(RS.RecipeOutputYield(recipe, outUid)) or 1
                             else
                                 yield = tonumber(recipe.recipeYield) or 5
@@ -1396,6 +1396,51 @@ local function LogPlantPick(job)
 end
 
 --- Idle SkillUp plant job. Independent of watch-demand cache (no-watch skill-up).
+--- Plan rows already say nothing needs a seed. Avoid the demand / seed-line walk.
+--- nil when there is no snapshot (caller must do the full pick).
+local function PlanRowsLackPlantDemand()
+    local PS = StockPiler3.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get() or nil
+    local rows = type(plan) == "table" and plan.rows or nil
+    if type(rows) ~= "table" or #rows < 1 then
+        return nil
+    end
+    local Watch = StockPiler3.Watch
+    if Watch and Watch.CountEnabledPlantWatches
+        and (tonumber(Watch.CountEnabledPlantWatches()) or 0) > 0
+    then
+        return false
+    end
+    for i = 1, #rows do
+        local row = rows[i]
+        if type(row) == "table" then
+            local isPlant = row.kind == "plant" or row.isPlantWatch == true
+            if isPlant then
+                local target = tonumber(row.target) or tonumber(row.potionMin) or 0
+                local have = tonumber(row.have) or tonumber(row.potionHave) or 0
+                if target > have then
+                    return false
+                end
+            else
+                local gap = tonumber(row.bottleGap)
+                if gap == nil then
+                    local target = tonumber(row.potionMin) or tonumber(row.target) or 0
+                    local have = tonumber(row.potionHave) or 0
+                    local craftable = tonumber(row.craftable) or 0
+                    gap = math.max(0, target - have - craftable)
+                end
+                if (tonumber(gap) or 0) > 0 then
+                    return false
+                end
+                if tostring(row.statusKey or "") == "need_seeds" then
+                    return false
+                end
+            end
+        end
+    end
+    return true
+end
+
 local function TrySkillUpPlantJob()
     local SkillUp = StockPiler3.SkillUp
     if not (SkillUp and SkillUp.ShouldCultPlant and SkillUp.ShouldCultPlant() == true) then
@@ -1441,6 +1486,28 @@ function Grow.PickPlantCandidate()
         or not SM.IsGrowableSpec or not SM.ResolveSeedForSpec
     then
         return done(nil)
+    end
+
+    -- Stocked plan: no bottle gap, no plant watch, no fresh upgrade target.
+    -- Do not bag-walk demand or seed lines, and do not queue WarmHave.
+    if PlanRowsLackPlantDemand() == true then
+        local SkillUp = StockPiler3.SkillUp
+        if SkillUp and SkillUp.ShouldCultPlant and SkillUp.ShouldCultPlant() == true
+            and Grow.HasEmptyPlot and Grow.HasEmptyPlot() == true
+        then
+            local skillJob = TrySkillUpPlantJob()
+            if type(skillJob) == "table" then
+                return done(skillJob)
+            end
+        end
+        local USIdle = StockPiler3.UpgradeSeed
+        local climbPending = USIdle and USIdle.FreshTargetsPending and USIdle.FreshTargetsPending() == true
+        local Refine = StockPiler3.Refine
+        local bufferPending = Refine and Refine.PeekFreshBufferPending
+            and Refine.PeekFreshBufferPending() == true
+        if climbPending ~= true and bufferPending ~= true then
+            return done(nil)
+        end
     end
 
     -- Upgrade Seed refine-first: skip BuildBalancedSpecDemand (WarmHave.miss) —
@@ -1619,6 +1686,12 @@ function Grow.GetPlantJob()
     return job
 end
 
+--- True when GetPlantJob ran PickPlantCandidate on this frame (not a nil/job cache hit).
+function Grow.PickedThisFrame()
+    local frame = tonumber(StockPiler3.FrameCounter) or 0
+    return frame > 0 and Grow._plantPickFrame == frame
+end
+
 function Grow.PeekSeedsForNextPlant()
     if Grow._plantQueueDirty == true then
         return false, "dirty"
@@ -1735,20 +1808,14 @@ function Grow.IssuePlantOne(opId)
     end
 
     local job = Grow.GetPlantJob()
-    -- One PickPlantCandidate per FrameCounter: Orch already probed this tick; do not
-    -- InvalidatePlantQueue + re-Pick (PickPlantCandidate x2 next to CollectIntents).
-    local frame = tonumber(StockPiler3.FrameCounter) or 0
-    if job == nil and Grow.HasEmptyPlot() and Grow._commitForceCleared ~= true
-        and Grow._plantPickFrame ~= frame
-    then
-        Grow.InvalidatePlantQueue({ force = true, keepCommitForceCleared = true })
-        Grow._commitForceCleared = true
-        job = Grow.GetPlantJob()
-    end
+    -- A probed nil is the decision. Forcing another PickPlantCandidate while
+    -- plots were empty and the answer was no job was the 1s hitch.
     if type(job) ~= "table" then
-        if Grow.HasPendingBufferRefine() then
-            if StockPiler3.Refine and StockPiler3.Refine.MarkRefineDue then
-                StockPiler3.Refine.MarkRefineDue("seed-buffer")
+        local Refine = StockPiler3.Refine
+        local pending = Refine and Refine.PeekFreshBufferPending and Refine.PeekFreshBufferPending()
+        if pending == true then
+            if Refine.MarkRefineDue then
+                Refine.MarkRefineDue("seed-buffer")
             end
             Grow.ClearFillBlocked()
         else
@@ -1756,6 +1823,16 @@ function Grow.IssuePlantOne(opId)
             Grow.LogSkipPlant("no-plant-job")
         end
         return done(false)
+    end
+    -- Fresh pick already built demand. Plant on the next frame so this one
+    -- does not also buy and rebuild the plan.
+    if Grow.PickedThisFrame and Grow.PickedThisFrame() == true then
+        local SchDefer = StockPiler3.Scheduler
+        if SchDefer and SchDefer.ArmPlantNextFrame then
+            SchDefer.ArmPlantNextFrame()
+            Grow.LogSkipPlant("plant-next-frame")
+            return done(false)
+        end
     end
 
     local seedUid = tonumber(job.seedUid) or 0

@@ -53,6 +53,10 @@ local function HasAutoBuyWork()
 end
 
 local function TryBuyTick(opId)
+    local Sch = StockPiler3.Scheduler
+    if Sch and Sch.BuySkippedThisFrame and Sch.BuySkippedThisFrame() == true then
+        return false
+    end
     if not HasAutoBuyWork() then
         return false
     end
@@ -478,15 +482,16 @@ function Orch._TickBody()
         return
     end
 
-    -- Vendor open with buy work: take this tick (independent of plant/refine).
-    -- Avoids busy AutoGrow starving AutoBuy while still one IssueOne/frame.
-    if TryBuyTick(Orch.NewOpId()) then
-        EndTick()
-        return
-    end
-
+    -- Buy takes this tick only when we are not about to plant. A plant frame
+    -- must not also IssueOne a purchase (0.3.410 live).
     local Grow = StockPiler3.Grow
     local canPlant = Grow and Grow.HasEmptyPlot and Grow.HasEmptyPlot() == true
+    if not canPlant then
+        if TryBuyTick(Orch.NewOpId()) then
+            EndTick()
+            return
+        end
+    end
     -- Remount have/demand for plant/refine probes (before ArmPlantQuiet after IssueOne).
     if Sch and Sch.ArmOrchDecisionHold then
         Sch.ArmOrchDecisionHold(2)

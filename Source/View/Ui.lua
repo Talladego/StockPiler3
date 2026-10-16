@@ -26,8 +26,8 @@ Ui._watchUiLastBrewKey = nil
 Ui._catalogStructureDirty = false
 
 --- Drop the Watch paint throttle so the next flush is not skipped.
---- Callers used to write these two fields directly. The trade-skill load path
---- still clears only LastKey; resetting FlushedAt there would change timing.
+--- Clears both _watchUiLastKey and _watchUiFlushedAt. The trade-skill load path
+--- clears only the key; clearing FlushedAt there would change flush timing.
 function Ui.BypassWatchThrottle()
     Ui._watchUiLastKey = nil
     Ui._watchUiFlushedAt = 0
@@ -318,6 +318,7 @@ local function TryWatchLiveCatchup(opts)
         Planner.LiveRecount({
             allowWarmHave = false,
             syncSnapshot = false,
+            recountCraftable = false,
         })
     end
     if StockPiler3TabWatch.UpdateRows then
@@ -397,8 +398,8 @@ function Ui.FlushDeferredWatchRecount()
 end
 
 --- Rebuild Potions/Plants list after a structural knowledge learn.
---- Brew-hold / plan-defer flushes used to clear dirty after PatchLiveHave only,
---- so a newly learned potion stayed invisible until the user flipped tabs.
+--- The structure-dirty flag still needs a full refresh after a brew-hold or
+--- plan-defer flush. Have-only patching does not clear it.
 local function FlushCatalogIfStructureDirty()
     if Ui._catalogStructureDirty ~= true then
         return false
