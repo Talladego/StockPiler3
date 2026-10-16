@@ -279,7 +279,7 @@ function Bridge.OnTradeSkillUpdated()
         Bridge._cultSkillSeen = true
     end
 
-    local function RunSkillDropReset()
+    local function RunSkillDropReset(detail)
         if Caps and Caps.ResetTradeSkillsReady then
             Caps.ResetTradeSkillsReady()
         end
@@ -289,6 +289,24 @@ function Bridge.OnTradeSkillUpdated()
         Bridge._skillLevelsHash = nil
         Bridge._skillPrev = nil
         Bridge._skillPrevAtLoad = nil
+        if StockPiler3.Debug and StockPiler3.Debug.LogOp then
+            StockPiler3.Debug.LogOp("caps", "skill-drop-reset " .. tostring(detail or ""))
+        end
+    end
+
+    -- Live readers return level, explicit. An empty/unknown 0 is not a drop:
+    -- cult often arrives one pulse before apo on a normal zone load (#50 L14).
+    -- Explicit 0 still counts, including a single-source 0 sticky refuses (#47).
+    local function ReadLiveSkill(reader, fallback)
+        if type(reader) == "function" then
+            local level, explicit = reader()
+            return tonumber(level) or 0, explicit == true
+        end
+        return tonumber(fallback) or 0, false
+    end
+
+    local function LiveZeroIsDrop(level, explicit, prevLevel)
+        return explicit == true and level <= 0 and (tonumber(prevLevel) or 0) >= 5
     end
 
     local prev = Bridge._skillPrev
@@ -300,14 +318,18 @@ function Bridge.OnTradeSkillUpdated()
         if pendingAtPulse and type(atLoad) == "table" then
             local prevCult = tonumber(atLoad.cult) or 0
             local prevApo = tonumber(atLoad.apo) or 0
-            local liveCult = Caps and Caps.ReadCultSkillLive and Caps.ReadCultSkillLive() or cult
-            local liveApo = Caps and Caps.ReadApoSkillLive and Caps.ReadApoSkillLive() or apo
+            local liveCult, cultExplicit = ReadLiveSkill(Caps and Caps.ReadCultSkillLive, cult)
+            local liveApo, apoExplicit = ReadLiveSkill(Caps and Caps.ReadApoSkillLive, apo)
             local dropCult = liveCult - prevCult
             local dropApo = liveApo - prevApo
-            local liveDrop = (liveCult <= 0 and prevCult >= 5)
-                or (liveApo <= 0 and prevApo >= 5)
+            local liveDrop = LiveZeroIsDrop(liveCult, cultExplicit, prevCult)
+                or LiveZeroIsDrop(liveApo, apoExplicit, prevApo)
             if (dropCult <= -5 or dropApo <= -5) and liveDrop then
-                RunSkillDropReset()
+                RunSkillDropReset(string.format(
+                    "at-load cult=%d->%d explicit=%s apo=%d->%d explicit=%s",
+                    prevCult, liveCult, tostring(cultExplicit),
+                    prevApo, liveApo, tostring(apoExplicit)
+                ))
                 return
             end
         end
@@ -326,14 +348,18 @@ function Bridge.OnTradeSkillUpdated()
         prev.apo = apo
         -- Logout / char switch: ignore large negative jumps.
         -- Use live reads so sticky cache cannot hide a real char swap (#47).
-        local liveCult = Caps and Caps.ReadCultSkillLive and Caps.ReadCultSkillLive() or cult
-        local liveApo = Caps and Caps.ReadApoSkillLive and Caps.ReadApoSkillLive() or apo
-        local liveDrop = (liveCult <= 0 and prevCult >= 5)
-            or (liveApo <= 0 and prevApo >= 5)
+        local liveCult, cultExplicit = ReadLiveSkill(Caps and Caps.ReadCultSkillLive, cult)
+        local liveApo, apoExplicit = ReadLiveSkill(Caps and Caps.ReadApoSkillLive, apo)
+        local liveDrop = LiveZeroIsDrop(liveCult, cultExplicit, prevCult)
+            or LiveZeroIsDrop(liveApo, apoExplicit, prevApo)
         local dropCult = (pendingAtPulse and liveCult or cult) - prevCult
         local dropApo = (pendingAtPulse and liveApo or apo) - prevApo
         if (dropCult <= -5 or dropApo <= -5) and liveDrop and pendingAtPulse then
-            RunSkillDropReset()
+            RunSkillDropReset(string.format(
+                "pending cult=%d->%d explicit=%s apo=%d->%d explicit=%s",
+                prevCult, liveCult, tostring(cultExplicit),
+                prevApo, liveApo, tostring(apoExplicit)
+            ))
             return
         end
         -- Positive skill-up deltas stay on sticky values so a char-switch

@@ -647,12 +647,12 @@ end
 --- Bag evidence, or money evidence when the pending buy is in the unique
 --- money subset of MoneyCandidates (late + pending). Equal-cost ambiguity
 --- falls through to bag (#30 / L12).
-local function PendingConfirmable(pending, live)
+local function PendingConfirmable(pending, live, bagNow)
     if type(pending) ~= "table" then
         return false
     end
     live = tonumber(live) or PlayerMoneyBrass()
-    if BagEvidenceOk(pending) then
+    if BagEvidenceOk(pending, bagNow) then
         return true
     end
     local costTotal = tonumber(pending.costTotal) or 0
@@ -799,7 +799,7 @@ local function ResolvePendingBuy()
     local uid = tonumber(pending.uid) or 0
     local bagNow = BagCountUid(uid)
     local bagBefore = tonumber(pending.bagBefore) or 0
-    if PendingConfirmable(pending, live) then
+    if PendingConfirmable(pending, live, bagNow) then
         AccountConfirmedBuy(pending, live > 0 and live or before)
         Buy._pendingBuy = nil
         return "confirmed"
