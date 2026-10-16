@@ -1,5 +1,14 @@
 # StockPiler: Refactoring Strategy & StockPiler4 Roadmap
 
+> **Status note (0.3.397).** This document was written against 0.3.220. See [`CODE_REVIEW.md`](CODE_REVIEW.md) for the current review. Several premises below no longer hold:
+> - The EventBus is now used for store-to-View notifications (28 subscriptions).
+> - `TryPlantOne` is gone, so the Orchestrator's plant branches no longer diverge on the plant call.
+> - The `RP.ExpireStuck` `pairs` concern was incorrect.
+> - The "< 1.5 ms plan with O(1) indexing" figure was never measured.
+> - Many high-value fixes are local and non-breaking, so in-place work on SP3 is not a trap (see §11 of the new review).
+>
+> The architectural direction (immutable snapshot, pure planner, unified ladder logic, decoupled UI updates) still applies. The file links below use an old `file:///c:/Games/...` path that no longer exists; the files are under `Source/` in this repo.
+
 This document outlines the strategic decision analysis on whether to apply targeted bug fixes to **StockPiler3** or develop a refactored **StockPiler4**, along with the recommended architectural blueprint.
 
 ---
