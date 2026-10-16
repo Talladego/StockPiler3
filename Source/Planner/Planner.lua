@@ -293,10 +293,7 @@ local function HoldHaveCacheQuiet()
     if not Sch then
         return false
     end
-    if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
-        return true
-    end
-    if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+    if Sch.IsSuppressed and Sch.IsSuppressed() == true then
         return true
     end
     -- Orch probe frame (before ArmPlantQuiet): remount when have or demand exists.

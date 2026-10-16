@@ -853,46 +853,47 @@ function Grow.IsSeedBufferSatisfied()
 end
 
 function Grow.SetFillBlocked(blocked, waitTicks)
-    if blocked == true then
-        Grow._fillBlocked = true
-        waitTicks = tonumber(waitTicks) or 0
-        local cur = tonumber(Grow._plantWaitTicks) or 0
-        if waitTicks > cur then
-            Grow._plantWaitTicks = waitTicks
-        end
-        -- Mirror Orch wait without calling Orch.SetFillBlocked (that re-enters Grow).
-        local Orch = StockPiler3.Orchestrator
-        if Orch then
-            Orch._fillBlocked = true
-            local ow = tonumber(Orch._fillBlockedWait) or 0
-            local gw = tonumber(Grow._plantWaitTicks) or 0
-            if gw > ow then
-                Orch._fillBlockedWait = gw
-            end
-        end
-    else
-        Grow.ClearFillBlocked()
+    if Grow._fillBlockWrite == true then
+        return
     end
+    local Orch = StockPiler3.Orchestrator
+    if not Orch then
+        Grow._fillBlockWrite = false
+        return
+    end
+    Grow._fillBlockWrite = true
+    if blocked == true then
+        local ticks = tonumber(waitTicks) or 0
+        if ticks < 0 then
+            ticks = 0
+        end
+        local interval = 1
+        local Sch = StockPiler3.Scheduler
+        if Sch and Sch.CurrentAutoTickSec then
+            interval = tonumber(Sch.CurrentAutoTickSec()) or 1
+        end
+        if interval <= 0 then
+            interval = 1
+        end
+        if Orch.SetFillBlocked then
+            Orch.SetFillBlocked(ticks * interval)
+        end
+    elseif Orch.ClearFillBlocked then
+        Orch.ClearFillBlocked()
+    end
+    Grow._fillBlockWrite = false
 end
 
 function Grow.ClearFillBlocked()
-    Grow._fillBlocked = false
-    Grow._plantWaitTicks = 0
+    Grow.SetFillBlocked(false, 0)
 end
 
 function Grow.IsFillBlocked()
-    return Grow._fillBlocked == true
+    local Orch = StockPiler3.Orchestrator
+    return Orch and Orch.IsFillBlocked and Orch.IsFillBlocked() == true
 end
 
 function Grow.DecayPlantWaitTicks()
-    local wait = tonumber(Grow._plantWaitTicks) or 0
-    if wait > 0 then
-        Grow._plantWaitTicks = wait - 1
-        if Grow._plantWaitTicks <= 0 then
-            Grow._fillBlocked = false
-            Grow._plantWaitTicks = 0
-        end
-    end
 end
 
 function Grow.InvalidatePlantQueue(opts)
@@ -2065,8 +2066,7 @@ local function NudgeHarvestReadiness(forceImmediate)
     forceImmediate = forceImmediate == true
     local Sch = StockPiler3.Scheduler
     local hold = (Sch and Sch.SkipUiThisFrameActive and Sch.SkipUiThisFrameActive() == true)
-        or (Sch and Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true)
-        or (Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true)
+        or (Sch and Sch.IsSuppressed and Sch.IsSuppressed() == true)
         or (Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true)
     if hold and not forceImmediate then
         local Bus = StockPiler3.EventBus
@@ -2262,8 +2262,7 @@ function Grow.MaybeNotifyHarvestReady()
     -- Never SyncActionReadiness (CanBrewNow + Macro.Appearance) during cult storms —
     -- that was the 10s Footer/Macro trail piled on CultivationUpdated x4.
     local holdFooter = (Sch and Sch.SkipUiThisFrameActive and Sch.SkipUiThisFrameActive() == true)
-        or (Sch and Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true)
-        or (Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true)
+        or (Sch and Sch.IsSuppressed and Sch.IsSuppressed() == true)
         or (Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true)
     local function NudgeFooter(forceImmediate)
         -- forceImmediate bypasses cult storm holds so enable/grey is not deferred
@@ -2642,8 +2641,13 @@ function Grow.DumpDiagnostics(emit)
     end
     emit("=== grow plan ===")
     emit("enabled=" .. tostring(Grow.IsEnabled()))
+    local wait = 0
+    local Orch = StockPiler3.Orchestrator
+    if Orch then
+        wait = tonumber(Orch._fillBlockedWait) or 0
+    end
     emit("fillBlocked=" .. tostring(Grow.IsFillBlocked())
-        .. " wait=" .. tostring(Grow._plantWaitTicks or 0))
+        .. " wait=" .. tostring(wait))
     emit("emptyPlot=" .. tostring(Grow.HasEmptyPlot())
         .. " seeds=" .. tostring(Grow.HasSeedsForNextPlant()))
     emit("bufferSatisfied=" .. tostring(Grow.IsSeedBufferSatisfied())

@@ -114,11 +114,9 @@ function Bridge.OnCraftingSlotUpdated(updatedSlots)
     Bridge._pendingCraftApply = true
     local Grow = StockPiler3.Grow
     local Sch = StockPiler3.Scheduler
-    local storm = Sch and Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true
-    local quiet = Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true
     if Grow and Grow.NeedsCurrentStageAdditive and Grow.NeedsCurrentStageAdditive()
         and Sch and Sch.WakeAutoGrow
-        and not storm and not quiet
+        and not (Sch.IsSuppressed and Sch.IsSuppressed() == true)
     then
         Sch.WakeAutoGrow()
     end
@@ -232,15 +230,14 @@ function Bridge.OnCultivationUpdated()
         StockPiler3.LearnBridge.OnCultivationUpdated()
     end
     -- Footer via coalesced flush only — never SyncActionReadiness per plot.
-    local storm = Sch and Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true
-    local quiet = Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true
+    local suppressed = Sch and Sch.IsSuppressed and Sch.IsSuppressed() == true
     local settling = Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true
-    if not storm and not quiet and not settling then
+    if not suppressed and not settling then
         RequestFooterViaBus({ reason = "cultivation-updated" })
     end
     if Grow and Grow.NeedsCurrentStageAdditive and Grow.NeedsCurrentStageAdditive()
         and Sch and Sch.WakeAutoGrow
-        and not storm and not quiet
+        and not suppressed
     then
         Sch.WakeAutoGrow()
     end

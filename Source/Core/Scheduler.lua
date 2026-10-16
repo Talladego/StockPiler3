@@ -93,12 +93,7 @@ end
 local function RequestCachePrewarm(reason)
     -- Defer prewarm during plant/refine quiet — sync WarmHave.miss under
     -- Inv.ApplySlots was the dominant ~90-100ms trail after every IssueOne.
-    if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
-        Sch._pendingPrewarmAfterQuiet = true
-        Sch._pendingPrewarmReason = reason
-        return
-    end
-    if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+    if Sch.IsSuppressed and Sch.IsSuppressed() == true then
         Sch._pendingPrewarmAfterQuiet = true
         Sch._pendingPrewarmReason = reason
         return
@@ -124,10 +119,7 @@ local function FlushPendingPrewarmAfterQuiet()
     if Sch._pendingPrewarmAfterQuiet ~= true then
         return
     end
-    if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
-        return
-    end
-    if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+    if Sch.IsSuppressed and Sch.IsSuppressed() == true then
         return
     end
     Sch._pendingPrewarmAfterQuiet = false
@@ -150,10 +142,7 @@ local function FlushPendingPlanAfterPrewarm()
     if Sch.SkipPlanThisFrameActive and Sch.SkipPlanThisFrameActive() == true then
         return false
     end
-    if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
-        return false
-    end
-    if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+    if Sch.IsSuppressed and Sch.IsSuppressed() == true then
         return false
     end
     local FW = StockPiler3.FrameWork
@@ -215,10 +204,7 @@ local function FlushPendingBufferFlagsRebuild(didHeavy)
     if Sch.SkipPlanThisFrameActive and Sch.SkipPlanThisFrameActive() == true then
         return false
     end
-    if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
-        return false
-    end
-    if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+    if Sch.IsSuppressed and Sch.IsSuppressed() == true then
         return false
     end
     local Refine = StockPiler3.Refine
@@ -235,11 +221,7 @@ local function FlushBagIfDue()
     if Sch._bagDue ~= true then
         return false
     end
-    if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
-        Sch._bagAt = Now() + Sch.BAG_COALESCE_SEC
-        return false
-    end
-    if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+    if Sch.IsSuppressed and Sch.IsSuppressed() == true then
         Sch._bagAt = Now() + Sch.BAG_COALESCE_SEC
         return false
     end
@@ -283,10 +265,7 @@ local function RebuildPlanIfDue()
     if Sch._skipPlanThisFrame == true then
         return false
     end
-    if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
-        return false
-    end
-    if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+    if Sch.IsSuppressed and Sch.IsSuppressed() == true then
         return false
     end
     -- Orch probe remounts have; wait for hold to drop before CheapRebuild.
@@ -424,25 +403,17 @@ local function AutoTickIntervalSec()
     return Sch.AUTO_TICK_SEC
 end
 
+function Sch.CurrentAutoTickSec()
+    return AutoTickIntervalSec()
+end
+
 local function ShouldWakeAutoGrowUrgent()
-    local Watch = StockPiler3.Watch
-    if not Watch or not Watch.IsAutoGrowEnabled or Watch.IsAutoGrowEnabled() ~= true then
-        return false
-    end
-    local Grow = StockPiler3.Grow
-    if Grow and Grow.NeedsCurrentStageAdditive and Grow.NeedsCurrentStageAdditive() then
-        return true
-    end
-    local RP = StockPiler3.RefinePipeline
-    if RP and RP.HasOutstanding and RP.HasOutstanding() then
-        return true
-    end
-    local Refine = StockPiler3.Refine
-    if Refine and Refine._refineDirty == true then
-        return true
-    end
-    if Refine and Refine.PeekCachedBufferPending and Refine.PeekCachedBufferPending() == true then
-        return true
+    local Orch = StockPiler3.Orchestrator
+    if Orch and Orch.HasAutoGrowWork then
+        return Orch.HasAutoGrowWork({
+            refineDirty = true,
+            peek = "cached",
+        }) == true
     end
     return false
 end
@@ -463,11 +434,10 @@ local function OnInventorySnapshot()
     -- Peek cached pending before invalidate so wake does not rebuild BufferFlags.
     local pendingBuffer = Refine and Refine.PeekCachedBufferPending
         and Refine.PeekCachedBufferPending() == true
-    local plantQuiet = Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true
-    local storm = Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true
+    local suppressed = Sch.IsSuppressed and Sch.IsSuppressed() == true
     local Orch = StockPiler3.Orchestrator
     local brewSession = Orch and Orch.IsBrewSessionActive and Orch.IsBrewSessionActive() == true
-    if not plantQuiet and not storm and not brewSession then
+    if not suppressed and not brewSession then
         local Watch = StockPiler3.Watch
         local autoGrowOn = Watch and Watch.IsAutoGrowEnabled and Watch.IsAutoGrowEnabled() == true
         local Grow = StockPiler3.Grow
@@ -525,11 +495,7 @@ local function OnGardenDirty(payload)
     end
     -- Harvest storm / plant quiet / refine outstanding: never WakeAutoGrow /
     -- EnqueuePlanRebuild from garden dirty (SP2 Flatten on plant/refine).
-    if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
-        Sch.MarkWatchUiDirty()
-        return
-    end
-    if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+    if Sch.IsSuppressed and Sch.IsSuppressed() == true then
         Sch.MarkWatchUiDirty()
         return
     end
@@ -671,15 +637,58 @@ function Sch.RequestCachePrewarm(reason)
     return RequestCachePrewarm(reason)
 end
 
---- Expire storm/quiet windows once per frame.
+local function WindowActive(untilT, now)
+    untilT = tonumber(untilT) or 0
+    now = tonumber(now) or 0
+    return untilT > 0 and now > 0 and now < untilT
+end
+
+local function ExpireHarvestStorm(now)
+    local untilT = tonumber(Sch._harvestStormUntil) or 0
+    if untilT <= 0 or WindowActive(untilT, now) then
+        return
+    end
+    if now >= untilT then
+        Sch._harvestStormUntil = 0
+        -- Storm end: skip plan+UI this frame; enqueue coalesced rebuild for later.
+        -- Do not InvalidatePlantQueue / prewarm here (that piled WarmHave + Build
+        -- + Watch flush into the first post-harvest / replant hitch).
+        Sch.SkipPlanThisFrame()
+        Sch.SkipUiThisFrame()
+        if Sch.EnqueuePlanRebuild then
+            Sch.EnqueuePlanRebuild({ nudge = true })
+        end
+        Sch.MarkWatchUiDirty()
+        FlushPendingPrewarmAfterQuiet()
+    end
+end
+
+local function ExpirePlantQuiet(now)
+    local untilT = tonumber(Sch._plantQuietUntil) or 0
+    if untilT <= 0 or WindowActive(untilT, now) then
+        return
+    end
+    if now >= untilT then
+        Sch._plantQuietUntil = 0
+        -- Quiet-end: drop remounted have, prewarm, then rebuild (bag moves during
+        -- quiet never EnqueuePlanRebuild — without this Watch sits one stack behind).
+        Sch.SkipPlanThisFrame()
+        Sch.SkipUiThisFrame()
+        local Planner = StockPiler3.Planner
+        if Planner and Planner.InvalidateHaveCacheAfterQuiet then
+            Planner.InvalidateHaveCacheAfterQuiet()
+        end
+        FlushPendingPrewarmAfterQuiet()
+        Sch._pendingPlanAfterPrewarm = true
+        Sch.MarkWatchUiDirty()
+    end
+end
+
+--- Expire storm and quiet once per frame. The queries below only read.
 function Sch.Advance(now)
     now = tonumber(now) or Now()
-    if Sch.IsHarvestStorm then
-        Sch.IsHarvestStorm()
-    end
-    if Sch.IsPlantQuiet then
-        Sch.IsPlantQuiet()
-    end
+    ExpireHarvestStorm(now)
+    ExpirePlantQuiet(now)
 end
 
 function Sch.ArmHarvestStorm(seconds)
@@ -703,54 +712,15 @@ function Sch.ArmHarvestStorm(seconds)
 end
 
 function Sch.IsHarvestStorm()
-    local untilT = tonumber(Sch._harvestStormUntil) or 0
-    if untilT <= 0 then
-        return false
-    end
-    local now = Now()
-    if now > 0 and now < untilT then
-        return true
-    end
-    if now >= untilT then
-        Sch._harvestStormUntil = 0
-        -- Storm end: skip plan+UI this frame; enqueue coalesced rebuild for later.
-        -- Do not InvalidatePlantQueue / prewarm here (that piled WarmHave + Build
-        -- + Watch flush into the first post-harvest / replant hitch).
-        Sch.SkipPlanThisFrame()
-        Sch.SkipUiThisFrame()
-        if Sch.EnqueuePlanRebuild then
-            Sch.EnqueuePlanRebuild({ nudge = true })
-        end
-        Sch.MarkWatchUiDirty()
-        FlushPendingPrewarmAfterQuiet()
-    end
-    return false
+    return WindowActive(Sch._harvestStormUntil, Now())
 end
 
 function Sch.IsPlantQuiet()
-    local untilT = tonumber(Sch._plantQuietUntil) or 0
-    if untilT <= 0 then
-        return false
-    end
-    local now = Now()
-    if now > 0 and now < untilT then
-        return true
-    end
-    if now >= untilT then
-        Sch._plantQuietUntil = 0
-        -- Quiet-end: drop remounted have, prewarm, then rebuild (bag moves during
-        -- quiet never EnqueuePlanRebuild — without this Watch sits one stack behind).
-        Sch.SkipPlanThisFrame()
-        Sch.SkipUiThisFrame()
-        local Planner = StockPiler3.Planner
-        if Planner and Planner.InvalidateHaveCacheAfterQuiet then
-            Planner.InvalidateHaveCacheAfterQuiet()
-        end
-        FlushPendingPrewarmAfterQuiet()
-        Sch._pendingPlanAfterPrewarm = true
-        Sch.MarkWatchUiDirty()
-    end
-    return false
+    return WindowActive(Sch._plantQuietUntil, Now())
+end
+
+function Sch.IsSuppressed()
+    return Sch.IsHarvestStorm() == true or Sch.IsPlantQuiet() == true
 end
 
 function Sch.ArmPlantQuiet(seconds)
@@ -985,28 +955,13 @@ function Sch.MarkWatchUiDirty(payload)
 end
 
 function Sch.ShouldWakeAutoGrow()
-    local Watch = StockPiler3.Watch
-    if not Watch or not Watch.IsAutoGrowEnabled or Watch.IsAutoGrowEnabled() ~= true then
-        return false
-    end
-    local Grow = StockPiler3.Grow
-    if Grow and Grow.NeedsCurrentStageAdditive and Grow.NeedsCurrentStageAdditive() then
-        return true
-    end
-    local RP = StockPiler3.RefinePipeline
-    if RP and RP.HasOutstanding and RP.HasOutstanding() then
-        return true
-    end
-    if Grow and Grow.HasEmptyPlot and Grow.HasEmptyPlot() then
-        return true
-    end
-    local Refine = StockPiler3.Refine
-    if Refine and Refine._refineDirty == true then
-        return true
-    end
-    -- Peek only: HasPendingBufferRefine rebuilds BufferFlags (harvest hitch amplifier).
-    if Refine and Refine.PeekCachedBufferPending and Refine.PeekCachedBufferPending() == true then
-        return true
+    local Orch = StockPiler3.Orchestrator
+    if Orch and Orch.HasAutoGrowWork then
+        return Orch.HasAutoGrowWork({
+            emptyPlot = true,
+            refineDirty = true,
+            peek = "cached",
+        }) == true
     end
     return false
 end
@@ -1115,8 +1070,7 @@ function Sch.OnUpdate(timeElapsed)
         and StockPiler3.Orchestrator.IsBrewSessionActive() == true
     local skipPump = brewSession
         or Sch._skipPlanThisFrame == true
-        or (Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true)
-        or (Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true)
+        or (Sch.IsSuppressed and Sch.IsSuppressed() == true)
     if not didHeavy and not skipPump
         and StockPiler3.FrameWork and StockPiler3.FrameWork.Pump
         and StockPiler3.FrameWork.Pump() == true

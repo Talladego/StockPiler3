@@ -226,13 +226,7 @@ local function ShouldDeferWatchFlush()
         if SchFast and SchFast.SkipUiThisFrameActive and SchFast.SkipUiThisFrameActive() == true then
             return true
         end
-        if SchFast and SchFast._skipUiThisFrame == true then
-            return true
-        end
-        if SchFast and SchFast.IsHarvestStorm and SchFast.IsHarvestStorm() == true then
-            return true
-        end
-        if SchFast and SchFast.IsPlantQuiet and SchFast.IsPlantQuiet() == true then
+        if SchFast and SchFast.IsSuppressed and SchFast.IsSuppressed() == true then
             return true
         end
         return false
@@ -241,16 +235,10 @@ local function ShouldDeferWatchFlush()
     if Sch and Sch.SkipUiThisFrameActive and Sch.SkipUiThisFrameActive() == true then
         return true
     end
-    if Sch and Sch._skipUiThisFrame == true then
-        return true
-    end
     if Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true then
         return true
     end
-    if Sch and Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
-        return true
-    end
-    if Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+    if Sch and Sch.IsSuppressed and Sch.IsSuppressed() == true then
         return true
     end
     if Sch and Sch.IsPlanRebuildPending and Sch.IsPlanRebuildPending() == true then
@@ -527,10 +515,7 @@ local function OnFooterDirty(payload)
     end
     local Sch = StockPiler3.Scheduler
     if Sch then
-        if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
-            return
-        end
-        if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
+        if Sch.IsSuppressed and Sch.IsSuppressed() == true then
             return
         end
         if Sch.IsSessionSettling and Sch.IsSessionSettling() == true then
@@ -666,9 +651,7 @@ function Ui.FlushWatchUiIfDirty()
         local Sch = StockPiler3.Scheduler
         local planPending = Sch and Sch.IsPlanRebuildPending and Sch.IsPlanRebuildPending() == true
         local hardHold = (Sch and Sch.SkipUiThisFrameActive and Sch.SkipUiThisFrameActive() == true)
-            or (Sch and Sch._skipUiThisFrame == true)
-            or (Sch and Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true)
-            or (Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true)
+            or (Sch and Sch.IsSuppressed and Sch.IsSuppressed() == true)
             or (Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true)
         if planPending and not hardHold and IsWatchTabVisible()
             and StockPiler3TabWatch and StockPiler3TabWatch.UpdateRows
@@ -684,10 +667,7 @@ function Ui.FlushWatchUiIfDirty()
         end
         TryCatalogLiveCatchup()
         -- Plant quiet / harvest storm skip full RefreshWatch; still patch stock/status.
-        if hardHold
-            and ((Sch and Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true)
-                or (Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true))
-        then
+        if hardHold and Sch and Sch.IsSuppressed and Sch.IsSuppressed() == true then
             TryWatchLiveCatchup({ ignoreDefer = true })
         end
         return
