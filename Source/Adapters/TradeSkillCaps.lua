@@ -187,15 +187,15 @@ function Caps.Level(skillId)
     return level
 end
 
---- Live engine read (ignores sticky cache). For load/char-switch reconciliation.
+--- Live engine read (ignores sticky cache). Returns level, explicit.
+--- explicit=true: a stock source reported a number, including 0 (unlearned).
+--- explicit=false: sources missing/empty. Callers must not treat that 0 as a drop (#50 L14).
 function Caps.ReadCultSkillLive()
-    local level = ReadLevel(Caps.CultivationId())
-    return level
+    return ReadLevel(Caps.CultivationId())
 end
 
 function Caps.ReadApoSkillLive()
-    local level = ReadLevel(Caps.ApothecaryId())
-    return level
+    return ReadLevel(Caps.ApothecaryId())
 end
 
 function Caps.GetCultSkill()
