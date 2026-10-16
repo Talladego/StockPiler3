@@ -2695,32 +2695,13 @@ local function SyncWatchLiveCountsAfterBrew()
     if not Planner then
         return
     end
-    local listData = StockPiler3TabWatch and StockPiler3TabWatch.listData or nil
-    if Planner.InvalidateCraftableStamps then
-        Planner.InvalidateCraftableStamps(listData)
-    end
-    local PS = StockPiler3.PlanSnapshot
-    local plan = PS and PS.Get and PS.Get()
-    local planRows = type(plan) == "table" and plan.rows or nil
-    local boundPlanRows = StockPiler3TabWatch and StockPiler3TabWatch._boundPlanRows
-    local patchOpts = {
-        syncSnapshot = true,
-        allowWarmHave = true,
-        forceRecountCraftable = true,
-    }
-    -- When Watch listData is a sorted copy of plan.rows, row objects are shared:
-    -- patch plan.rows once (avoids double full recount).
-    if type(planRows) == "table" and Planner.PatchWatchRowsLiveCounts then
-        Planner.PatchWatchRowsLiveCounts(planRows, patchOpts)
-    elseif type(listData) == "table" and Planner.PatchWatchRowsLiveCounts then
-        Planner.PatchWatchRowsLiveCounts(listData, patchOpts)
-    end
-    if type(listData) == "table"
-        and listData ~= planRows
-        and boundPlanRows ~= planRows
-        and Planner.PatchWatchRowsLiveCounts
-    then
-        Planner.PatchWatchRowsLiveCounts(listData, patchOpts)
+    if Planner.LiveRecount then
+        Planner.LiveRecount({
+            invalidateStamps = true,
+            syncSnapshot = true,
+            allowWarmHave = true,
+            forceRecountCraftable = true,
+        })
     end
     -- Optimistic craftable on the session row when bags have not snapped yet.
     local session = GetSession()
@@ -2793,7 +2774,7 @@ function Brew.RefreshSessionAfterBrew()
     end
     -- Live-patch Watch rows (stock/status/craftable) before unload gate.
     SyncWatchLiveCountsAfterBrew()
-    if not (StockPiler3.Planner and StockPiler3.Planner.PatchWatchRowsLiveCounts)
+    if not (StockPiler3.Planner and StockPiler3.Planner.LiveRecount)
         and StockPiler3.Scheduler and StockPiler3.Scheduler.EnqueuePlanRebuild
     then
         StockPiler3.Scheduler.EnqueuePlanRebuild()

@@ -621,9 +621,9 @@ local function PatchWatchRowsLiveCounts(rows)
     if type(rows) ~= "table" then
         return
     end
-    if StockPiler3.Planner and StockPiler3.Planner.PatchWatchRowsLiveCounts then
+    if StockPiler3.Planner and StockPiler3.Planner.LiveRecount then
         -- Never WarmHave from Watch paint — FrameWork prewarm owns that.
-        StockPiler3.Planner.PatchWatchRowsLiveCounts(rows, {
+        StockPiler3.Planner.LiveRecount({
             allowWarmHave = false,
         })
         return

@@ -11,6 +11,7 @@ local Planner = StockPiler3.Planner
 
 Planner._planGen = 0
 Planner._closedLiveSnapGen = nil
+Planner._liveGen = 0
 Planner._craftsMemo = nil
 
 -- Have cache (empty table != warm - need warmed-for-snap flag).
@@ -4915,6 +4916,45 @@ end
 
 function Planner.PatchWatchRowsLiveCounts(rows, opts)
     return PatchWatchRowsLiveCounts(rows, opts)
+end
+
+--- Shared live recount for Buy, Brew, Ui, and TabWatch (PLN-3 / PLN-18).
+--- Patches plan.rows, then a distinct unbound listData with syncSnapshot false
+--- so the snapshot is not written twice. Callers keep their own UI events.
+--- opts.clearClosedSnap, opts.invalidateStamps, plus the patch flags
+--- allowWarmHave, syncSnapshot, and forceRecountCraftable.
+function Planner.LiveRecount(opts)
+    opts = type(opts) == "table" and opts or {}
+    if opts.clearClosedSnap == true then
+        Planner._closedLiveSnapGen = nil
+    end
+    local PS = StockPiler3.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    local planRows = type(plan) == "table" and plan.rows or nil
+    local listData = StockPiler3TabWatch and StockPiler3TabWatch.listData or nil
+    if opts.invalidateStamps == true and Planner.InvalidateCraftableStamps then
+        Planner.InvalidateCraftableStamps(listData)
+    end
+    local patchOpts = {
+        allowWarmHave = opts.allowWarmHave,
+        syncSnapshot = opts.syncSnapshot,
+        forceRecountCraftable = opts.forceRecountCraftable,
+    }
+    if type(planRows) == "table" and #planRows > 0 then
+        PatchWatchRowsLiveCounts(planRows, patchOpts)
+    end
+    if type(listData) == "table" and #listData > 0 and listData ~= planRows then
+        local bound = StockPiler3TabWatch and StockPiler3TabWatch._boundPlanRows
+        if bound ~= planRows then
+            PatchWatchRowsLiveCounts(listData, {
+                allowWarmHave = opts.allowWarmHave,
+                syncSnapshot = false,
+                forceRecountCraftable = opts.forceRecountCraftable,
+            })
+        end
+    end
+    Planner._liveGen = (tonumber(Planner._liveGen) or 0) + 1
+    return Planner._liveGen
 end
 
 --- Flip Enable AutoGrow <-> Restocking on current plan + optional extra rows (listData).
