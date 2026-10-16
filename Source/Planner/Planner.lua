@@ -217,19 +217,22 @@ local function ReadGens()
         refineGen = RP and RP.GetGen and RP.GetGen() or 0,
         watchGen = Watch and Watch.GetGen and Watch.GetGen() or 0,
         knowledgeGen = Know and Know.GetGen and Know.GetGen() or 0,
+        recipeStatsGen = (StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.GetRecipeStatsGen
+            and StockPiler3.RecipeSpec.GetRecipeStatsGen()) or 0,
         settingsHash = SettingsHash(),
     }
 end
 
 local function FormatCacheKey(g)
     return string.format(
-        "s%d|g%d|r%d|w%d|k%d|h%d",
+        "s%d|g%d|r%d|w%d|k%d|h%d|y%d",
         tonumber(g.snapGen) or 0,
         tonumber(g.gardenGen) or 0,
         tonumber(g.refineGen) or 0,
         tonumber(g.watchGen) or 0,
         tonumber(g.knowledgeGen) or 0,
-        tonumber(g.settingsHash) or 0
+        tonumber(g.settingsHash) or 0,
+        tonumber(g.recipeStatsGen) or 0
     )
 end
 
@@ -238,12 +241,17 @@ end
 --- trade skills; the three cache probes were paying that on every hit (L19).
 local function FullCacheKey(suffix)
     local frame = tonumber(StockPiler3.FrameCounter) or 0
+    local RS = StockPiler3.RecipeSpec
+    local statsGen = RS and RS.GetRecipeStatsGen and RS.GetRecipeStatsGen() or 0
     local base = Planner._fullCacheBase
-    if frame <= 0 or Planner._fullCacheFrame ~= frame or type(base) ~= "string" then
+    if frame <= 0 or Planner._fullCacheFrame ~= frame
+        or Planner._fullCacheStatsGen ~= statsGen or type(base) ~= "string"
+    then
         base = FormatCacheKey(ReadGens())
         if frame > 0 then
             Planner._fullCacheFrame = frame
             Planner._fullCacheBase = base
+            Planner._fullCacheStatsGen = statsGen
         end
     end
     if suffix == nil or suffix == "" then
@@ -266,10 +274,11 @@ end
 --- Recipe-structural: watch + knowledge + settings (garden may change for GardenPatch).
 local function RecipeStructuralKey(g)
     return string.format(
-        "w%d|k%d|h%d",
+        "w%d|k%d|h%d|y%d",
         tonumber(g.watchGen) or 0,
         tonumber(g.knowledgeGen) or 0,
-        tonumber(g.settingsHash) or 0
+        tonumber(g.settingsHash) or 0,
+        tonumber(g.recipeStatsGen) or 0
     )
 end
 
@@ -4508,7 +4517,6 @@ end
 ----------------------------------------------------------------
 
 local function PublishPlan(plan, key, meta)
-    InvalidateFocusCaches()
     local PS = StockPiler3.PlanSnapshot
     if PS and PS.Set then
         PS.Set(plan, key)
@@ -4540,6 +4548,7 @@ local function RefreshStaleCtx(stale)
     stale.ctx.refineGen = g.refineGen
     stale.ctx.watchGen = g.watchGen
     stale.ctx.knowledgeGen = g.knowledgeGen
+    stale.ctx.recipeStatsGen = g.recipeStatsGen
     stale.ctx.settingsHash = g.settingsHash
     return FormatCacheKey(stale.ctx)
 end

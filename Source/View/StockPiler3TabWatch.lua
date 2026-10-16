@@ -652,14 +652,10 @@ local function BumpWatch()
     end
 end
 
---- Soft demand change: Bump + immediate AutoGrow status reconcile + urgent PlanRebuild.
---- Craftable/status must recount on this click (Optimistic / seed buffer / AG) — a
---- coalesced nudge left Watch on stale craftable until /sp3 dumpall force-built.
+--- Soft demand change: bump the watch generation (it is in the craftable stamp
+--- key), reconcile AutoGrow status, and queue a plan rebuild.
 local function AfterWatchSettingsChanged()
     BumpWatch()
-    if StockPiler3.Planner and StockPiler3.Planner.InvalidateCraftableStamps then
-        StockPiler3.Planner.InvalidateCraftableStamps(StockPiler3TabWatch.listData)
-    end
     -- Flip Enable AutoGrow <-> Restocking now (UI throttle / plan gap must not leave stale status).
     if StockPiler3.Planner and StockPiler3.Planner.ReconcileAutoGrowStatusesNow then
         StockPiler3.Planner.ReconcileAutoGrowStatusesNow(StockPiler3TabWatch.listData)
