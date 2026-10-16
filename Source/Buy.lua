@@ -899,42 +899,24 @@ end
 local function WakeBrewAfterBuyFill(reason)
     reason = tostring(reason or "buy-fill")
     local Planner = StockPiler3.Planner
-    if Planner then
-        -- Allow closed-window sync to re-run on this snap after buy fill.
-        Planner._closedLiveSnapGen = nil
-        if Planner.InvalidateHaveWarm then
-            Planner.InvalidateHaveWarm()
-        end
-    end
-    local function PatchRows(rows, syncSnapshot)
-        if type(rows) ~= "table" or #rows == 0 then
-            return
-        end
-        if not Planner or not Planner.PatchWatchRowsLiveCounts then
-            return
-        end
-        for i = 1, #rows do
-            local row = rows[i]
-            if type(row) == "table" then
-                row._craftableSnapGen = -1
-            end
-        end
-        Planner.PatchWatchRowsLiveCounts(rows, {
-            syncSnapshot = syncSnapshot ~= false,
-            allowWarmHave = true,
-        })
+    if Planner and Planner.InvalidateHaveWarm then
+        Planner.InvalidateHaveWarm()
     end
     local PS = StockPiler3.PlanSnapshot
     local plan = PS and PS.Get and PS.Get()
     local planRows = type(plan) == "table" and plan.rows or nil
-    if type(planRows) == "table" and #planRows > 0 then
-        PatchRows(planRows, true)
-    elseif Planner and Planner.SyncLiveStatusClosedWindow then
+    if not (type(planRows) == "table" and #planRows > 0)
+        and Planner and Planner.SyncLiveStatusClosedWindow
+    then
         Planner.SyncLiveStatusClosedWindow()
     end
-    local listData = StockPiler3TabWatch and StockPiler3TabWatch.listData
-    if type(listData) == "table" and #listData > 0 and listData ~= planRows then
-        PatchRows(listData, false)
+    if Planner and Planner.LiveRecount then
+        Planner.LiveRecount({
+            clearClosedSnap = true,
+            invalidateStamps = true,
+            allowWarmHave = true,
+            syncSnapshot = true,
+        })
     end
     local Brew = StockPiler3.Brew
     if Brew and Brew.InvalidateCanBrewCache then

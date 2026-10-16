@@ -304,40 +304,20 @@ local function TryWatchLiveCatchup(opts)
         return false
     end
     local Planner = StockPiler3.Planner
-    if not (Planner and Planner.PatchWatchRowsLiveCounts) then
+    if not (Planner and Planner.LiveRecount) then
         return false
     end
     if opts.forceRecount == true then
-        local PS = StockPiler3.PlanSnapshot
-        local plan = PS and PS.Get and PS.Get()
-        local planRows = type(plan) == "table" and plan.rows or nil
-        local boundPlanRows = StockPiler3TabWatch and StockPiler3TabWatch._boundPlanRows
-        -- Sorted listData shares row objects with plan.rows when bound.
-        -- Ready reads plan.rows, so a bag-only recount must patch that table too.
-        local patchTarget = listData
-        if type(planRows) == "table" and boundPlanRows == planRows then
-            patchTarget = planRows
-        end
-        if Planner.InvalidateCraftableStamps then
-            Planner.InvalidateCraftableStamps(patchTarget)
-        end
-        local patchOpts = {
+        Planner.LiveRecount({
+            invalidateStamps = true,
             allowWarmHave = true,
             syncSnapshot = true,
             forceRecountCraftable = true,
-        }
-        Planner.PatchWatchRowsLiveCounts(patchTarget, patchOpts)
-        if type(planRows) == "table"
-            and planRows ~= patchTarget
-            and boundPlanRows ~= planRows
-        then
-            Planner.PatchWatchRowsLiveCounts(planRows, patchOpts)
-        end
+        })
     else
-        Planner.PatchWatchRowsLiveCounts(listData, {
+        Planner.LiveRecount({
             allowWarmHave = false,
             syncSnapshot = false,
-            recountCraftable = false,
         })
     end
     if StockPiler3TabWatch.UpdateRows then
@@ -796,36 +776,19 @@ function Ui.FlushWatchUiIfDirty()
         if type(listData) == "table"
             and #listData > 0
             and StockPiler3.Planner
-            and StockPiler3.Planner.PatchWatchRowsLiveCounts
+            and StockPiler3.Planner.LiveRecount
         then
             if StockPiler3.Perf and StockPiler3.Perf.Begin then
                 StockPiler3.Perf.Begin("UiFlush.BrewCatchup")
             end
             -- Post-brew / bag snap while session stays loaded: recount craftable too
             -- (manual Brew used to leave Craftable stuck until hold expired).
-            if StockPiler3.Planner.InvalidateCraftableStamps then
-                StockPiler3.Planner.InvalidateCraftableStamps(listData)
-            end
-            -- Sorted listData shares row objects with plan.rows when bound; patch once.
-            local patchTarget = listData
-            if type(planRows) == "table" and boundPlanRows == planRows then
-                patchTarget = planRows
-            end
-            StockPiler3.Planner.PatchWatchRowsLiveCounts(patchTarget, {
+            StockPiler3.Planner.LiveRecount({
+                invalidateStamps = true,
                 allowWarmHave = true,
                 syncSnapshot = true,
                 forceRecountCraftable = true,
             })
-            if type(planRows) == "table"
-                and planRows ~= patchTarget
-                and boundPlanRows ~= planRows
-            then
-                StockPiler3.Planner.PatchWatchRowsLiveCounts(planRows, {
-                    allowWarmHave = true,
-                    syncSnapshot = true,
-                    forceRecountCraftable = true,
-                })
-            end
             if StockPiler3TabWatch.UpdateRows then
                 StockPiler3TabWatch.UpdateRows({ keepVisible = true })
             end
