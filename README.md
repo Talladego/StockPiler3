@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.409** - Buy, Brew, and Watch share one Planner live recount.
+**Version 0.3.410** - Demand, focus, and seed-line caches include garden, refine, knowledge, and settings.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -142,6 +142,7 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.410 | Demand, focus, and seed-line caches use the full generation key. Manual cache clears stay (#41 item 2) |
 | 0.3.409 | ``Planner.LiveRecount`` is the one entry for Buy, Brew, Ui, and TabWatch live counts (#41 item 1) |
 | 0.3.408 | Demand-cache quiet hold drops the dead watch/plan suffix test (PLN-4). RecipeSpec shim comment names Grow, Refine and UpgradeSeed |
 | 0.3.407 | Skill-drop reset treats a live 0 as a drop only when the read is explicit (#50 L14); pending-buy confirm reuses the bag count already taken for the log |

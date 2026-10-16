@@ -233,6 +233,15 @@ local function FormatCacheKey(g)
     )
 end
 
+--- Demand, focus, and seed-line caches include every ReadGens field (PLN-5).
+local function FullCacheKey(suffix)
+    local key = FormatCacheKey(ReadGens())
+    if suffix == nil or suffix == "" then
+        return key
+    end
+    return key .. "|" .. tostring(suffix)
+end
+
 --- Structural (non-snap, non-refine): gardenPlan + watch + knowledge + settings.
 local function StructuralNonRefineKey(g)
     return string.format(
@@ -946,13 +955,11 @@ end
 
 local function BuildBalancedSpecDemand(opts)
     opts = type(opts) == "table" and opts or {}
-    local snapGen = CurrentSnapGen()
     local Watch = StockPiler3.Watch
-    local watchGen = Watch and Watch.GetGen and Watch.GetGen() or 0
     local PS = StockPiler3.PlanSnapshot
     local plan = PS and PS.Get and PS.Get() or nil
     local planGen = type(plan) == "table" and tonumber(plan.planGen) or 0
-    local cacheKey = tostring(snapGen) .. ":" .. tostring(watchGen) .. ":" .. tostring(planGen)
+    local cacheKey = FullCacheKey("demand:" .. tostring(planGen))
     if type(Planner._demandCache) == "table" and Planner._demandCacheKey == cacheKey then
         return Planner._demandCache
     end
@@ -1200,13 +1207,10 @@ end
 local function CollectFocus(mode)
     local Watch = StockPiler3.Watch
     local RS = RecipeSpec()
-    local snapGen = CurrentSnapGen()
-    local watchGen = Watch and Watch.GetGen and Watch.GetGen() or 0
     local PS = StockPiler3.PlanSnapshot
     local plan = PS and PS.Get and PS.Get() or nil
     local planGen = type(plan) == "table" and tonumber(plan.planGen) or 0
-    local cacheKey = tostring(mode) .. ":" .. tostring(snapGen) .. ":"
-        .. tostring(watchGen) .. ":" .. tostring(planGen)
+    local cacheKey = FullCacheKey(tostring(mode) .. ":" .. tostring(planGen))
     local cacheField = mode == "buy" and "_autoBuyFocusCache" or "_autoGrowFocusCache"
     local keyField = mode == "buy" and "_autoBuyFocusKey" or "_autoGrowFocusKey"
     if type(Planner[cacheField]) == "table" and Planner[keyField] == cacheKey then
@@ -1452,10 +1456,8 @@ WatchStillNeedsGrow = function(potion, recipe, target, watchKey)
 end
 
 local function CollectAutoGrowSeedLines()
-    local snapGen = CurrentSnapGen()
     local Watch = StockPiler3.Watch
-    local watchGen = Watch and Watch.GetGen and Watch.GetGen() or 0
-    local cacheKey = tostring(snapGen) .. ":" .. tostring(watchGen)
+    local cacheKey = FullCacheKey("seeds")
     if type(Planner._seedLinesCache) == "table" and Planner._seedLinesCacheKey == cacheKey then
         return Planner._seedLinesCache
     end
