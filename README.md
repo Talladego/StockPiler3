@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.407** - Skill-drop reset requires an explicit live zero, so a routine zone load does not clear skills.
+**Version 0.3.408** - Demand-cache quiet hold no longer tests a suffix that both branches ignored.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -142,6 +142,7 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.408 | Demand-cache quiet hold drops the dead watch/plan suffix test (PLN-4). RecipeSpec shim comment names Grow, Refine and UpgradeSeed |
 | 0.3.407 | Skill-drop reset treats a live 0 as a drop only when the read is explicit (#50 L14); pending-buy confirm reuses the bag count already taken for the log |
 | 0.3.406 | AutoBuy: NoteForeignSpend gate subtracts confirmed foreignSpend (#45); OpenLateCostBrass splits reserve/budget + window-aware skip (#46/L11); late-confirm Brew wake after store close (L10); PendingConfirmable / drop duplicate stop confirm (L12); skill-drop deltas use live reads when pendingAtPulse (#47); player-open Apo Clear/nextFreeSlot (L13); NumMacroSlots reuses macros table |
 | 0.3.405 | ``_brewPlacedOnBoard`` clears SP3-loaded slots on player-open Apo; warm-hold cap log; missing CRAFTING chat filter one-time log; ``/sp3 audit`` prints quarantine counts |
