@@ -966,9 +966,16 @@ end
 local function BuildBalancedSpecDemand(opts)
     opts = type(opts) == "table" and opts or {}
     local Watch = StockPiler3.Watch
-    local PS = StockPiler3.PlanSnapshot
-    local plan = PS and PS.Get and PS.Get() or nil
-    local planGen = type(plan) == "table" and tonumber(plan.planGen) or 0
+    local building = type(Planner._buildRows) == "table"
+    local planGen
+    if building then
+        -- This build's gen, not the plan still published from the previous build.
+        planGen = tonumber(Planner._buildPlanGen) or tonumber(Planner._planGen) or 0
+    else
+        local PS = StockPiler3.PlanSnapshot
+        local plan = PS and PS.Get and PS.Get() or nil
+        planGen = type(plan) == "table" and tonumber(plan.planGen) or 0
+    end
     local cacheKey = FullCacheKey("demand:" .. tostring(planGen))
     if type(Planner._demandCache) == "table" and Planner._demandCacheKey == cacheKey then
         return Planner._demandCache
@@ -990,8 +997,10 @@ local function BuildBalancedSpecDemand(opts)
     local RS = RecipeSpec()
     local watches = Watch and Watch.GetWatches and Watch.GetWatches() or {}
     if type(watches) ~= "table" or not RS then
-        Planner._demandCache = demand
-        Planner._demandCacheKey = cacheKey
+        if Planner._demandDeferStore ~= true then
+            Planner._demandCache = demand
+            Planner._demandCacheKey = cacheKey
+        end
         PerfEnd("BuildBalancedSpecDemand")
         return demand
     end
@@ -1007,7 +1016,9 @@ local function BuildBalancedSpecDemand(opts)
                 local target = tonumber(watch.targetStock) or 0
                 local have = PotionHave(resolved, potion, uid)
                 local deficit = math.max(0, target - have)
-                local stillNeeds = WatchStillNeedsGrow(potion, recipe, target, watchKey) == true
+                local stillNeeds = WatchStillNeedsGrow(
+                    potion, recipe, target, watchKey, building and Planner._buildRows or nil
+                ) == true
                 if uid > 0 and deficit > 0 and target > 0 and stillNeeds then
                     local group = byUid[uid]
                     if group == nil then
@@ -1208,18 +1219,31 @@ local function BuildBalancedSpecDemand(opts)
     end
     demand._resinFeedstock = hasResinFeedstock
 
-    Planner._demandCache = demand
-    Planner._demandCacheKey = cacheKey
+    if Planner._demandDeferStore ~= true then
+        Planner._demandCache = demand
+        Planner._demandCacheKey = cacheKey
+    end
     PerfEnd("BuildBalancedSpecDemand")
     return demand
 end
 
-local function CollectFocus(mode)
+local function CollectFocus(mode, rowsOpt)
     local Watch = StockPiler3.Watch
     local RS = RecipeSpec()
     local PS = StockPiler3.PlanSnapshot
     local plan = PS and PS.Get and PS.Get() or nil
-    local planGen = type(plan) == "table" and tonumber(plan.planGen) or 0
+    local planRows
+    local planGen
+    if type(rowsOpt) == "table" then
+        planRows = rowsOpt
+        planGen = tonumber(Planner._buildPlanGen) or tonumber(Planner._planGen) or 0
+    elseif type(Planner._buildRows) == "table" then
+        planRows = Planner._buildRows
+        planGen = tonumber(Planner._buildPlanGen) or tonumber(Planner._planGen) or 0
+    else
+        planGen = type(plan) == "table" and tonumber(plan.planGen) or 0
+        planRows = type(plan) == "table" and plan.rows or nil
+    end
     local cacheKey = FullCacheKey(tostring(mode) .. ":" .. tostring(planGen))
     local cacheField = mode == "buy" and "_autoBuyFocusCache" or "_autoGrowFocusCache"
     local keyField = mode == "buy" and "_autoBuyFocusKey" or "_autoGrowFocusKey"
@@ -1230,7 +1254,7 @@ local function CollectFocus(mode)
     local candidates = {}
 
     -- Prefer polished plan rows (single source of truth) when available.
-    local planRows = type(plan) == "table" and plan.rows or nil
+    -- During a build, planRows is the rows being built, not the published snapshot.
     if type(planRows) == "table" and #planRows > 0 then
         for i = 1, #planRows do
             local row = planRows[i]
@@ -1303,7 +1327,7 @@ local function CollectFocus(mode)
                             local still = gap > 0
                             if not still then
                                 -- Plan-backed shared contest / grow still-needed.
-                                still = WatchStillNeedsGrow(potion, recipe, target, watchKey) == true
+                                still = WatchStillNeedsGrow(potion, recipe, target, watchKey, planRows) == true
                             end
                             if still then
                                 local priorityTier = 1
@@ -1419,15 +1443,18 @@ end
 
 --- Deficit remains and craftable does not yet cover target (or craftable is contested).
 --- Prefer polished plan-row fields (SoT); fall back to live craftable when no plan.
-WatchStillNeedsGrow = function(potion, recipe, target, watchKey)
+--- rows, when passed, is this build's rows. Nil keeps the published snapshot.
+WatchStillNeedsGrow = function(potion, recipe, target, watchKey, rows)
     target = tonumber(target) or 0
     if target <= 0 or type(potion) ~= "table" then
         return false
     end
     watchKey = tostring(watchKey or "")
-    local PS = StockPiler3.PlanSnapshot
-    local plan = PS and PS.Get and PS.Get()
-    local rows = plan and plan.rows
+    if type(rows) ~= "table" then
+        local PS = StockPiler3.PlanSnapshot
+        local plan = PS and PS.Get and PS.Get()
+        rows = plan and plan.rows
+    end
     if type(rows) == "table" and watchKey ~= "" then
         for i = 1, #rows do
             local row = rows[i]
@@ -3059,12 +3086,11 @@ end
 -- Watch targets + rows
 ----------------------------------------------------------------
 
-local function BuildWatchedTargets(ctx)
+local function BuildWatchedTargets(ctx, watches)
     local targets = {}
     local RS = RecipeSpec()
-    local watches = type(ctx) == "table" and ctx.watches or {}
     if type(watches) ~= "table" then
-        return targets
+        watches = {}
     end
     for watchKey, watch in pairs(watches) do
         if type(watch) == "table" and watch.enabled == true then
@@ -3657,12 +3683,18 @@ local function DecideStatus(row, target, recipe, demand)
     ApplySpecPlanStatus(row, target, recipe, demand)
 end
 
-local function BuildWatchRows(ctx)
+local function BuildWatchRows(ctx, watches)
     local rows = {}
+    Planner._buildRows = rows
+    Planner._buildPlanGen = tonumber(Planner._planGen) or 0
     local RS = RecipeSpec()
-    local targets = BuildWatchedTargets(ctx)
+    local targets = BuildWatchedTargets(ctx, watches)
     PerfBegin("Build.Demand")
+    -- Rows are still empty, so this pass uses bag counts. Do not cache it under
+    -- the new planGen; the pass after rows exist is what later callers read.
+    Planner._demandDeferStore = true
     local demand = BuildBalancedSpecDemand()
+    Planner._demandDeferStore = nil
     PerfEnd("Build.Demand")
     PerfBegin("Build.Status")
     for i = 1, #targets do
@@ -3748,7 +3780,11 @@ local function BuildWatchRows(ctx)
                             if (kind == "cult" and needCult and not haveCult)
                                 or (kind == "apo" and needApo and not haveApo)
                             then
-                                rows[#rows + 1] = pr
+                                local copied = {}
+                                for k, v in pairs(pr) do
+                                    copied[k] = v
+                                end
+                                rows[#rows + 1] = copied
                                 if kind == "cult" then
                                     haveCult = true
                                 else
@@ -3778,6 +3814,10 @@ local function BuildWatchRows(ctx)
     local seedBufferTipData = BuildSeedBufferTipData({
         previous = type(prevPlan) == "table" and prevPlan.seedBufferTipData or nil,
     })
+    demand = BuildBalancedSpecDemand()
+    Planner._lastDemand = demand
+    Planner._buildRows = nil
+    Planner._buildPlanGen = nil
     return rows, seedBufferTipData, demand
 end
 
@@ -3785,10 +3825,43 @@ end
 -- Live Status overlay
 ----------------------------------------------------------------
 
-local function PatchPlanSnapshotLiveStatus(row)
+local livePatchIndex
+
+local function BuildLivePatchIndex()
+    local index = { members = {}, byKey = {}, byUid = {} }
     local PS = StockPiler3.PlanSnapshot
     local plan = PS and PS.Get and PS.Get()
     if type(plan) ~= "table" or type(plan.rows) ~= "table" then
+        return index
+    end
+    for i = 1, #plan.rows do
+        local snap = plan.rows[i]
+        if type(snap) == "table" then
+            index.members[snap] = true
+            local snapKey = tostring(snap.potionRecipeKey or snap.id or snap.potionKey or "")
+            if snapKey ~= "" and index.byKey[snapKey] == nil then
+                index.byKey[snapKey] = snap
+            end
+            local uid = tonumber(snap.uniqueID) or 0
+            if uid > 0 then
+                local list = index.byUid[uid]
+                if list == nil then
+                    list = {}
+                    index.byUid[uid] = list
+                end
+                list[#list + 1] = snap
+            end
+        end
+    end
+    return index
+end
+
+local function PatchPlanSnapshotLiveStatus(row)
+    local index = livePatchIndex
+    if type(index) ~= "table" then
+        index = BuildLivePatchIndex()
+    end
+    if index.members[row] == true then
         return
     end
     local keyStr = tostring(row.potionRecipeKey or row.id or row.potionKey or "")
@@ -3823,24 +3896,19 @@ local function PatchPlanSnapshotLiveStatus(row)
 
     -- Prefer exact watch key (plant:uid vs upgrade_seed:uid).
     if keyStr ~= "" then
-        for i = 1, #plan.rows do
-            local snap = plan.rows[i]
-            if type(snap) == "table" then
-                local snapKey = tostring(snap.potionRecipeKey or snap.id or snap.potionKey or "")
-                if snapKey == keyStr then
-                    apply(snap)
-                    return
-                end
-            end
+        local snap = index.byKey[keyStr]
+        if type(snap) == "table" then
+            apply(snap)
+            return
         end
     end
     -- UID fallback only within the same row kind.
     if uid > 0 then
-        for i = 1, #plan.rows do
-            local snap = plan.rows[i]
-            if type(snap) == "table" then
-                local snapUid = tonumber(snap.uniqueID) or 0
-                if snapUid == uid and sameKind(snap) then
+        local list = index.byUid[uid]
+        if type(list) == "table" then
+            for i = 1, #list do
+                local snap = list[i]
+                if type(snap) == "table" and sameKind(snap) then
                     apply(snap)
                     return
                 end
@@ -4027,6 +4095,7 @@ local function PatchWatchRowsLiveCounts(rows, opts)
     if type(rows) ~= "table" then
         return
     end
+    livePatchIndex = BuildLivePatchIndex()
     local Brew = StockPiler3.Brew
     local brewSessionActive = false
     if Brew and Brew.GetSession then
@@ -4046,10 +4115,12 @@ local function PatchWatchRowsLiveCounts(rows, opts)
         if brewSessionActive ~= true then
             RefreshSkillUpWatchRows(rows, { syncSnapshot = syncSnapshot })
         end
+        livePatchIndex = nil
         return
     end
     local Inv = StockPiler3.Inventory
     if not Inv or not Inv.CountByUid then
+        livePatchIndex = nil
         return
     end
     -- Skip WarmHave while refine outstanding / brew session / closed-window.
@@ -4382,6 +4453,7 @@ local function PatchWatchRowsLiveCounts(rows, opts)
     if StockPiler3.Grow and StockPiler3.Grow.MaybeNotifyAutoGrowStall then
         StockPiler3.Grow.MaybeNotifyAutoGrowStall()
     end
+    livePatchIndex = nil
 end
 
 ----------------------------------------------------------------
@@ -4640,12 +4712,15 @@ local function BuildFull(opts)
         WarmSpecHaveCacheForWatches()
     end
     PerfEnd("Build.WarmHave")
+    Planner._buildRows = nil
+    Planner._buildPlanGen = nil
     local ctx = ReadGens()
-    ctx.watches = StockPiler3.Watch and StockPiler3.Watch.GetWatches and StockPiler3.Watch.GetWatches() or {}
+    local Watch = StockPiler3.Watch
+    local watches = Watch and Watch.GetWatches and Watch.GetWatches() or {}
     local key = FormatCacheKey(ctx)
     local planGen = (tonumber(Planner._planGen) or 0) + 1
     Planner._planGen = planGen
-    local rows, seedBufferTipData, demand = BuildWatchRows(ctx)
+    local rows, seedBufferTipData, demand = BuildWatchRows(ctx, watches)
     local plan = {
         planGen = planGen,
         cacheKey = key,
