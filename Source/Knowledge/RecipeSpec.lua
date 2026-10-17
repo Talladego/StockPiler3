@@ -972,10 +972,16 @@ local function RecordOutcome(recipe, potionUid, quality, qty)
     oc.successes = (tonumber(oc.successes) or 0) + 1
     oc.quality = quality or oc.quality
     local qtyInt = WholeBottleQty(qty)
+    -- Count every whole quantity so a later integer can overtake the mode.
+    -- productSum still takes only the current mode (or any value before a mode exists).
+    if qtyInt ~= nil then
+        if type(oc.qtyCounts) ~= "table" then
+            oc.qtyCounts = {}
+        end
+        local qk = tostring(qtyInt)
+        oc.qtyCounts[qk] = (tonumber(oc.qtyCounts[qk]) or 0) + 1
+    end
     local mode = ModeFromQtyCounts(oc.qtyCounts)
-    -- Once one integer is strictly ahead, any other quantity is not a
-    -- plausible single craft. Leave it out of qtyCounts and productSum so
-    -- it cannot tie or replace that mode.
     local acceptQty = nil
     if mode ~= nil then
         if qtyInt ~= nil and qtyInt == mode then
@@ -988,13 +994,6 @@ local function RecordOutcome(recipe, potionUid, quality, qty)
     end
     if acceptQty == nil then
         return nil
-    end
-    if qtyInt ~= nil then
-        if type(oc.qtyCounts) ~= "table" then
-            oc.qtyCounts = {}
-        end
-        local qk = tostring(qtyInt)
-        oc.qtyCounts[qk] = (tonumber(oc.qtyCounts[qk]) or 0) + 1
     end
     oc.productSum = (tonumber(oc.productSum) or 0) + acceptQty
     oc.yieldSamples = (tonumber(oc.yieldSamples) or 0) + 1

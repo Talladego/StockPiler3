@@ -928,8 +928,12 @@ end
 function Grow.MarkPlantJobProbed(job)
     if type(job) == "table" then
         Grow._cachedPlantJob = job
+        Grow._plantNilPlanGen = nil
     else
         Grow._cachedPlantJob = nil
+        local plan = StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Get
+            and StockPiler3.PlanSnapshot.Get()
+        Grow._plantNilPlanGen = type(plan) == "table" and tonumber(plan.planGen) or 0
     end
     Grow._plantJobProbed = true
     Grow._plantQueueDirty = false
@@ -1403,47 +1407,84 @@ local function LogPlantPick(job)
     ))
 end
 
---- Published plan still wants a seed (short bottle, upgrading, or need seeds).
---- A probed nil must not stick across fill-block expiry in that case.
-local function PlanWantsPlant()
+--- Published plan has a climb that is not being served.
+--- upgrading_seed / need_seeds, or a short row whose seed line has no plot.
+--- Cached on the published plan so one Orch tick does not walk the rows three times.
+local function StuckClimbPending()
     local PS = StockPiler3.PlanSnapshot
     local plan = PS and PS.Get and PS.Get() or nil
-    local rows = type(plan) == "table" and plan.rows or nil
-    if type(rows) ~= "table" then
-        return false
+    if Grow._stuckClimbPlan == plan and Grow._stuckClimbAnswer ~= nil then
+        return Grow._stuckClimbAnswer == true
     end
-    for i = 1, #rows do
-        local row = rows[i]
-        if type(row) == "table" then
-            local key = tostring(row.statusKey or "")
-            if key == "upgrading_seed" or key == "need_seeds" then
-                return true
-            end
-            local gap = tonumber(row.bottleGap)
-            if gap == nil then
-                local target = tonumber(row.potionMin) or tonumber(row.target) or 0
-                local have = tonumber(row.potionHave) or tonumber(row.have) or 0
-                local craftable = tonumber(row.craftable) or 0
-                gap = math.max(0, target - have - craftable)
-            end
-            if (tonumber(gap) or 0) > 0 then
-                return true
+    local answer = false
+    local rows = type(plan) == "table" and plan.rows or nil
+    if type(rows) == "table" then
+        for i = 1, #rows do
+            local row = rows[i]
+            if type(row) == "table" then
+                local key = tostring(row.statusKey or "")
+                if key == "upgrading_seed" or key == "need_seeds" then
+                    answer = true
+                    break
+                end
+                if row.skillUp ~= true and row.addonOwned ~= true then
+                    local gap = tonumber(row.bottleGap)
+                    if gap == nil then
+                        local target = tonumber(row.potionMin) or tonumber(row.target) or 0
+                        local have = tonumber(row.potionHave) or tonumber(row.have) or 0
+                        local craftable = tonumber(row.craftable) or 0
+                        gap = math.max(0, target - have - craftable)
+                    end
+                    if (tonumber(gap) or 0) > 0 then
+                        local sawSeed = false
+                        local unplanted = false
+                        local function consider(uid)
+                            uid = tonumber(uid) or 0
+                            if uid <= 0 then
+                                return
+                            end
+                            sawSeed = true
+                            if CountInGroundSeeds(uid) < 1 then
+                                unplanted = true
+                            end
+                        end
+                        consider(row.seedUid)
+                        local slots = row.statusTipSlots
+                        if type(slots) == "table" then
+                            for s = 1, #slots do
+                                local entry = slots[s]
+                                if type(entry) == "table" then
+                                    consider(entry.seedUid)
+                                end
+                            end
+                        end
+                        if sawSeed == true and unplanted == true then
+                            answer = true
+                            break
+                        end
+                    end
+                end
             end
         end
     end
-    return false
+    Grow._stuckClimbPlan = plan
+    Grow._stuckClimbAnswer = answer
+    return answer
 end
 
---- True when the published plan still needs a seed. Orchestrator uses this so a
---- refine-first stamp cannot hide that climb.
+--- True when a climb is stuck. Orchestrator uses this so refine-first yields
+--- only to a climb that is actually blocked, not to every short watch.
 function Grow.ShortClimbPending()
-    return PlanWantsPlant() == true
+    return StuckClimbPending() == true
 end
 
---- Nil plant answers retry while a watch is short, including during fill block.
---- A stocked plan keeps the nil. The gap stops a pick on every blocked tick.
+--- Nil plant answers retry only for a stuck climb with an empty plot.
+--- A garden that is already growing the short watch keeps the nil.
 local function ShortClimbRetryDue()
-    if PlanWantsPlant() ~= true then
+    if StuckClimbPending() ~= true then
+        return false
+    end
+    if Grow.HasEmptyPlot() ~= true then
         return false
     end
     local now = 0
@@ -1739,18 +1780,25 @@ function Grow.GetPlantJob()
         local SkillUp = StockPiler3.SkillUp
         local skillUpIdle = SkillUp and SkillUp.ShouldCultPlant and SkillUp.ShouldCultPlant() == true
             and Grow.HasEmptyPlot and Grow.HasEmptyPlot() == true
-        -- A short watch retries even while fill-blocked. The 0.3.417 retry waited
-        -- for the block to clear, and the block was the thing sitting on this nil.
-        local retryShort = ShortClimbRetryDue()
-        if skillUpIdle ~= true and retryShort ~= true then
-            return cached
-        end
-        if retryShort == true then
-            local US = StockPiler3.UpgradeSeed
-            if US and US.FreshTargetsPending and US.FreshTargetsPending() ~= true
-                and US.InvalidateUpgradeTargetsCache
-            then
-                US.InvalidateUpgradeTargetsCache()
+        -- A new published plan re-probes a nil once. The same plan keeps it.
+        local nilPlan = StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Get
+            and StockPiler3.PlanSnapshot.Get()
+        local nilGen = type(nilPlan) == "table" and tonumber(nilPlan.planGen) or 0
+        if Grow._plantNilPlanGen == nilGen then
+            -- A stuck climb with an empty plot retries even while fill-blocked.
+            -- A garden already growing the short watch keeps the nil.
+            local retryShort = ShortClimbRetryDue()
+            if skillUpIdle ~= true and retryShort ~= true then
+                return cached
+            end
+            if retryShort == true and Grow._upgradeInvalidateGen ~= nilGen then
+                Grow._upgradeInvalidateGen = nilGen
+                local US = StockPiler3.UpgradeSeed
+                if US and US.FreshTargetsPending and US.FreshTargetsPending() ~= true
+                    and US.InvalidateUpgradeTargetsCache
+                then
+                    US.InvalidateUpgradeTargetsCache()
+                end
             end
         end
     end
@@ -1901,8 +1949,10 @@ function Grow.IssuePlantOne(opId)
         return done(false)
     end
     -- Fresh pick already built demand. Plant on the next frame so this one
-    -- does not also buy and rebuild the plan.
-    if Grow.PickedThisFrame and Grow.PickedThisFrame() == true then
+    -- does not also buy and rebuild the plan. An armed plant is that next
+    -- frame: do not defer it again because the probe re-picked.
+    local armedPlant = Sch and Sch._armedPlantDue == true
+    if armedPlant ~= true and Grow.PickedThisFrame and Grow.PickedThisFrame() == true then
         local SchDefer = StockPiler3.Scheduler
         if SchDefer and SchDefer.ArmPlantNextFrame then
             SchDefer.ArmPlantNextFrame()

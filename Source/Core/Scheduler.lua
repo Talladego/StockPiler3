@@ -1009,6 +1009,9 @@ end
 function Sch.ArmPlantNextFrame()
     Sch._armPlantNext = true
     Sch._skipBuyThisFrame = true
+    -- The next OnUpdate owes an Orchestrator tick, so the plant is one frame
+    -- later instead of a full tick with plan and paint suppressed.
+    Sch._autoAccum = AutoTickIntervalSec()
 end
 
 function Sch.BuySkippedThisFrame()
@@ -1018,6 +1021,8 @@ end
 function Sch.OnUpdate(timeElapsed)
     local plantFrame = Sch._armPlantNext == true
     if plantFrame then
+        Sch._armPlantNext = false
+        Sch._armedPlantDue = true
         Sch._skipPlanThisFrame = true
         Sch._skipUiThisFrame = true
         Sch._skipBuyThisFrame = true
@@ -1115,13 +1120,11 @@ function Sch.OnUpdate(timeElapsed)
             if not skipOrch
                 and StockPiler3.Orchestrator and StockPiler3.Orchestrator.Tick
             then
-                if plantFrame then
-                    Sch._armPlantNext = false
-                end
                 StockPiler3.Orchestrator.Tick()
-                if plantFrame and Sch._armPlantNext ~= true then
+                if Sch._armedPlantDue == true and Sch._armPlantNext ~= true then
                     Sch._skipBuyThisFrame = false
                 end
+                Sch._armedPlantDue = false
             end
         end
     end

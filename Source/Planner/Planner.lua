@@ -1027,6 +1027,9 @@ local function BuildBalancedSpecDemand(opts)
                 local stillNeeds = WatchStillNeedsGrow(
                     potion, recipe, target, watchKey, building and Planner._buildRows or nil
                 ) == true
+                if type(Planner._demandNeedScratch) == "table" then
+                    Planner._demandNeedScratch[tostring(watchKey)] = stillNeeds
+                end
                 if uid > 0 and deficit > 0 and target > 0 and stillNeeds then
                     local group = byUid[uid]
                     if group == nil then
@@ -3815,9 +3818,12 @@ local function BuildWatchRows(ctx, watches)
     PerfBegin("Build.Demand")
     -- Rows are still empty, so this pass uses bag counts. Do not cache it under
     -- the new planGen; the pass after rows exist is what later callers read.
+    Planner._demandNeedScratch = {}
     Planner._demandDeferStore = true
     local demand = BuildBalancedSpecDemand()
     Planner._demandDeferStore = nil
+    local needsPass1 = Planner._demandNeedScratch
+    Planner._demandNeedScratch = nil
     PerfEnd("Build.Demand")
     PerfBegin("Build.Status")
     for i = 1, #targets do
@@ -3937,8 +3943,34 @@ local function BuildWatchRows(ctx, watches)
     local seedBufferTipData = BuildSeedBufferTipData({
         previous = type(prevPlan) == "table" and prevPlan.seedBufferTipData or nil,
     })
+    Planner._demandNeedScratch = {}
     demand = BuildBalancedSpecDemand()
     Planner._lastDemand = demand
+    -- Status was decided from the bag-only pass. Re-decide only the watches
+    -- whose grow answer changed once the rows exist.
+    local needsPass2 = Planner._demandNeedScratch
+    Planner._demandNeedScratch = nil
+    if type(needsPass1) == "table" and type(needsPass2) == "table" then
+        local statusChanged = false
+        for i = 1, #targets do
+            local target = targets[i]
+            local key = tostring(target.potionKey or "")
+            local row = rows[i]
+            if key ~= "" and needsPass1[key] ~= nil and needsPass2[key] ~= nil
+                and needsPass1[key] ~= needsPass2[key]
+                and type(row) == "table" and row.skillUp ~= true and row.addonOwned ~= true
+            then
+                local recipe = row.recipe
+                DecideStatus(row, target, recipe, demand)
+                FillWatchRowCraftable(row, ctx)
+                FillWatchRowTips(row, demand)
+                statusChanged = true
+            end
+        end
+        if statusChanged == true then
+            PropagateSharedSeedBufferStatus(rows)
+        end
+    end
     Planner._buildRows = nil
     Planner._buildPlanGen = nil
     return rows, seedBufferTipData, demand
@@ -3951,9 +3983,10 @@ end
 local livePatchIndex
 
 local function BuildLivePatchIndex()
-    local index = { members = {}, byKey = {}, byUid = {} }
+    local index = { members = {}, byKey = {}, byUid = {}, plan = nil }
     local PS = StockPiler3.PlanSnapshot
     local plan = PS and PS.Get and PS.Get()
+    index.plan = plan
     if type(plan) ~= "table" or type(plan.rows) ~= "table" then
         return index
     end
@@ -3981,8 +4014,11 @@ end
 
 local function PatchPlanSnapshotLiveStatus(row)
     local index = livePatchIndex
-    if type(index) ~= "table" then
+    local PS = StockPiler3.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get()
+    if type(index) ~= "table" or index.plan ~= plan then
         index = BuildLivePatchIndex()
+        livePatchIndex = index
     end
     if index.members[row] == true then
         return
@@ -4828,6 +4864,7 @@ end
 
 local function BuildFull(opts)
     opts = type(opts) == "table" and opts or {}
+    Planner._demandDeferStore = nil
     PerfBegin("Planner.Build")
     BeginPlanCraftsMemo()
     PerfBegin("Build.WarmHave")

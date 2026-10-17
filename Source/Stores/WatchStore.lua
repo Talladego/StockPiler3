@@ -8,6 +8,19 @@ local Watch = StockPiler3.Watch
 
 Watch._gen = 0
 
+--- Fields the Watch tab may write. Built once; SetCharacterField rejects the rest.
+local CHARACTER_FIELDS = {
+    autoGrowEnabled = true,
+    autoGrowAdditives = true,
+    growSeedBufferEnabled = true,
+    growSeedBufferMin = true,
+    autoBuyEnabled = true,
+    autoBuyReserveGold = true,
+    autoBuyBudgetGold = true,
+    autoBrewEnabled = true,
+    watchOptimisticOutcomeEstimate = true,
+}
+
 --- Per-character settings bucket (autoGrowEnabled, watches, AutoBuy, etc.).
 function Watch.CharacterRow(create)
     return StockPiler3.Util.CharacterRow(create)
@@ -791,18 +804,7 @@ function Watch.ScrubPotionRecipeWatch(outputUid, recipeSpecKey)
 end
 
 function Watch.SetCharacterField(name, value)
-    local allowed = {
-        autoGrowEnabled = true,
-        autoGrowAdditives = true,
-        growSeedBufferEnabled = true,
-        growSeedBufferMin = true,
-        autoBuyEnabled = true,
-        autoBuyReserveGold = true,
-        autoBuyBudgetGold = true,
-        autoBrewEnabled = true,
-        watchOptimisticOutcomeEstimate = true,
-    }
-    if allowed[name] ~= true then
+    if CHARACTER_FIELDS[name] ~= true then
         return false
     end
     local row = CharacterRow(true)
