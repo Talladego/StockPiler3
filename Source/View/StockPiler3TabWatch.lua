@@ -2522,40 +2522,6 @@ local function PlanTipCacheKey()
     return tostring(planGen) .. ":" .. cacheKey
 end
 
-local function GrowingNoteKind(notes)
-    local n = string.lower(ToNarrow(notes))
-    if string.find(n, "needs planting", 1, true)
-        or string.find(n, "converting", 1, true)
-        or string.find(n, "need seed", 1, true)
-        or string.find(n, "buy seeds", 1, true)
-        or string.find(n, "buy plants", 1, true)
-        or string.find(n, "climbing", 1, true)
-        or string.find(n, "climb ", 1, true)
-        or string.find(n, "refining", 1, true)
-        or string.find(n, "buy lower", 1, true)
-    then
-        return "warning"
-    end
-    if string.find(n, "buy flasks", 1, true)
-        or string.find(n, "buy materials", 1, true)
-        or string.find(n, "autogrow off", 1, true)
-        or string.find(n, "needs cultivation", 1, true)
-        or string.find(n, "need cult", 1, true)
-    then
-        return "negative"
-    end
-    if string.find(n, "ready to harvest", 1, true)
-        or string.find(n, "growing", 1, true)
-        or string.find(n, "germination", 1, true)
-        or string.find(n, "seedling", 1, true)
-        or string.find(n, "flowering", 1, true)
-        or string.find(n, "planting", 1, true)
-    then
-        return "positive"
-    end
-    return "body"
-end
-
 local function SpecIsAutoGrowProgressableTip(entry)
     if type(entry) ~= "table" then
         return false
@@ -2596,50 +2562,6 @@ local function TipEntrySpecKey(entry)
     return ""
 end
 
-local function TitleCaseStatusNote(notes)
-    local narrow = ToNarrow(notes)
-    if narrow == "" then
-        return notes
-    end
-    local lower = string.lower(narrow)
-    if lower == "stocked" then
-        return T("watch.note.stocked")
-    end
-    if lower == "shared" or lower == "(shared)" then
-        return T("watch.note.shared")
-    end
-    if lower == "pooled" or lower == "(pooled)" then
-        return T("watch.note.pooled")
-    end
-    if lower == "buy flasks" then
-        return T("watch.note.buy_flasks")
-    end
-    if lower == "buy materials" then
-        return T("watch.note.buy_materials")
-    end
-    if lower == "buy seeds" then
-        return T("watch.note.buy_seeds")
-    end
-    if lower == "buy plants" then
-        return T("watch.note.buy_plants")
-    end
-    if lower == "needs planting" then
-        return T("watch.note.needs_planting")
-    end
-    if lower == "needs cultivation" then
-        return T("watch.note.needs_cult")
-    end
-    if lower == "autogrow off for this watch" then
-        return T("watch.note.autogrow_off")
-    end
-    local first = string.sub(narrow, 1, 1)
-    local rest = string.sub(narrow, 2)
-    if first >= "a" and first <= "z" then
-        return towstring(string.upper(first) .. rest)
-    end
-    return notes
-end
-
 local function TrimStatusTooltipRows(rows, limit)
     limit = tonumber(limit) or 17
     if type(rows) ~= "table" or #rows <= limit then
@@ -2671,13 +2593,8 @@ local function TrimStatusTooltipRows(rows, limit)
             return rows
         end
         local r = rows[i]
-        if r.kind == "meta" then
-            local t = ToNarrow(r.text)
-            if string.find(t, "Recipe yield", 1, true)
-                or string.find(t, "Observed bag yield", 1, true)
-            then
-                table.remove(rows, i)
-            end
+        if r.kind == "meta" and r.metaRole == "yield" then
+            table.remove(rows, i)
         end
     end
     for i = #rows, 1, -1 do
@@ -2742,14 +2659,11 @@ local function BuildStatusTooltipRows(data)
             for i = 1, #data.statusLines do
                 local line = data.statusLines[i]
                 if line and line ~= L"" then
-                    local narrow = ToNarrow(line)
-                    if string.find(narrow, "buffer=", 1, true) == nil then
-                        rows[#rows + 1] = {
-                            text = line,
-                            kind = "warning",
-                            color = StatusTitleColor(data.statusKey),
-                        }
-                    end
+                    rows[#rows + 1] = {
+                        text = line,
+                        kind = "warning",
+                        color = StatusTitleColor(data.statusKey),
+                    }
                 end
             end
         end
@@ -2822,37 +2736,17 @@ local function BuildStatusTooltipRows(data)
     end
 
     local slots = data.statusTipSlots
+    local craftsNeeded = tonumber(data.tipCraftsNeeded)
+    if craftsNeeded == nil then
+        craftsNeeded = tonumber(data.craftsNeeded) or 0
+    end
+    local deficit = tonumber(data.tipDeficit)
+    if deficit == nil then
+        deficit = tonumber(data.potionDeficit) or 0
+    end
+    local yield = tonumber(data.tipYield) or 0
+    local observed = tonumber(data.tipObservedYield) or 0
     local recipe = data.recipe or data.specRecipe
-    local craftsNeeded = tonumber(data.craftsNeeded) or 0
-    local deficit = tonumber(data.potionDeficit) or 0
-    if liveHave ~= nil and liveMin > 0 then
-        deficit = math.max(0, liveMin - liveHave)
-        if deficit <= 0 then
-            craftsNeeded = 0
-        end
-    end
-    local yield = tonumber(data.recipeYield) or 0
-    local potionUid = tonumber(data.uniqueID) or tonumber(data.potionUid) or 0
-    local RS = StockPiler3.RecipeSpec
-    if RS and RS.StableCraftYield and type(recipe) == "table" then
-        local stable = tonumber(RS.StableCraftYield(recipe, potionUid)) or 0
-        if stable >= 1 then
-            yield = stable
-        end
-    elseif type(recipe) == "table" and yield <= 0 then
-        yield = tonumber(recipe.recipeYield) or 0
-    end
-    if yield > 0 then
-        local nearest = math.floor(yield + 0.5)
-        if math.abs(yield - nearest) <= 0.05 then
-            yield = nearest
-        else
-            yield = math.floor(yield)
-            if yield < 1 then
-                yield = 1
-            end
-        end
-    end
 
     if type(slots) == "table" and #slots > 0 then
         if craftsNeeded > 0 and deficit > 0 then
@@ -2864,19 +2758,24 @@ local function BuildStatusTooltipRows(data)
                 kind = "body",
             }
             if yield > 0 then
-                appendMeta(T("tip.watch.yield_best_case", { yield = tostring(yield) }))
-                if RS and RS.RecipeOutputYield and type(recipe) == "table" then
-                    local observed = tonumber(RS.RecipeOutputYield(recipe, potionUid)) or 0
-                    if observed > 0 and math.abs(observed - yield) > 0.05 then
-                        local obsText
-                        local obsNear = math.floor(observed + 0.5)
-                        if math.abs(observed - obsNear) < 0.05 then
-                            obsText = tostring(obsNear)
-                        else
-                            obsText = string.format("%.1f", observed)
-                        end
-                        appendMeta(T("tip.watch.yield_observed", { yield = obsText }))
+                rows[#rows + 1] = {
+                    text = T("tip.watch.yield_best_case", { yield = tostring(yield) }),
+                    kind = "meta",
+                    metaRole = "yield",
+                }
+                if observed > 0 and math.abs(observed - yield) > 0.05 then
+                    local obsText
+                    local obsNear = math.floor(observed + 0.5)
+                    if math.abs(observed - obsNear) < 0.05 then
+                        obsText = tostring(obsNear)
+                    else
+                        obsText = string.format("%.1f", observed)
                     end
+                    rows[#rows + 1] = {
+                        text = T("tip.watch.yield_observed", { yield = obsText }),
+                        kind = "meta",
+                        metaRole = "yield",
+                    }
                 end
             end
             if data.statusKey == "enable_autogrow" then
@@ -2923,14 +2822,11 @@ local function BuildStatusTooltipRows(data)
                     for i = 1, #lines do
                         local line = lines[i]
                         if line and line ~= L"" then
-                            local narrow = ToNarrow(line)
-                            if string.find(narrow, "buffer=", 1, true) == nil then
-                                rows[#rows + 1] = {
-                                    text = line,
-                                    kind = "warning",
-                                    color = RgbDef(COLOR_WARN),
-                                }
-                            end
+                            rows[#rows + 1] = {
+                                text = line,
+                                kind = "warning",
+                                color = RgbDef(COLOR_WARN),
+                            }
                         end
                     end
                 end
@@ -3069,28 +2965,30 @@ local function BuildStatusTooltipRows(data)
                         end
                         if notes == L"" then
                             if not CanAutoGrowUi() then
-                                notes = T("watch.note.needs_cult")
+                                statusNote = T("watch.note.needs_cult")
                                 haveColor = colorBlock
+                                noteKind = "negative"
                             elseif data.autoGrow == true then
                                 local seedUid = tonumber(entry.seedUid) or 0
                                 local credit = tonumber(entry.seedCredit) or 0
                                 if seedUid > 0 and credit <= 0 then
-                                    notes = T("watch.note.buy_seeds")
-                                    haveColor = colorWarn
+                                    statusNote = T("watch.note.buy_seeds")
                                 elseif seedUid <= 0 then
-                                    notes = T("watch.note.buy_plants")
-                                    haveColor = colorWarn
+                                    statusNote = T("watch.note.buy_plants")
                                 else
-                                    notes = T("watch.note.needs_planting")
-                                    haveColor = colorWarn
+                                    statusNote = T("watch.note.needs_planting")
                                 end
+                                haveColor = colorWarn
+                                noteKind = "warning"
                             else
-                                notes = T("watch.note.autogrow_off")
+                                statusNote = T("watch.note.autogrow_off")
                                 haveColor = colorBlock
+                                noteKind = "negative"
                             end
+                        else
+                            statusNote = notes
+                            noteKind = entry.noteKind or "body"
                         end
-                        statusNote = TitleCaseStatusNote(notes)
-                        noteKind = GrowingNoteKind(notes)
                     end
                 elseif not stocked then
                     if entry.role == "container" then
@@ -3113,8 +3011,7 @@ local function BuildStatusTooltipRows(data)
                         and type(contestedKeys) == "table"
                         and specKey ~= ""
                         and contestedKeys[specKey] == true
-                    local noteNarrow = string.lower(ToNarrow(entry.note))
-                    if claimContested or noteNarrow == "(shared)" then
+                    if entry.noteKind == "shared" or claimContested then
                         if data.statusKey == "buy_ingredients"
                             and not SpecIsAutoGrowProgressableTip(entry)
                         then
@@ -3134,7 +3031,7 @@ local function BuildStatusTooltipRows(data)
                             noteKind = "warning"
                             haveColor = colorWarn
                         end
-                    elseif entry.sharedPool == true or noteNarrow == "(pooled)" then
+                    elseif entry.noteKind == "pooled" or entry.sharedPool == true then
                         statusNote = T("watch.note.pooled")
                         noteKind = "warning"
                         haveColor = colorWarn
@@ -3340,7 +3237,7 @@ function StockPiler3TabWatch.OnMouseOverStatus()
         return
     end
 
-    local engineMax = (Tooltips and tonumber(Tooltips.NUM_ROWS)) or 17
+    local engineMax = RT.EnsureRows and RT.EnsureRows(17) or 17
     local snapGen = 0
     if StockPiler3.Inventory and StockPiler3.Inventory.GetSnapGen then
         snapGen = tonumber(StockPiler3.Inventory.GetSnapGen()) or 0

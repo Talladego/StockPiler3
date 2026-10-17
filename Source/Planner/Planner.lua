@@ -831,6 +831,7 @@ local function RecipeSlotPlanEntry(slot, slots, craftsNeeded, demand)
         seedHave = 0,
         seedCredit = 0,
         note = nil,
+        noteKind = nil,
     }
     local demandRow = nil
     local key = SpecKey(spec)
@@ -884,6 +885,7 @@ local function RecipeSlotPlanEntry(slot, slots, craftsNeeded, demand)
     -- Tip notes: (Shared) contested vs (Pooled) multi-watch demand.
     if type(demandRow) == "table" and type(demandRow.watchNames) == "table" and #demandRow.watchNames > 1 then
         entry.note = "(Pooled)"
+        entry.noteKind = "pooled"
     end
     return entry
 end
@@ -1771,6 +1773,7 @@ local function ApplyDeficitCraftableShared(rows)
                         local k = SpecKey(e.spec)
                         if k ~= nil and contestedSpecKeys[k] == true then
                             e.note = "(Shared)"
+                            e.noteKind = "shared"
                         end
                     end
                 end
@@ -2275,11 +2278,124 @@ local function ApplySeedBufferStatus(row)
     end
     row.statusKey = "need_seeds"
     row.statusText = T("plan.status.need_seeds")
+    row.tipBuffer = buffer
     row.statusLines = {
         T("tip.watch.seed_buffer"),
-        towstring("buffer=" .. tostring(buffer)),
     }
     row.craftableShared = false
+end
+
+local function RoundTipYield(yield)
+    yield = tonumber(yield) or 0
+    if yield <= 0 then
+        return 0
+    end
+    local nearest = math.floor(yield + 0.5)
+    if math.abs(yield - nearest) <= 0.05 then
+        return nearest
+    end
+    yield = math.floor(yield)
+    if yield < 1 then
+        return 1
+    end
+    return yield
+end
+
+--- Kind for a grow-note string. The Watch tooltip reads noteKind and does not
+--- scan the English text.
+local function ClassifyGrowingNote(notes)
+    local n = string.lower(ToNarrow(notes))
+    if string.find(n, "needs planting", 1, true)
+        or string.find(n, "converting", 1, true)
+        or string.find(n, "need seed", 1, true)
+        or string.find(n, "buy seeds", 1, true)
+        or string.find(n, "buy plants", 1, true)
+        or string.find(n, "climbing", 1, true)
+        or string.find(n, "climb ", 1, true)
+        or string.find(n, "refining", 1, true)
+        or string.find(n, "buy lower", 1, true)
+    then
+        return "warning"
+    end
+    if string.find(n, "buy flasks", 1, true)
+        or string.find(n, "buy materials", 1, true)
+        or string.find(n, "autogrow off", 1, true)
+        or string.find(n, "needs cultivation", 1, true)
+        or string.find(n, "need cult", 1, true)
+    then
+        return "negative"
+    end
+    if string.find(n, "ready to harvest", 1, true)
+        or string.find(n, "growing", 1, true)
+        or string.find(n, "germination", 1, true)
+        or string.find(n, "seedling", 1, true)
+        or string.find(n, "flowering", 1, true)
+        or string.find(n, "planting", 1, true)
+    then
+        return "positive"
+    end
+    return "body"
+end
+
+--- statusKind, yield, and slot noteKind for the Watch tooltip. View renders these.
+local function StampRowTipPresentation(row)
+    if type(row) ~= "table" then
+        return
+    end
+    row.statusKind = tostring(row.statusKey or "")
+    local recipe = row.recipe or row.specRecipe
+    local uid = tonumber(row.uniqueID) or 0
+    local yield = tonumber(row.recipeYield) or 0
+    local observed = 0
+    local RS = RecipeSpec()
+    if type(recipe) == "table" and RS then
+        if RS.StableCraftYield then
+            local stable = tonumber(RS.StableCraftYield(recipe, uid)) or 0
+            if stable >= 1 then
+                yield = stable
+            end
+        end
+        if yield <= 0 then
+            yield = tonumber(recipe.recipeYield) or 0
+        end
+        if RS.RecipeOutputYield then
+            observed = tonumber(RS.RecipeOutputYield(recipe, uid)) or 0
+        end
+    end
+    row.tipYield = RoundTipYield(yield)
+    row.tipObservedYield = tonumber(observed) or 0
+    row.tipDeficit = tonumber(row.potionDeficit) or 0
+    row.tipCraftsNeeded = tonumber(row.craftsNeeded) or 0
+    local tips = row.statusTipSlots
+    if type(tips) ~= "table" then
+        return
+    end
+    for i = 1, #tips do
+        local entry = tips[i]
+        if type(entry) == "table" then
+            local kind = entry.noteKind
+            if kind ~= "shared" and kind ~= "pooled" then
+                local note = string.lower(tostring(entry.note or ""))
+                if note == "(shared)" or note == "shared" then
+                    entry.noteKind = "shared"
+                elseif note == "(pooled)" or note == "pooled" then
+                    entry.noteKind = "pooled"
+                elseif entry.growingNotes ~= nil and entry.growingNotes ~= L"" then
+                    entry.noteKind = ClassifyGrowingNote(entry.growingNotes)
+                end
+            end
+        end
+    end
+end
+
+local function StampPlanTipPresentation(plan)
+    local rows = type(plan) == "table" and plan.rows or nil
+    if type(rows) ~= "table" then
+        return
+    end
+    for i = 1, #rows do
+        StampRowTipPresentation(rows[i])
+    end
 end
 
 --- All growable seed UIDs for this watch (recipe slots + tip). Shared mats across
@@ -3410,6 +3526,7 @@ local function FillWatchRowTips(row, demand)
                 local k = SpecKey(entry.spec)
                 if k ~= nil and row.contestedSpecKeys[k] == true then
                     entry.note = "(Shared)"
+                    entry.noteKind = "shared"
                 end
             end
             entries[#entries + 1] = entry
@@ -4309,6 +4426,7 @@ local function PatchWatchRowsLiveCounts(rows, opts)
                 ApplyLiveWatchStatus(row, recipe, deficit, have, craftable, min)
                 ReconcileAutoGrowStatus(row)
                 StampCraftableSafety(row)
+                StampRowTipPresentation(row)
                 local newKey = tostring(row.statusKey or "")
                 -- ApplyReadyStatus clears craftableShared; re-contest on Ready/Shared transitions.
                 if newKey ~= prevKey
@@ -4514,6 +4632,7 @@ end
 ----------------------------------------------------------------
 
 local function PublishPlan(plan, key, meta)
+    StampPlanTipPresentation(plan)
     local PS = StockPiler3.PlanSnapshot
     if PS and PS.Set then
         PS.Set(plan, key)
