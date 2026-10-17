@@ -1,6 +1,7 @@
 # Build an installable StockPiler3 zip (not full repo source) and publish it.
-# - Push to main / manual run → updates the rolling "Latest" prerelease
+# - Push to main / manual run → moving "latest" prerelease (one zip) and a vX.Y.Z release
 # - Tag v* → versioned GitHub Release
+# Version tags older than the newest 10 are deleted.
 name: Release addon zip
 
 on:
@@ -37,27 +38,41 @@ jobs:
           path: dist/StockPiler3-*.zip
           if-no-files-found: error
 
-      - name: Publish Latest prerelease
+      - name: Publish latest zip and keep 10 version tags
         if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: latest
-          name: Latest build
-          body: |
-            Installable addon zip (not the full git tree).
-
-            Unzip into `Interface/AddOns/` so you get `Interface/AddOns/StockPiler3/`.
-
-            - Version (from `StockPiler3.mod`): see zip filename
-            - Commit: ${{ github.sha }}
-            - Ref: `${{ github.ref_name }}`
-          prerelease: true
-          make_latest: true
-          files: dist/StockPiler3-*.zip
-          fail_on_unmatched_files: true
-          overwrite_files: true
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.pack.outputs.version }}
+          ZIP: ${{ steps.pack.outputs.zip_path }}
+        run: |
+          set -euo pipefail
+          tag="v${VERSION}"
+          notes=$(printf '%s\n' \
+            "Installable addon zip (not the full git tree)." \
+            "" \
+            "Unzip into \`Interface/AddOns/\` so you get \`Interface/AddOns/StockPiler3/\`." \
+            "" \
+            "- Version: ${VERSION}" \
+            "- Commit: ${GITHUB_SHA}")
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" "$ZIP" \
+              --target "$GITHUB_SHA" \
+              --title "StockPiler3 ${VERSION}" \
+              --latest \
+              --notes "$notes"
+          fi
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest "$ZIP" \
+            --target "$GITHUB_SHA" \
+            --title "Latest build" \
+            --prerelease \
+            --notes "$notes"
+          gh release list --limit 100 --json tagName,publishedAt \
+            --jq '[.[] | select(.tagName | startswith("v"))] | sort_by(.publishedAt) | reverse | .[10:] | .[].tagName' \
+            | while IFS= read -r old; do
+                [ -n "$old" ] || continue
+                gh release delete "$old" --yes --cleanup-tag
+              done
 
       - name: Publish versioned release
         if: startsWith(github.ref, 'refs/tags/v')
