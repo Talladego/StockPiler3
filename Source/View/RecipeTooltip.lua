@@ -18,8 +18,9 @@ end
 
 RecipeTooltip.SEP_LINE = T("recipe.sep")
 
--- DefaultTooltip XML ships 17 rows; grow for long recipes (match lists + seps).
+--- Private row budget. Does not write Tooltips.NUM_ROWS.
 local RECIPE_TOOLTIP_MAX_ROWS = 80
+RecipeTooltip._numRows = 17
 
 local function RgbDef(rgb)
     if not rgb then
@@ -28,17 +29,16 @@ local function RgbDef(rgb)
     return { r = rgb[1] or 255, g = rgb[2] or 255, b = rgb[3] or 255 }
 end
 
---- Ensure DefaultTooltip has at least `want` row windows and Tooltips.NUM_ROWS >= want.
---- Same approach as StockPiler2 harvest tip (CreateWindowFromTemplate TooltipRow).
+--- Grow this tooltip's own row windows. The count stays on RecipeTooltip._numRows.
 function RecipeTooltip.EnsureRows(want)
     want = tonumber(want) or 0
     if want < 1 then
-        return tonumber(Tooltips and Tooltips.NUM_ROWS) or 17
+        return tonumber(RecipeTooltip._numRows) or 17
     end
     if want > RECIPE_TOOLTIP_MAX_ROWS then
         want = RECIPE_TOOLTIP_MAX_ROWS
     end
-    local have = tonumber(Tooltips and Tooltips.NUM_ROWS) or 17
+    local have = tonumber(RecipeTooltip._numRows) or 17
     if have >= want then
         return have
     end
@@ -64,9 +64,7 @@ function RecipeTooltip.EnsureRows(want)
         end
         have = rowNum
     end
-    if Tooltips and (tonumber(Tooltips.NUM_ROWS) or 0) < have then
-        Tooltips.NUM_ROWS = have
-    end
+    RecipeTooltip._numRows = have
     return have
 end
 
@@ -131,7 +129,6 @@ function RecipeTooltip.ShowColoredRows(anchorWindow, rows, anchor, maxRows)
     end
     local engineMax = RecipeTooltip.EnsureRows(want)
     Tooltips.CreateTextOnlyTooltip(anchorWindow)
-    engineMax = tonumber(Tooltips.NUM_ROWS) or engineMax
     local limit = engineMax
     if tonumber(maxRows) and tonumber(maxRows) < limit then
         limit = tonumber(maxRows)
