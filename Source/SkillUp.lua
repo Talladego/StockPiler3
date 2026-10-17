@@ -74,6 +74,10 @@ end
 
 --- Highest cult seed/plant tier the current Cult skill can use (1, 25, 50, ...).
 function SkillUp.FloorCultTier(cultSkill)
+    local SE = StockPiler3.SeedEconomy
+    if SE and SE.FloorCultTier then
+        return SE.FloorCultTier(cultSkill)
+    end
     cultSkill = tonumber(cultSkill) or 0
     local best = 1
     local tiers = SkillUp.CULT_TIERS or SkillUp.APO_TIERS
@@ -185,47 +189,19 @@ function SkillUp.SetApoEnabled(enabled)
 end
 
 local function AllEnabledPlantWatchesStocked()
-    local Watch = StockPiler3.Watch
-    local plantWatches = Watch and Watch.GetPlantWatches and Watch.GetPlantWatches() or {}
-    if type(plantWatches) ~= "table" then
-        return true
-    end
-    local Inv = StockPiler3.Inventory
-    local Catalog = StockPiler3.Catalog
-    local US = StockPiler3.UpgradeSeed
-    for plantKey, watch in pairs(plantWatches) do
-        if type(watch) == "table" and watch.enabled == true then
-            local plantUid = Watch.ParsePlantKey and Watch.ParsePlantKey(plantKey) or 0
-            plantUid = tonumber(plantUid) or 0
-            -- Ephemeral Upgrade Seed climb owns this watch: treat as stocked for idle gate.
-            if plantUid > 0 and US and US.IsPlantWatchOwnedByUpgrade
-                and US.IsPlantWatchOwnedByUpgrade(plantUid) == true
-            then
-                -- ok
-            else
-                local target = tonumber(watch.targetStock) or 40
-                local have = 0
-                if plantUid > 0 and Catalog and Catalog.PlantHave then
-                    have = tonumber(Catalog.PlantHave(plantUid)) or 0
-                elseif plantUid > 0 and Inv and Inv.CountByUid then
-                    have = tonumber(Inv.CountByUid(plantUid)) or 0
-                end
-                if have < target then
-                    return false
-                end
-            end
-        end
+    local SE = StockPiler3.SeedEconomy
+    if SE and SE.PlantWatchesStocked then
+        return SE.PlantWatchesStocked() == true
     end
     return true
 end
 
 local function SeedBufferOk()
-    local Watch = StockPiler3.Watch
-    if not (Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true) then
-        return true
+    local SE = StockPiler3.SeedEconomy
+    if SE and SE.SeedBufferOk then
+        return SE.SeedBufferOk() == true
     end
-    local Grow = StockPiler3.Grow
-    return Grow and Grow.IsSeedBufferSatisfied and Grow.IsSeedBufferSatisfied() == true
+    return true
 end
 
 --- No short potion/plant watches (and seed buffer satisfied when enabled).
@@ -1698,19 +1674,14 @@ function SkillUp.CollectBuyJobs()
                 elseif MS and MS.FromUid then
                     spec = MS.FromUid(seedUid)
                 end
-                jobs[#jobs + 1] = {
-                    uid = seedUid,
-                    uniqueID = seedUid,
+                jobs[#jobs + 1] = StockPiler3.SeedEconomy.SeedBuyJob({
+                    seedUid = seedUid,
                     deficit = deficit,
-                    skillUp = true,
-                    growable = true,
-                    isGrowable = true,
                     role = "main",
                     spec = spec,
                     specKey = "skill_up_seed:" .. tostring(seedUid),
-                    acquireKey = "skill_up_seed:" .. tostring(seedUid),
                     skillReq = tonumber(target.skillReq) or 0,
-                }
+                })
             end
         end
     end
@@ -1797,12 +1768,9 @@ local function ApoStallNeedsUser(why)
 end
 
 local function PlayUserActionSound()
-    if type(PlaySound) == "function" and GameData and GameData.Sound
-        and GameData.Sound.RESPAWN ~= nil
-    then
-        pcall(PlaySound, GameData.Sound.RESPAWN)
-    elseif type(PlaySound) == "function" then
-        pcall(PlaySound, 216)
+    local SE = StockPiler3.SeedEconomy
+    if SE and SE.PlayUserActionSound then
+        SE.PlayUserActionSound()
     end
 end
 
@@ -1830,7 +1798,6 @@ function SkillUp.MaybeNotifyStall()
     if StockPiler3.Debug and StockPiler3.Debug.Print then
         StockPiler3.Debug.Print(msg)
     end
-    -- Cult stall reasons that reach here are vendor / buy blocks.
     PlayUserActionSound()
 end
 

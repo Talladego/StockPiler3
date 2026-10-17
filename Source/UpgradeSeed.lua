@@ -73,19 +73,15 @@ end
 
 --- Cult seed/plant floor (1, 25, ...). Canonical implementation is SkillUp.FloorCultTier.
 function US.FloorCultTier(cultSkill)
+    local SE = StockPiler3.SeedEconomy
+    if SE and SE.FloorCultTier then
+        return SE.FloorCultTier(cultSkill)
+    end
     local SkillUp = StockPiler3.SkillUp
     if SkillUp and SkillUp.FloorCultTier then
         return SkillUp.FloorCultTier(cultSkill)
     end
-    cultSkill = tonumber(cultSkill) or 0
-    local tiers = { 1, 25, 50, 75, 100, 125, 150, 175, 200 }
-    local best = 0
-    for i = 1, #tiers do
-        if cultSkill >= tiers[i] then
-            best = tiers[i]
-        end
-    end
-    return best
+    return 1
 end
 
 --- Climb cap for a watch need: min(needed skillReq, Cult floor).
@@ -846,43 +842,17 @@ function US.IsPlantWatchOwnedByUpgrade(watchPlantUid)
 end
 
 local function SeedBufferOkForIdle()
-    local Watch = StockPiler3.Watch
-    if not (Watch and Watch.IsSeedBufferEnabled and Watch.IsSeedBufferEnabled() == true) then
-        return true
+    local SE = StockPiler3.SeedEconomy
+    if SE and SE.SeedBufferOk then
+        return SE.SeedBufferOk() == true
     end
-    local Grow = StockPiler3.Grow
-    return Grow and Grow.IsSeedBufferSatisfied and Grow.IsSeedBufferSatisfied() == true
+    return true
 end
 
 local function PlantsStockedForUpgradeIdle()
-    local Watch = StockPiler3.Watch
-    local plantWatches = Watch and Watch.GetPlantWatches and Watch.GetPlantWatches() or {}
-    if type(plantWatches) ~= "table" then
-        return true
-    end
-    local Catalog = StockPiler3.Catalog
-    local Inv = StockPiler3.Inventory
-    for plantKey, watch in pairs(plantWatches) do
-        if type(watch) == "table" and watch.enabled == true then
-            local plantUid = Watch.ParsePlantKey and Watch.ParsePlantKey(plantKey) or 0
-            plantUid = tonumber(plantUid) or 0
-            if plantUid > 0 then
-                if US.IsPlantWatchOwnedByUpgrade(plantUid) then
-                    -- Mid-climb / stocked pending climb: treat as satisfied for idle gate.
-                else
-                    local target = tonumber(watch.targetStock) or 40
-                    local have = 0
-                    if Catalog and Catalog.PlantHave then
-                        have = tonumber(Catalog.PlantHave(plantUid)) or 0
-                    elseif Inv and Inv.CountByUid then
-                        have = tonumber(Inv.CountByUid(plantUid)) or 0
-                    end
-                    if have < target then
-                        return false
-                    end
-                end
-            end
-        end
+    local SE = StockPiler3.SeedEconomy
+    if SE and SE.PlantWatchesStocked then
+        return SE.PlantWatchesStocked() == true
     end
     return true
 end
@@ -1819,21 +1789,16 @@ function US.CollectBuyJobs()
                         elseif MS and MS.FromUid then
                             spec = MS.FromUid(seedUid)
                         end
-                        jobs[#jobs + 1] = {
-                            uid = seedUid,
-                            uniqueID = seedUid,
+                        jobs[#jobs + 1] = StockPiler3.SeedEconomy.SeedBuyJob({
+                            seedUid = seedUid,
                             deficit = deficit,
                             upgradeSeed = true,
-                            skillUp = true, -- allow growable purchase path
-                            growable = true,
-                            isGrowable = true,
                             role = tostring(t.ladder.role or "main"),
                             spec = spec or t.spec,
                             specKey = "upgrade_seed:" .. tostring(seedUid),
-                            acquireKey = "upgrade_seed:" .. tostring(seedUid),
                             skillReq = buyReq,
                             familyKey = t.ladder.key,
-                        }
+                        })
                     end
                 end
             end
@@ -1914,12 +1879,9 @@ function US.MaybeNotifyStall()
         needsUser = growing ~= true
     end
     if needsUser then
-        if type(PlaySound) == "function" and GameData and GameData.Sound
-            and GameData.Sound.RESPAWN ~= nil
-        then
-            pcall(PlaySound, GameData.Sound.RESPAWN)
-        elseif type(PlaySound) == "function" then
-            pcall(PlaySound, 216)
+        local SE = StockPiler3.SeedEconomy
+        if SE and SE.PlayUserActionSound then
+            SE.PlayUserActionSound()
         end
     end
 end
