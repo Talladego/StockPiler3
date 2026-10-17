@@ -179,10 +179,6 @@ end
 
 --- only extend until-time if later than current; wait is seconds via NowSec
 function Orch.SetFillBlocked(wait)
-    if Orch._fillBlockWrite == true then
-        return
-    end
-    Orch._fillBlockWrite = true
     wait = tonumber(wait) or 0
     if wait < 0 then
         wait = 0
@@ -201,18 +197,12 @@ function Orch.SetFillBlocked(wait)
         Orch._fillBlockedWait = wait
     end
     Orch._fillBlocked = true
-    Orch._fillBlockWrite = false
 end
 
 function Orch.ClearFillBlocked()
-    if Orch._fillBlockWrite == true then
-        return
-    end
-    Orch._fillBlockWrite = true
     Orch._fillBlocked = false
     Orch._fillBlockedWait = 0
     Orch._fillBlockedUntil = 0
-    Orch._fillBlockWrite = false
 end
 
 function Orch.DecayFillBlocked()

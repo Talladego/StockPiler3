@@ -385,6 +385,19 @@ function AA.InstallStealthHooks()
                 end
                 local echoUntil = tonumber(AA._expectEchoUntil) or 0
                 if AA._echoPending == true and echoNow > 0 and echoNow < echoUntil then
+                    local armed = tonumber(AA._echoArmedAt) or 0
+                    if armed > 0 and echoNow >= armed and StockPiler3.Debug and StockPiler3.Debug.LogOp then
+                        local dt = echoNow - armed
+                        local samples = (tonumber(AA._echoLateSamples) or 0) + 1
+                        local maxDt = tonumber(AA._echoLateMax) or 0
+                        if dt > maxDt then
+                            maxDt = dt
+                        end
+                        AA._echoLateSamples = samples
+                        AA._echoLateMax = maxDt
+                        StockPiler3.Debug.LogOp("brew", string.format(
+                            "echo-late dt=%.2f max=%.2f samples=%d", dt, maxDt, samples))
+                    end
                     AA._echoPending = false
                     AA.ParkApoRoot()
                     return
@@ -427,17 +440,19 @@ local function InstallCascadeGuard()
     end
     AA._origCascadeResolve = Cascade.Resolve
     Cascade.Resolve = function(...)
-        if AA._suppressCascadeClose ~= true or type(Cascade.List) ~= "table" then
-            return AA._origCascadeResolve(...)
-        end
+        local keep = AA._keepShown
         local list = Cascade.List
         local saved = {}
-        for i = 1, #list do
-            local entry = list[i]
-            if type(entry) == "table" and type(entry.name) == "string" then
-                saved[entry.name] = { fn = entry.closeFunction }
-                entry.closeFunction = function() end
+        if AA._suppressCascadeClose == true and type(keep) == "table" and type(list) == "table" then
+            for i = 1, #list do
+                local entry = list[i]
+                if type(entry) == "table" and type(entry.name) == "string" and keep[entry.name] == true then
+                    saved[entry.name] = { fn = entry.closeFunction }
+                    entry.closeFunction = function() end
+                end
             end
+        else
+            return AA._origCascadeResolve(...)
         end
         local ok, err = pcall(AA._origCascadeResolve, ...)
         list = Cascade.List
@@ -464,14 +479,18 @@ local function CompanionWindowNames()
 end
 
 local function RememberCompanionWindows()
-    AA._keepShown = {}
+    local keep = AA._keepShown
+    if type(keep) ~= "table" then
+        keep = {}
+        AA._keepShown = keep
+    end
     local names = CompanionWindowNames()
     for i = 1, #names do
         local name = names[i]
         if type(DoesWindowExist) == "function" and DoesWindowExist(name)
             and WindowGetShowing(name) == true
         then
-            AA._keepShown[name] = true
+            keep[name] = true
         end
     end
 end
@@ -605,7 +624,17 @@ function AA.OpenWindow(session)
     if type(GetGameTime) == "function" then
         echoNow = tonumber(GetGameTime()) or 0
     end
-    AA._expectEchoUntil = echoNow + 10
+    AA._echoArmedAt = echoNow
+    -- 10s until three late echoes have been timed. Then wait the longest
+    -- seen delay plus one second, so a player press is not held that long.
+    local echoWait = 10
+    if (tonumber(AA._echoLateSamples) or 0) >= 3 then
+        echoWait = (tonumber(AA._echoLateMax) or 0) + 1
+        if echoWait < 3 then
+            echoWait = 3
+        end
+    end
+    AA._expectEchoUntil = echoNow + echoWait
     AA._sp3Opening = true
     -- A throw here used to leave the latch set and swallow the player's
     -- Apothecary ability until the window closed (ADP-19).

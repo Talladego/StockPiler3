@@ -1927,13 +1927,24 @@ function SM.NoteCultSkillHit(seedUid, delta)
 end
 
 --- Chat "Your creation failed." with an armed pending: close without learning bag trash.
-function SM.CompletePendingHarvestAsCritFail()
-    local pending = NewestPendingHarvest()
+--- plotKey closes that plot. With no key, the newest pending harvest is closed
+--- (crafting chat does not name the plot).
+function SM.CompletePendingHarvestAsCritFail(plotKey)
+    local pending = nil
+    local map = SM.PendingHarvestMap()
+    plotKey = tonumber(plotKey)
+    if plotKey ~= nil and plotKey > 0 then
+        pending = map[plotKey]
+    end
+    if type(pending) ~= "table" then
+        pending = NewestPendingHarvest()
+        plotKey = type(pending) == "table" and tonumber(pending.plotNum) or nil
+    end
     if type(pending) ~= "table" then
         return false
     end
     local seedUid = tonumber(pending.seedUid) or 0
-    local plotNum = tonumber(pending.plotNum) or 0
+    local plotNum = tonumber(pending.plotNum) or tonumber(plotKey) or 0
     local bucket = seedUid > 0 and EnsureGrowBucket(seedUid) or nil
     if type(bucket) == "table" then
         bucket.harvestAttempts = (tonumber(bucket.harvestAttempts) or 0) + 1
@@ -1963,7 +1974,7 @@ function SM.TryCompletePendingHarvest(force)
     end
     -- Crafting chat said the harvest failed: do not learn any bag delta as a product.
     if pending.chatCriticalFailure == true then
-        return SM.CompletePendingHarvestAsCritFail()
+        return SM.CompletePendingHarvestAsCritFail(plotKey)
     end
     -- Snapshot / learn ONLY on complete attempt.
     local after = {}
@@ -2033,10 +2044,20 @@ function SM.TryCompletePendingHarvest(force)
         -- Raising that baseline up to the post-loot count keeps the same
         -- stack from being subtracted again. Adding `delta` did that twice.
         local others = SM.PendingHarvestMap()
-        for uid in pairs(credited) do
-            for key, other in pairs(others) do
-                if key ~= plotKey and type(other) == "table" and type(other.before) == "table" then
+        for key, other in pairs(others) do
+            if key ~= plotKey and type(other) == "table" and type(other.before) == "table" then
+                for uid in pairs(credited) do
                     other.before[uid] = math.max(tonumber(other.before[uid]) or 0, after[uid])
+                end
+                local stillGain = false
+                for uid, count in pairs(after) do
+                    if count > (tonumber(other.before[uid]) or 0) then
+                        stillGain = true
+                        break
+                    end
+                end
+                if stillGain ~= true then
+                    other.lootDirty = nil
                 end
             end
         end

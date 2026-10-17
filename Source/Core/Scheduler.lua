@@ -716,11 +716,11 @@ function Sch.ArmHarvestStorm(seconds)
 end
 
 function Sch.IsHarvestStorm()
-    return WindowActive(Sch._harvestStormUntil, Now())
+    return (tonumber(Sch._harvestStormUntil) or 0) > 0
 end
 
 function Sch.IsPlantQuiet()
-    return WindowActive(Sch._plantQuietUntil, Now())
+    return (tonumber(Sch._plantQuietUntil) or 0) > 0
 end
 
 function Sch.IsSuppressed()
@@ -1102,9 +1102,6 @@ function Sch.OnUpdate(timeElapsed)
             Sch._autoAccum = Sch._autoAccum - tickSec
             if StockPiler3.Refine and StockPiler3.Refine.DecayRefineWaitTicks then
                 StockPiler3.Refine.DecayRefineWaitTicks()
-            end
-            if StockPiler3.Grow and StockPiler3.Grow.DecayPlantWaitTicks then
-                StockPiler3.Grow.DecayPlantWaitTicks()
             end
             if StockPiler3.Grow and StockPiler3.Grow.DecayHarvestOpLock then
                 StockPiler3.Grow.DecayHarvestOpLock()
