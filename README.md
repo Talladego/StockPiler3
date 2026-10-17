@@ -125,7 +125,7 @@ Creates **StockPiler3 Craft** only. Drag it to a hotbar. Context-aware (brew whe
 
 ## Design
 
-Performance-first: adapters → gen-keyed stores → pure planner → domain Issue paths → snapshot-only UI.
+Performance-first: adapters, gen-keyed stores, planner, domain issue paths, snapshot UI. Notes on what was left on purpose: [docs/CODE_REVIEW.md](docs/CODE_REVIEW.md).
 
 Recipe mats match by craft **fingerprints** (not exact uid). Incomplete mains stay uid-bound until classified.
 

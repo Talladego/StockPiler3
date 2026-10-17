@@ -1,6 +1,6 @@
 # StockPiler3 — Complete Build Prompt
 
-Use this document as the sole **product + performance** specification for a greenfield **StockPiler3** addon for Return of Reckoning (Warhammer Online). It is written for **any** AI-powered build environment that can fetch the public GitHub references below—no local game install sibling folders, no private workspace paths, and no dependency on sibling addons.
+This is the product and behavior contract for the shipped StockPiler3 addon. The build checklist that produced it is in git history. Decisions left on purpose after 0.3.422 are in [CODE_REVIEW.md](CODE_REVIEW.md).
 
 ## Design mandate (read first)
 
@@ -725,7 +725,7 @@ Watch defaults: `enabled = false`, `targetStock = 40`, `autoGrow = false` (Ensur
 
 ### 10.4 Account
 
-Empty install: `accountVersion` (SP2 uses 3 for cleanup migrations), `items`, `grows`, `refines`, `recipes`, `potions`, `additives`, `vendorItems`, **`skillUpRates`**. Relearn in-game. Version bumps may clear false SV flags / polluted grows. ACCOUNT allow-list must include `skillUpRates` so Shutdown strip does not wipe samples each reload.
+Persisted account tables: `items`, `grows`, `refines`, `recipes`, `potions`, `skillUpRates`. `vendorItems` is session-only. There is no account `additives` table. Recipes keep one key list (`recipeKeys`). Old fingerprint migrations do not run; their latches may still sit on a save and are not used to choose behavior. `skillUpRates` must stay on the account allow-list or Shutdown strips it. Relearn seed maps in-game.
 
 ---
 
@@ -864,47 +864,10 @@ Craft-cycle stats: plantAttempts, specialMomentHits, refineAttempts+seedOut, har
 
 ---
 
-## 16. Build order
-
-Ship a thin responsive skeleton first; add core loop next; polish last.
-
-1. Scaffold `.mod`, Bootstrap, Locale, EventBus, Inventory L0–L3, hitch logger
-2. Adapters + trade-skill caps (cache hot lookups)
-3. Knowledge learn path (brew → recipes; seed map observe) — keep writes off hot paths
-4. Watch persistence + Planner (pure, gen-keyed; one-pass have-cache)
-5. Grow intents + plant executor + fillBlocked / quiet / storm gates
-6. Scheduler / tick pacing + harvest latch / scenario defer
-7. Frame-slice prewarm (Demand / have / seed-lines) — only as needed to meet §6
-8. UI — rebuild or adapt SP2 XML; View Lua must stay snapshot-only
-9. Harvest prepare/activate + footer/tooltip (complete-only learn)
-10. Refine + executor (intents, live headroom, pending discipline, O(1) snap)
-11. Brew + executor (footer vs row; grow reserve; closed-window Ready wake)
-12. Buy + executor (vendor-open fast tick, WakeAutoBuy, batch invalidate)
-13. Macro (§2.1 + closed-window sync)
-14. Plants tab + plant-stock AutoGrow (after potions stocked)
-15. SkillUp Cult/Apo (gates, ephemeral Watch rows, seed/vial AutoBuy, rates)
-16. Polish — tooltips, chat/sounds, forget, stats, localization
-17. Perf pass — §6 + scenarios 40–53; delete or merge anything that does not earn its hitch cost
-
-Perf review at **each** milestone.
-
----
-
-## 17. Definition of done
-
-- **Perf:** §6 + §15 performance scenarios pass under harvest/refine/vendor storms (LibPerf ≥250ms or equivalent hitch logger). Prefer equal-or-better hitch profile vs SP2 with less complexity.
-- **Core UX:** §7 features + §9 contracts deliver SP2 0.4.174 *capabilities* plus shipped SP3 Plants + SkillUp + lifetime AutoBuy allowance—without requiring SP2’s internal shape.
-- **Lean design:** Clear engine-I/O vs plan vs UI boundaries; no copied SP1/SP2 Core/domain Lua; no hard dependency on unpublished local addons.
-- **UI:** §8 columns/interactions complete (XML from SP2 GitHub optional; rebuild allowed).
-- **Locale:** §11 scaffold + enUS shipped.
-- **Acceptance:** §15 feature scenarios pass.
-
-**Start here:** keep this file as the living spec for StockPiler3; clone https://github.com/xyeppp/RoR-Interface for stock UI; browse https://github.com/Talladego?tab=repositories for patterns (StockPiler2 = UX/hitch contracts, not a module template; WarTriage / CustomUIv3 / EZGuard / GCDsaver / etc. as needed). Reimplement under StockPiler3—do not hard-depend on sibling addons. Public product repo: https://github.com/Talladego/StockPiler3.
----
-
-## 18. Explicit pitfalls from SP2 history (do not regress)
+## 16. Explicit pitfalls from SP2 history (do not regress)
 
 Use this as a checklist of **anti-patterns SP2 hit**—encode the *required behavior* in a leaner way. Names are conceptual.
+
 | Area | Failure mode | Required behavior |
 | :--- | :--- | :--- |
 | Snap wake | WakeAutoGrow / ClearFillBlocked every inventory snap | Freeze / plant storm — wake only intentional paths |
