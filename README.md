@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.421** - The save keeps one recipe list and drops the unused additives table.
+**Version 0.3.422** - Each harvest stays on its own plot, and a finished brew cannot claim the next potion.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -125,7 +125,7 @@ Creates **StockPiler3 Craft** only. Drag it to a hotbar. Context-aware (brew whe
 
 ## Design
 
-Performance-first: adapters → gen-keyed stores → pure planner → domain Issue paths → snapshot-only UI.
+Performance-first: adapters, gen-keyed stores, planner, domain issue paths, snapshot UI. Notes on what was left on purpose: [docs/CODE_REVIEW.md](docs/CODE_REVIEW.md).
 
 Recipe mats match by craft **fingerprints** (not exact uid). Incomplete mains stay uid-bound until classified.
 
@@ -142,6 +142,7 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.422 | One pending harvest per plot. A plant is stored only when the harvest accepts it. A finished brew cannot re-arm or keep a SkillUp origin. The first AutoBrew after reload stays off screen (#41 item 10) |
 | 0.3.421 | One recipe key list. Account additives are dropped. Old fingerprint migrates no longer run. Harvest rows store the plant skill requirement (#41) |
 | 0.3.420 | Potions tab shows Dur between Stab and Mult. Item tooltip text is a wide string. Recipe tooltips draw the rows past the first 17 |
 | 0.3.419 | Watch tooltips print the plan's status, yield, and shared or pooled slot notes. The recipe tooltip keeps its own row count (#41 item 8) |

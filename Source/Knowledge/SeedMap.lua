@@ -11,7 +11,7 @@ SM.REFINE_CONVERT_FAIL_COOLDOWN_SEC = 45
 SM.REFINE_FAST_FAIL_SEC = 1.5
 SM._refineConvertFailed = SM._refineConvertFailed or {}
 SM._refineConvertFailedUntil = SM._refineConvertFailedUntil or {}
-SM._pendingHarvest = nil
+SM._pendingHarvest = {}
 SM._pendingRefine = nil
 SM._plotSeeds = SM._plotSeeds or {}
 SM._harvestWatch = SM._harvestWatch or {}
@@ -455,7 +455,7 @@ local function RecordHarvestProduct(seedUid, plantUid, qty)
         plantData.isRefinable = false
         StockPiler3.Items.StoreItem(plantData, "plant")
     end
-    return isNew
+    return true, isNew
 end
 
 ----------------------------------------------------------------
@@ -1734,9 +1734,63 @@ function SM.RefreshHarvestWatch(plotNum, info)
     }
 end
 
+function SM.PendingHarvestMap()
+    local pending = SM._pendingHarvest
+    if type(pending) ~= "table" or pending.plotNum ~= nil then
+        local old = pending
+        pending = {}
+        SM._pendingHarvest = pending
+        if type(old) == "table" and old.plotNum ~= nil then
+            local plotNum = tonumber(old.plotNum) or 0
+            if plotNum > 0 then
+                pending[plotNum] = old
+            end
+        end
+    end
+    return pending
+end
+
+function SM.HasPendingHarvest()
+    return next(SM.PendingHarvestMap()) ~= nil
+end
+
+local function NewestPendingHarvest()
+    local best = nil
+    local bestAt = -1
+    for _, entry in pairs(SM.PendingHarvestMap()) do
+        if type(entry) == "table" then
+            local at = tonumber(entry.startedAt) or 0
+            if best == nil or at >= bestAt then
+                best = entry
+                bestAt = at
+            end
+        end
+    end
+    return best
+end
+
+local function PickPendingHarvest(force)
+    local bestKey = nil
+    local best = nil
+    local bestAt = nil
+    for key, entry in pairs(SM.PendingHarvestMap()) do
+        if type(entry) == "table" and (force == true or entry.lootDirty == true) then
+            local at = tonumber(entry.startedAt) or 0
+            if best == nil or at < bestAt then
+                bestKey = key
+                best = entry
+                bestAt = at
+            end
+        end
+    end
+    return bestKey, best
+end
+
 function SM.MarkHarvestLootDirty()
-    if type(SM._pendingHarvest) == "table" then
-        SM._pendingHarvest.lootDirty = true
+    for _, entry in pairs(SM.PendingHarvestMap()) do
+        if type(entry) == "table" then
+            entry.lootDirty = true
+        end
     end
 end
 
@@ -1745,7 +1799,7 @@ function SM.OnCraftChat(payload)
         return
     end
     local kind = tostring(payload.kind or "")
-    local pending = SM._pendingHarvest
+    local pending = NewestPendingHarvest()
     local CC = StockPiler3.CraftChatAdapter
     if kind == "critical_failure" then
         if type(pending) == "table" then
@@ -1775,13 +1829,8 @@ function SM.OnCraftChat(payload)
 end
 
 function SM.ShouldAttemptHarvestComplete(force)
-    if type(SM._pendingHarvest) ~= "table" then
-        return false
-    end
-    if force == true then
-        return true
-    end
-    return SM._pendingHarvest.lootDirty == true
+    local _, pending = PickPendingHarvest(force == true)
+    return type(pending) == "table"
 end
 
 --- Arm pending harvest; actual learn runs in TryCompletePendingHarvest.
@@ -1804,7 +1853,7 @@ function SM.BeginPendingHarvest(plotNum, seedUid)
     if CC and CC.ConsumeHarvestCriticalSuccessSticky then
         chatOk = CC.ConsumeHarvestCriticalSuccessSticky() == true
     end
-    SM._pendingHarvest = {
+    SM.PendingHarvestMap()[plotNum] = {
         plotNum = plotNum,
         seedUid = seedUid,
         startedAt = NowSec(),
@@ -1814,11 +1863,12 @@ function SM.BeginPendingHarvest(plotNum, seedUid)
         chatCriticalSuccess = chatOk,
         chatSpecialMoment = false,
     }
+    local armed = SM.PendingHarvestMap()[plotNum]
     if CC and CC.ConsumeHarvestSpecialMomentSticky
         and CC.ConsumeHarvestSpecialMomentSticky() == true
     then
-        SM._pendingHarvest.chatSpecialMoment = true
-        SM._pendingHarvest.chatCriticalSuccess = true
+        armed.chatSpecialMoment = true
+        armed.chatCriticalSuccess = true
     end
     -- Snapshot plant counts for delta (no learn yet).
     if StockPiler3.Inventory and StockPiler3.Inventory.ForEachItem then
@@ -1826,7 +1876,7 @@ function SM.BeginPendingHarvest(plotNum, seedUid)
             local uid = tonumber(item.uniqueID) or 0
             if uid > 0 and not IsBagSeedOrSporeItem(item) then
                 local stack = tonumber(item.stackCount) or tonumber(item.Count) or 1
-                SM._pendingHarvest.before[uid] = (SM._pendingHarvest.before[uid] or 0) + stack
+                armed.before[uid] = (tonumber(armed.before[uid]) or 0) + stack
             end
         end)
     end
@@ -1848,7 +1898,7 @@ end
 
 --- Chat "Your creation failed." with an armed pending: close without learning bag trash.
 function SM.CompletePendingHarvestAsCritFail()
-    local pending = SM._pendingHarvest
+    local pending = NewestPendingHarvest()
     if type(pending) ~= "table" then
         return false
     end
@@ -1859,7 +1909,7 @@ function SM.CompletePendingHarvestAsCritFail()
         bucket.harvestAttempts = (tonumber(bucket.harvestAttempts) or 0) + 1
         bucket.chatCriticalFailure = (tonumber(bucket.chatCriticalFailure) or 0) + 1
     end
-    SM._pendingHarvest = nil
+    SM.PendingHarvestMap()[plotNum] = nil
     if StockPiler3.Grow and StockPiler3.Grow.NotifyHarvestOutcome then
         StockPiler3.Grow.NotifyHarvestOutcome(plotNum, { critFail = true })
     end
@@ -1870,7 +1920,7 @@ function SM.TryCompletePendingHarvest(force)
     if not SM.ShouldAttemptHarvestComplete(force) then
         return false
     end
-    local pending = SM._pendingHarvest
+    local plotKey, pending = PickPendingHarvest(force == true)
     if type(pending) ~= "table" then
         return false
     end
@@ -1910,39 +1960,39 @@ function SM.TryCompletePendingHarvest(force)
             local prev = tonumber(pending.before[uid]) or 0
             local delta = count - prev
             if delta > 0 then
-                local isNew = RecordHarvestProduct(seedUid, uid, delta)
-                if isNew then
-                    structural = true
-                end
-                learned = true
-                local sample = BagSample(uid)
-                if StockPiler3.Items and StockPiler3.Items.StoreItem then
-                    if sample then
+                local accepted, isNew = RecordHarvestProduct(seedUid, uid, delta)
+                if accepted == true then
+                    if isNew == true then
+                        structural = true
+                    end
+                    learned = true
+                    local sample = BagSample(uid)
+                    if sample and StockPiler3.Items and StockPiler3.Items.StoreItem then
                         StockPiler3.Items.StoreItem(sample, "plant")
                     end
-                end
-                -- Collect all non-seed plant gains for harvest chat (Special Moment
-                -- often adds a higher-tier plant alongside the normal yield).
-                if sample and not IsBagSeedOrSporeItem(sample)
-                    and SM.IsHarvestByproduct(sample) ~= true
-                then
-                    local sReq = tonumber(sample.craftingSkillRequirement)
-                        or tonumber(sample.skillReq) or 0
-                    if sReq <= 0 and type(sample.bonuses) == "table" then
-                        sReq = tonumber(sample.bonuses[9]) or 0
+                    -- Collect all non-seed plant gains for harvest chat (Special Moment
+                    -- often adds a higher-tier plant alongside the normal yield).
+                    if sample and not IsBagSeedOrSporeItem(sample)
+                        and SM.IsHarvestByproduct(sample) ~= true
+                    then
+                        local sReq = tonumber(sample.craftingSkillRequirement)
+                            or tonumber(sample.skillReq) or 0
+                        if sReq <= 0 and type(sample.bonuses) == "table" then
+                            sReq = tonumber(sample.bonuses[9]) or 0
+                        end
+                        products[#products + 1] = {
+                            uid = uid,
+                            delta = delta,
+                            name = sample.name,
+                            skillReq = sReq,
+                        }
                     end
-                    products[#products + 1] = {
-                        uid = uid,
-                        delta = delta,
-                        name = sample.name,
-                        skillReq = sReq,
-                    }
                 end
             end
         end
     end
     local specialMoment = pending.chatSpecialMoment == true
-    SM._pendingHarvest = nil
+    SM.PendingHarvestMap()[plotKey] = nil
     if structural then
         TouchIfStructural("harvest")
     end

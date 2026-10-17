@@ -261,7 +261,7 @@ function LB.OnUpdateProcessed()
     end
 
     local SM = StockPiler3.SeedMap
-    if SM and type(SM._pendingHarvest) == "table" then
+    if SM and SM.HasPendingHarvest and SM.HasPendingHarvest() then
         local forceOneShot = false
         if LB._harvestCompletePending == true then
             if LB._harvestCompleteSeenUpdate == true then
