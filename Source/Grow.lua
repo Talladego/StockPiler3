@@ -1409,11 +1409,15 @@ end
 
 --- Published plan has a climb that is not being served.
 --- upgrading_seed / need_seeds, or a short row whose seed line has no plot.
---- Cached on the published plan so one Orch tick does not walk the rows three times.
+--- Cached for this frame so one Orch tick does not walk the rows three times.
+--- Live status patches and garden syncs land on a later frame and get a new answer.
 local function StuckClimbPending()
     local PS = StockPiler3.PlanSnapshot
     local plan = PS and PS.Get and PS.Get() or nil
-    if Grow._stuckClimbPlan == plan and Grow._stuckClimbAnswer ~= nil then
+    local frame = tonumber(StockPiler3.FrameCounter) or 0
+    if frame > 0 and Grow._stuckClimbFrame == frame
+        and Grow._stuckClimbPlan == plan and Grow._stuckClimbAnswer ~= nil
+    then
         return Grow._stuckClimbAnswer == true
     end
     local answer = false
@@ -1467,8 +1471,14 @@ local function StuckClimbPending()
             end
         end
     end
-    Grow._stuckClimbPlan = plan
-    Grow._stuckClimbAnswer = answer
+    if frame > 0 then
+        Grow._stuckClimbFrame = frame
+        Grow._stuckClimbPlan = plan
+        Grow._stuckClimbAnswer = answer
+    else
+        Grow._stuckClimbFrame = nil
+        Grow._stuckClimbAnswer = nil
+    end
     return answer
 end
 

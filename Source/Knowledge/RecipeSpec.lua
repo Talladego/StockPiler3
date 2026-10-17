@@ -889,9 +889,11 @@ end
 
 --- Integer with the most samples, once it has at least 3 hits and is
 --- strictly ahead of the next integer. Nil until that lead exists.
+--- Also returns bestN and secondN (0 when there are no counts) so a tie
+--- can be told from "no mode yet".
 local function ModeFromQtyCounts(counts)
     if type(counts) ~= "table" then
-        return nil
+        return nil, 0, 0
     end
     local bestQty = nil
     local bestN = 0
@@ -910,9 +912,9 @@ local function ModeFromQtyCounts(counts)
         end
     end
     if bestQty ~= nil and bestN >= YIELD_MODE_MIN_HITS and bestN > secondN then
-        return bestQty
+        return bestQty, bestN, secondN
     end
-    return nil
+    return nil, bestN, secondN
 end
 
 local function ResolveOutcome(recipe, potionUid)
@@ -973,7 +975,8 @@ local function RecordOutcome(recipe, potionUid, quality, qty)
     oc.quality = quality or oc.quality
     local qtyInt = WholeBottleQty(qty)
     -- Count every whole quantity so a later integer can overtake the mode.
-    -- productSum still takes only the current mode (or any value before a mode exists).
+    -- productSum takes the current mode, any value before a mode exists, or
+    -- a quantity tied for that lead. A trailing outlier during a tie is ignored.
     if qtyInt ~= nil then
         if type(oc.qtyCounts) ~= "table" then
             oc.qtyCounts = {}
@@ -981,9 +984,20 @@ local function RecordOutcome(recipe, potionUid, quality, qty)
         local qk = tostring(qtyInt)
         oc.qtyCounts[qk] = (tonumber(oc.qtyCounts[qk]) or 0) + 1
     end
-    local mode = ModeFromQtyCounts(oc.qtyCounts)
+    local mode, bestN, secondN = ModeFromQtyCounts(oc.qtyCounts)
+    local tiedLead = mode == nil
+        and (tonumber(bestN) or 0) >= YIELD_MODE_MIN_HITS
+        and bestN == secondN
     local acceptQty = nil
-    if mode ~= nil then
+    if tiedLead then
+        local leadN = 0
+        if qtyInt ~= nil and type(oc.qtyCounts) == "table" then
+            leadN = tonumber(oc.qtyCounts[tostring(qtyInt)]) or 0
+        end
+        if leadN > 0 and leadN == bestN then
+            acceptQty = qtyInt
+        end
+    elseif mode ~= nil then
         if qtyInt ~= nil and qtyInt == mode then
             acceptQty = qtyInt
         end

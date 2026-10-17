@@ -1117,14 +1117,21 @@ function Sch.OnUpdate(timeElapsed)
             local skipOrch = StockPiler3.Brew
                 and StockPiler3.Brew.IsLoadJobActive
                 and StockPiler3.Brew.IsLoadJobActive() == true
-            if not skipOrch
-                and StockPiler3.Orchestrator and StockPiler3.Orchestrator.Tick
-            then
-                StockPiler3.Orchestrator.Tick()
-                if Sch._armedPlantDue == true and Sch._armPlantNext ~= true then
-                    Sch._skipBuyThisFrame = false
-                end
-                Sch._armedPlantDue = false
+            local tickFn = StockPiler3.Orchestrator and StockPiler3.Orchestrator.Tick
+            local ranTick = false
+            local tickOk, tickErr = true, nil
+            if not skipOrch and tickFn then
+                ranTick = true
+                tickOk, tickErr = pcall(tickFn)
+            end
+            -- Clear even when Tick throws or this owed tick did not run.
+            -- Leaving the flag set let a later pick skip the one-frame defer.
+            if Sch._armedPlantDue == true and Sch._armPlantNext ~= true then
+                Sch._skipBuyThisFrame = false
+            end
+            Sch._armedPlantDue = false
+            if ranTick and tickOk ~= true then
+                error(tickErr or "Orchestrator.Tick failed", 0)
             end
         end
     end

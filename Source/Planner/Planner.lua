@@ -3968,7 +3968,18 @@ local function BuildWatchRows(ctx, watches)
             end
         end
         if statusChanged == true then
-            PropagateSharedSeedBufferStatus(rows)
+            -- Re-decide resets status from the spec and skips the polish that
+            -- already ran on these rows. Plant, upgrade, and SkillUp rows were
+            -- appended after that pass; polish only the potion rows again.
+            local potionRows = {}
+            local n = #targets
+            if n > #rows then
+                n = #rows
+            end
+            for i = 1, n do
+                potionRows[i] = rows[i]
+            end
+            PolishWatchRowsStatus(potionRows)
         end
     end
     Planner._buildRows = nil
@@ -3983,13 +3994,15 @@ end
 local livePatchIndex
 
 local function BuildLivePatchIndex()
-    local index = { members = {}, byKey = {}, byUid = {}, plan = nil }
+    local index = { members = {}, byKey = {}, byUid = {}, plan = nil, rows = nil, rowCount = 0 }
     local PS = StockPiler3.PlanSnapshot
     local plan = PS and PS.Get and PS.Get()
     index.plan = plan
     if type(plan) ~= "table" or type(plan.rows) ~= "table" then
         return index
     end
+    index.rows = plan.rows
+    index.rowCount = #plan.rows
     for i = 1, #plan.rows do
         local snap = plan.rows[i]
         if type(snap) == "table" then
@@ -4012,13 +4025,22 @@ local function BuildLivePatchIndex()
     return index
 end
 
+local function DropLivePatchIndex()
+    livePatchIndex = nil
+end
+
 local function PatchPlanSnapshotLiveStatus(row)
     local index = livePatchIndex
     local PS = StockPiler3.PlanSnapshot
     local plan = PS and PS.Get and PS.Get()
-    if type(index) ~= "table" or index.plan ~= plan then
+    local planRows = type(plan) == "table" and plan.rows or nil
+    local rowCount = type(planRows) == "table" and #planRows or 0
+    -- Session cache is owned by PatchWatchRowsLiveCounts. A rebuild here must
+    -- not outlive the call: RemovePlanSnapshotRowByKey edits plan.rows in place.
+    if type(index) ~= "table" or index.plan ~= plan
+        or index.rows ~= planRows or index.rowCount ~= rowCount
+    then
         index = BuildLivePatchIndex()
-        livePatchIndex = index
     end
     if index.members[row] == true then
         return
@@ -4092,6 +4114,7 @@ local function RemovePlanSnapshotRowByKey(keyStr)
             local snapKey = tostring(snap.potionRecipeKey or snap.id or snap.potionKey or "")
             if snapKey == keyStr then
                 table.remove(plan.rows, i)
+                DropLivePatchIndex()
                 return true
             end
         end
@@ -4200,6 +4223,7 @@ local function RefreshSkillUpWatchRows(rows, opts)
                     table.remove(rows, i)
                     dirty = true
                     removed = true
+                    DropLivePatchIndex()
                     if opts.syncSnapshot ~= false then
                         RemovePlanSnapshotRowByKey(k)
                     end
@@ -4217,6 +4241,7 @@ local function RefreshSkillUpWatchRows(rows, opts)
                 rows[#rows + 1] = sr
                 present[k] = true
                 dirty = true
+                DropLivePatchIndex()
             end
         end
     end
