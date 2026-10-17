@@ -6,8 +6,10 @@
 --   (1 -> 25 -> 50 -> 75 -> 100 -> 125 -> 150 -> 175). When that tier is not
 --   in bags, keep planting/refining lower tiers for rare skillups and
 --   crit upgrades into the next tier. Stop when Cult reaches 200.
---   When Apo SkillUp is also on, never *plant* above Apo tier (tandem);
---   still refine lucky higher Cult-floor plants into seeds for later.
+--   When Apo SkillUp is also on, never *plant* above Apo tier (tandem),
+--   except while Apo has no vial: Cultivation then levels on its own tier
+--   so it can unlock plots. A vial returns Cultivation to feeding Apo.
+--   Still refine lucky higher Cult-floor plants into seeds for later.
 --   Prefer exact Apo floor so Cult feeds Apo instead of racing ahead.
 --   Fill every unlocked plot (1 / 50 / 100 / 150 -> 1-4 plots).
 --   Prefer a bag seed line already at buffer (or plant-refinable to it);
@@ -505,6 +507,7 @@ end
 --- Max skillReq for SkillUp plant/seed picks.
 --- Cult SkillUp only -> cult tier; Apo SkillUp only (Cult available) -> apo tier;
 --- both on -> min(cult, apo) so Cult never outpaces Apo.
+--- No vial for Apo: Cultivation uses its own tier until a vial is back.
 function SkillUp.TargetMaxSkill()
     local cult = SkillUp.GetCultSkill()
     local cultOn = SkillUp.IsCultEnabled() == true
@@ -523,6 +526,12 @@ function SkillUp.TargetMaxSkill()
             return apoTier
         end
         if apoTier < 1 then
+            return cultTier
+        end
+        local apo = tonumber(SkillUp.GetApoSkill()) or 0
+        if apo > 0 and apo < (SkillUp.APO_MAX or 200)
+            and (tonumber(SkillUp.CountApoContainers()) or 0) < 1
+        then
             return cultTier
         end
         if apoTier < cultTier then
@@ -1786,7 +1795,9 @@ local function AutoGrowWillProgress()
 end
 
 local function ApoStallNeedsUser(why)
-    if why == "need_container_vendor" or why == "no_vendor_container" then
+    if why == "need_container_vendor" or why == "no_vendor_container" or why == "no_vial"
+        or why == "craft_bag_full"
+    then
         return true
     end
     return AutoGrowWillProgress() ~= true
@@ -2732,6 +2743,21 @@ function SkillUp.ClearRates()
     return true
 end
 
+--- craftSlot matches ApothecaryWindow: 0 container, 1 main, 2 ingredient.
+local function WindowAcceptsApoItem(item, role)
+    local AA = StockPiler3.ApothecaryAdapter
+    if not (AA and AA.ItemIsAllowedInSlot) then
+        return true
+    end
+    local slot = 2
+    if role == "container" then
+        slot = 0
+    elseif role == "main" then
+        slot = 1
+    end
+    return AA.ItemIsAllowedInSlot(item, slot) == true
+end
+
 --- Count usable Apo-tier (or below) containers currently in bags.
 function SkillUp.CountApoContainers()
     local targetTier = SkillUp.ApoTargetTier()
@@ -2757,6 +2783,9 @@ function SkillUp.CountApoContainers()
         seen[uid] = true
         local spec = MS.FromItemData(item, nil)
         if type(spec) ~= "table" or tostring(spec.role or "") ~= "container" then
+            return
+        end
+        if WindowAcceptsApoItem(item, "container") ~= true then
             return
         end
         if SM and SM.ItemLooksLikeRefinablePlant and SM.ItemLooksLikeRefinablePlant(item) == true then
@@ -3183,6 +3212,9 @@ local function IsValidApoContainer(item, spec)
     if type(spec) ~= "table" or tostring(spec.role or "") ~= "container" then
         return false
     end
+    if WindowAcceptsApoItem(item, "container") ~= true then
+        return false
+    end
     local SM = StockPiler3.SeedMap
     local MS = StockPiler3.MaterialSpec
     if SM and SM.ItemLooksLikeRefinablePlant and SM.ItemLooksLikeRefinablePlant(item) == true then
@@ -3263,6 +3295,9 @@ function SkillUp.ListApoBagMaterials(role, opts)
             return
         end
         if role == "container" and not IsValidApoContainer(item, spec) then
+            return
+        end
+        if WindowAcceptsApoItem(item, role) ~= true then
             return
         end
         if role == "main" and LooksNonMainSeed(item, spec) then
@@ -3572,6 +3607,13 @@ function SkillUp.BuildApoBrewRecipe()
     return bestRecipe, nil, bestParts
 end
 
+--- AutoBrew needs one free crafting-bag slot to pull mats. Nil occupancy is not full.
+local function CraftBagBlocksBrew()
+    local BA = StockPiler3.BagAdapter
+    local free = BA and BA.CraftBagFreeSlots and BA.CraftBagFreeSlots()
+    return type(free) == "number" and free < 1
+end
+
 --- Synthetic plan row so Brew can auto-load and CanBrewNow lights for SkillUp.
 --- opts.quiet: skip stall notify / MarkRefineDue (Watch paint, skillplan dump).
 function SkillUp.BuildApoBrewRow(opts)
@@ -3646,7 +3688,15 @@ function SkillUp.BuildApoBrewRow(opts)
         end
         return nil
     end
-    SkillUp._apoStallLatch = nil
+    -- A craftable recipe with no free craft slot is still a stall. Quiet paints
+    -- must not clear that latch or the chat line repeats every tick.
+    if CraftBagBlocksBrew() then
+        if not quiet then
+            SkillUp.MaybeNotifyApoStall("craft_bag_full")
+        end
+    else
+        SkillUp._apoStallLatch = nil
+    end
     local tier = SkillUp.ApoTargetTier()
     local mainUid = parts and parts.main and parts.main.uid or 0
     local name = L"Skill up Apo"
@@ -4069,9 +4119,15 @@ function SkillUp.MaybeNotifyApoStall(why)
     if why == "" then
         why = "need_mats"
     end
+    -- Brew-row "need main + container" and the watch "no vial" block are the
+    -- same shortage. Leaving them distinct reprints both on every tick.
+    if why == "need_mats" and (tonumber(SkillUp.CountApoContainers()) or 0) < 1 then
+        why = "no_vial"
+    end
     -- Do not mask mat/resin/Cult waits with vial AutoBuy prompts.
     if why ~= "wait_cult" and why ~= "need_resin" and why ~= "seed_buffer"
-        and why ~= "unstable" and SkillUp.ShouldApoBuyContainer() == true
+        and why ~= "unstable" and why ~= "craft_bag_full"
+        and SkillUp.ShouldApoBuyContainer() == true
     then
         local VA = StockPiler3.VendorAdapter
         if not (VA and VA.IsStoreOpen and VA.IsStoreOpen() == true) then
@@ -4517,6 +4573,16 @@ local function BuildCultWatchStatusRow()
     if displayReq > 0 then
         tier = displayReq
     end
+    if SkillUp.IsCultEnabled() == true and SkillUp.IsApoEnabled() == true then
+        local cultTier = SkillUp.FloorCultTier(cult)
+        local apoTier = SkillUp.FloorApoTier(SkillUp.GetApoSkill())
+        if apoTier > 0 and cultTier > apoTier and SkillUp.TargetMaxSkill() == apoTier then
+            statusKey = "cult_for_apo"
+            statusText = TFmt("skillup.watch.cult_for_apo", { tier = tostring(apoTier) },
+                towstring(string.format("Planting tier %d for Apothecary", apoTier)))
+            tier = apoTier
+        end
+    end
     local dash = TOr("ui.dash", L"-")
     local statusLines = {
         TOr("skillup.watch.cult_tip", L"Addon-controlled Cultivating Skill up (not a saved watch)."),
@@ -4573,6 +4639,34 @@ local function BuildCultWatchStatusRow()
         nameG = 255,
         nameB = 255,
     }
+end
+
+--- Why Apothecary skill-up cannot move, when the player has to act.
+--- no_vial lets Cultivation plant its own tier until a vial is back.
+--- wait_cult and seed_buffer are Cultivation's job, so they are not a block.
+function SkillUp.ApoProgressBlock()
+    if SkillUp.IsApoEnabled() ~= true then
+        return nil
+    end
+    local apo = tonumber(SkillUp.GetApoSkill()) or 0
+    if apo <= 0 or apo >= (SkillUp.APO_MAX or 200) then
+        return nil
+    end
+    if (tonumber(SkillUp.CountApoContainers()) or 0) < 1 then
+        return "no_vial"
+    end
+    if SkillUp.ShouldApoBrew() ~= true then
+        return nil
+    end
+    local recipe, why = SkillUp.BuildApoBrewRecipe()
+    if type(recipe) == "table" then
+        return nil
+    end
+    why = tostring(why or "")
+    if why == "" or why == "wait_cult" or why == "seed_buffer" then
+        return nil
+    end
+    return why
 end
 
 local function ApoStatusFromWhy(why)
@@ -4677,6 +4771,23 @@ local function BuildApoWatchStatusRow()
             recipe = nil
         end
     end
+    if statusKey ~= "ready_to_craft" and (waitingKey == nil or waitingKey == "fallback_blocked") then
+        local block = SkillUp.ApoProgressBlock()
+        if block ~= nil then
+            statusKey, statusText = ApoStatusFromWhy(block)
+            craftable = 0
+            target = 0
+            recipe = nil
+            SkillUp.MaybeNotifyApoStall(block)
+        end
+    end
+    -- AutoBrew refuses a load when the crafting bag has no free slot. Say so
+    -- here; a free slot returns this row to Ready on the next build.
+    if statusKey == "ready_to_craft" and CraftBagBlocksBrew() then
+        statusKey = "craft_bag_full"
+        statusText = TOr("plan.status.craft_bag_full", L"Craft bag full")
+        SkillUp.MaybeNotifyApoStall("craft_bag_full")
+    end
 
     local name = TOr("watch.skillup_apo", L"Apothecary")
     local dash = TOr("ui.dash", L"-")
@@ -4688,6 +4799,9 @@ local function BuildApoWatchStatusRow()
         TFmt("skillup.watch.apo_craftable_line", { n = tostring(craftable or 0) },
             towstring(string.format("Craftable batches now: %d", craftable or 0))),
     }
+    if statusKey == "craft_bag_full" then
+        table.insert(statusLines, 1, TOr("watch.note.craft_bag_full", L"Free craft bag slots to brew / harvest"))
+    end
     if type(waitingLines) == "table" then
         for i = 1, #waitingLines do
             statusLines[#statusLines + 1] = waitingLines[i]

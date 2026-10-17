@@ -217,6 +217,9 @@ local function RowIsReadyToCraft(row)
         if (tonumber(row.craftable) or 0) <= 0 then
             return false
         end
+        if tostring(row.statusKey or "") == "craft_bag_full" then
+            return false
+        end
         return RowNeedsMorePotions(row) == true
     end
     -- Live bags win over stale plan deficit (prevents over-brew after target met).
@@ -574,6 +577,23 @@ local function BrewRespectGrowReserve()
     return true
 end
 
+--- Same slot gate as a manual Apothecary drop. Bonus-thin copies stay eligible.
+local function WindowAcceptsBrewItem(item, wantSpec)
+    local AA = StockPiler3.ApothecaryAdapter
+    if not (AA and AA.ItemIsAllowedInSlot) or type(item) ~= "table" then
+        return true
+    end
+    local role = type(wantSpec) == "table" and tostring(wantSpec.role or "") or ""
+    local slotType = type(wantSpec) == "table" and tonumber(wantSpec.slotType) or 0
+    local craftSlot = 2
+    if role == "container" or slotType == 5 or slotType == 6 then
+        craftSlot = 0
+    elseif role == "main" or slotType == 2 then
+        craftSlot = 1
+    end
+    return AA.ItemIsAllowedInSlot(item, craftSlot) == true
+end
+
 --- Find bag item matching recipe slot spec. Prefer non-growable (butcher twins)
 --- over cult plants, then craft bag, then smaller stacks.
 --- Incomplete mains: prefer boundUid, else ProductMatches twins. Rejects seeds.
@@ -640,7 +660,9 @@ local function FindCraftingBagItemBySpec(wantSpec, exemplarUid, reserved)
             bagType = bagType or craftType
             if bagSlot and bagSlot > 0 then
                 local live = tonumber(item and (item.stackCount or item.stackcount)) or 1
-                if availQty(bagType, bagSlot, live) >= 1 then
+                if availQty(bagType, bagSlot, live) >= 1
+                    and WindowAcceptsBrewItem(item, wantSpec)
+                then
                     return bagSlot, item, bagType, bound
                 end
             end
@@ -693,6 +715,9 @@ local function FindCraftingBagItemBySpec(wantSpec, exemplarUid, reserved)
         end
         local uid = tonumber(item.uniqueID) or 0
         if uid > 0 and Brew.IsRejectedCraftUid and Brew.IsRejectedCraftUid(uid) == true then
+            return
+        end
+        if WindowAcceptsBrewItem(item, wantSpec) ~= true then
             return
         end
         local growable = itemIsGrowable(item)

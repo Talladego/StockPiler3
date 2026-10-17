@@ -283,6 +283,90 @@ function CA.SetCurrentPlot(plotNum)
     return true
 end
 
+--- AddCraftingItem opens Cultivation a moment later. That show joins the
+--- automatic layout and closes the bag and bank. The bag close is a queued
+--- toggle, so putting the window back inside OnShown is already too late.
+--- While this plant's show is still pending, layout may not close a bag or
+--- bank that was already open. Opening Cultivation yourself is unchanged.
+local function CompanionWindowNames()
+    local bag = "EA_Window_Backpack"
+    if type(EA_Window_Backpack) == "table" and type(EA_Window_Backpack.windowName) == "string" then
+        bag = EA_Window_Backpack.windowName
+    end
+    return { bag, "BankWindow" }
+end
+
+local function SnapshotCompanionWindows()
+    local shown = {}
+    local names = CompanionWindowNames()
+    for i = 1, #names do
+        local name = names[i]
+        if type(DoesWindowExist) == "function" and DoesWindowExist(name)
+            and WindowGetShowing(name) == true
+        then
+            shown[name] = true
+        end
+    end
+    return shown
+end
+
+local function NowSec()
+    if StockPiler3.Util and StockPiler3.Util.NowSec then
+        return tonumber(StockPiler3.Util.NowSec()) or 0
+    end
+    return 0
+end
+
+local function PlantKeepActive()
+    local pending = CA._keepOpenAfterPlant
+    if type(pending) ~= "table" then
+        return nil
+    end
+    if NowSec() > (tonumber(pending.untilSec) or 0) then
+        CA._keepOpenAfterPlant = nil
+        return nil
+    end
+    return pending.shown
+end
+
+local function InstallPlantCascadeGuard()
+    local Cascade = WindowUtils and WindowUtils.Cascade
+    if not Cascade or type(Cascade.Resolve) ~= "function" or CA._plantCascadeWrapped then
+        return
+    end
+    CA._plantCascadeWrapped = true
+    local orig = Cascade.Resolve
+    Cascade.Resolve = function(...)
+        local shown = PlantKeepActive()
+        local list = Cascade.List
+        local saved = nil
+        if type(shown) == "table" and type(list) == "table" then
+            saved = {}
+            for i = 1, #list do
+                local entry = list[i]
+                if type(entry) == "table" and type(entry.name) == "string" and shown[entry.name] == true then
+                    saved[entry.name] = { fn = entry.closeFunction }
+                    entry.closeFunction = function() end
+                end
+            end
+        end
+        local ok, err = pcall(orig, ...)
+        list = Cascade.List
+        if saved and type(list) == "table" then
+            for i = 1, #list do
+                local entry = list[i]
+                local prior = type(entry) == "table" and saved[entry.name] or nil
+                if prior then
+                    entry.closeFunction = prior.fn
+                end
+            end
+        end
+        if not ok then
+            error(err)
+        end
+    end
+end
+
 --- Plant seed from bag slot into plot. Same engine API as additives.
 function CA.PlantSeed(plotNum, bagSlot, backpackType)
     plotNum = tonumber(plotNum) or 0
@@ -291,8 +375,24 @@ function CA.PlantSeed(plotNum, bagSlot, backpackType)
         return false, "invalid-args"
     end
     backpackType = tonumber(backpackType) or CA.CraftingBackpackType()
+    InstallPlantCascadeGuard()
+    local shown = SnapshotCompanionWindows()
+    local keepCount = 0
+    for _ in pairs(shown) do
+        keepCount = keepCount + 1
+    end
+    if keepCount > 0 then
+        CA._keepOpenAfterPlant = {
+            shown = shown,
+            untilSec = NowSec() + 2,
+        }
+        if StockPiler3.Debug and StockPiler3.Debug.LogOp then
+            StockPiler3.Debug.LogOp("grow", "plant-keep windows=" .. tostring(keepCount))
+        end
+    end
     local ok, err = TryCall("AddCraftingItem", AddCraftingItem, CA.TradeSkill(), plotNum, bagSlot, backpackType)
     if not ok then
+        CA._keepOpenAfterPlant = nil
         return false, err or "pcall-failed"
     end
     return true
