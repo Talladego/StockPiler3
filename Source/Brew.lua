@@ -1753,10 +1753,8 @@ local function AdvanceLoadJob()
             if a.SetSoftLocks then
                 a.SetSoftLocks(false)
             end
-            -- Allow action-bar Apo again once headless open finished (not mid-SendInitCrafting).
-            if a.ClearEngineShowSuppress then
-                a.ClearEngineShowSuppress()
-            end
+            -- Leave the show-suppress TTL in place. Clearing it here let the
+            -- first SendInitCrafting echo after login pop the window on screen.
             job.phase = "clear"
             job.waitTicks = 0
             return true

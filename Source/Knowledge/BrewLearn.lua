@@ -353,7 +353,7 @@ function BL.RefreshBoardSnapshot()
     if recipeKey == "" and StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.RecipeSpecKey then
         recipeKey = tostring(StockPiler3.RecipeSpec.RecipeSpecKey(materials) or "")
     end
-    -- Sticky SkillUp: never downgrade true -> false on a post-clear board refresh.
+    -- Sticky SkillUp only while this snapshot is still a SkillUp session.
     local skillUpOrigin = sessionSkillUp == true or LatchSkillUpOrigin()
     BL._lastBoardMaterials = materials
     BL._lastBoardRecipeKey = recipeKey
@@ -362,6 +362,8 @@ function BL.RefreshBoardSnapshot()
     BL._lastBoardAt = NowSec()
     if skillUpOrigin then
         BL._lastBoardSkillUpOrigin = true
+    else
+        BL._lastBoardSkillUpOrigin = nil
     end
     BL._lastBoardFromSession = sessionMats ~= nil
     return true
@@ -426,10 +428,7 @@ function BL.BeginPendingCraft()
     end
     local potionCounts = SnapshotPotionCounts()
     local successChance = LatchSuccessChance()
-    -- Sticky: keep SkillUp arm across session clear / board refresh races.
-    local skillUpOrigin = sessionSkillUp == true
-        or LatchSkillUpOrigin()
-        or BL._lastBoardSkillUpOrigin == true
+    local skillUpOrigin = sessionSkillUp == true or LatchSkillUpOrigin()
     BL._lastBoardMaterials = materials
     BL._lastBoardRecipeKey = recipeKey
     BL._lastBoardPotionCounts = potionCounts
@@ -437,6 +436,8 @@ function BL.BeginPendingCraft()
     BL._lastBoardAt = NowSec()
     if skillUpOrigin then
         BL._lastBoardSkillUpOrigin = true
+    else
+        BL._lastBoardSkillUpOrigin = nil
     end
     BL._lastBoardFromSession = fromSession
     BL._pendingCraft = {
@@ -489,6 +490,7 @@ function BL.CompletePendingCraftLearn(opts)
     end
     -- Claim only once we will notify: chat + SUCCESS used to both print Brewed.
     BL._pendingCraft = nil
+    BL._lastBoardMaterials = nil
     -- Advance baseline so ArmPendingFromLastBoard cannot re-diff the same bag gain.
     BL._lastBoardPotionCounts = after
     BL._lastBoardAt = NowSec()
