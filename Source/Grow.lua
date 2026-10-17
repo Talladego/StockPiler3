@@ -2204,6 +2204,30 @@ function Grow.NotifyHarvestOutcome(plotNum, opts)
     end
 end
 
+function Grow.ResetHarvestEnableAnnounced()
+    Grow._harvestEnableAnnounced = false
+end
+
+function Grow.IsHarvestActionBound()
+    return Grow._harvestActionBound == true
+end
+
+function Grow.SetHarvestActionBound(bound)
+    Grow._harvestActionBound = bound == true
+end
+
+function Grow.GetFooterHarvestClickable()
+    return Grow._footerHarvestClickable
+end
+
+function Grow.SetFooterHarvestClickable(enabled)
+    if enabled == nil then
+        Grow._footerHarvestClickable = nil
+    else
+        Grow._footerHarvestClickable = enabled == true
+    end
+end
+
 --- Chat + sound on the rising edge of Harvest becoming usable (same boolean
 --- as the footer and macros). Op-lock and brew-block greys do not clear the
 --- latch, so a mid-harvest flicker does not chime again.

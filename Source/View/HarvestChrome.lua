@@ -48,11 +48,11 @@ end
 
 local function ClearHarvestBindOnly()
     local Grow = StockPiler3.Grow
-    if not Grow or Grow._harvestActionBound ~= true then
+    if not Grow or Grow.IsHarvestActionBound() ~= true then
         return false
     end
     if WindowSetGameActionData == nil then
-        Grow._harvestActionBound = false
+        Grow.SetHarvestActionBound(false)
         return false
     end
     local none = 0
@@ -69,7 +69,7 @@ local function ClearHarvestBindOnly()
     end
     local cleared = clearWin(HARVEST_WIN)
     clearWin(HARVEST_ACTION_WIN)
-    Grow._harvestActionBound = false
+    Grow.SetHarvestActionBound(false)
     return cleared
 end
 
@@ -78,14 +78,14 @@ function HarvestChrome.EnsureHarvestActionBound()
     if not Grow then
         return false
     end
-    if Grow._harvestActionBound == true and DoesWindowExist(HARVEST_WIN) then
+    if Grow.IsHarvestActionBound() == true and DoesWindowExist(HARVEST_WIN) then
         return true
     end
     if BindCultivationHarvestAction(HARVEST_WIN) or BindCultivationHarvestAction(HARVEST_ACTION_WIN) then
-        Grow._harvestActionBound = true
+        Grow.SetHarvestActionBound(true)
         return true
     end
-    Grow._harvestActionBound = false
+    Grow.SetHarvestActionBound(false)
     return false
 end
 
@@ -99,7 +99,7 @@ function HarvestChrome.SetFooterHarvestClickable(enabled)
     if WindowSetHandleInput then
         WindowSetHandleInput(HARVEST_WIN, true)
     end
-    if Grow._footerHarvestClickable == enabled then
+    if Grow.GetFooterHarvestClickable() == enabled then
         return
     end
     if ButtonSetDisabledFlag then
@@ -110,13 +110,13 @@ function HarvestChrome.SetFooterHarvestClickable(enabled)
     else
         ClearHarvestBindOnly()
     end
-    Grow._footerHarvestClickable = enabled
+    Grow.SetFooterHarvestClickable(enabled)
 end
 
 function HarvestChrome.ClearHarvestActionBound()
     local Grow = StockPiler3.Grow
-    if Grow then
-        Grow._footerHarvestClickable = nil
+    if Grow and Grow.SetFooterHarvestClickable then
+        Grow.SetFooterHarvestClickable(nil)
     end
     local cleared = ClearHarvestBindOnly()
     if DoesWindowExist(HARVEST_WIN) and WindowSetHandleInput then

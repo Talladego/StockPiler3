@@ -312,7 +312,9 @@ function Caps.OnTradeSkillPulse()
                     if Ui.InvalidateSkillGates then
                         Ui.InvalidateSkillGates()
                     end
-                    Ui._watchUiLastKey = nil
+                    if Ui.ClearWatchThrottleKey then
+                        Ui.ClearWatchThrottleKey()
+                    end
                     local Bus = StockPiler3.EventBus
                     if Bus and Bus.FireWatchUiDirty then
                         Bus.FireWatchUiDirty({ reason = "trade-caps" })

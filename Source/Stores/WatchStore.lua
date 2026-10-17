@@ -1040,8 +1040,8 @@ function Watch.SetPlantEnabled(plantKey, enabled, opts)
     if US and US.InvalidateUpgradeTargetsCache then
         US.InvalidateUpgradeTargetsCache()
     end
-    if enabled ~= true and US then
-        US._active = nil
+    if enabled ~= true and US and US.ClearActive then
+        US.ClearActive()
     end
     return watch, true
 end
