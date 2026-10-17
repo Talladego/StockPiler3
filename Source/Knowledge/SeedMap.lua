@@ -1989,6 +1989,26 @@ function SM.TryCompletePendingHarvest(force)
     end
     local seedUid = tonumber(pending.seedUid) or 0
     local plotNum = tonumber(pending.plotNum) or 0
+    -- A replant, or the other plot's loot, dirties every pending entry.
+    -- This plot's bag has not gained anything since it was armed (or since
+    -- the other plot's baseline raise). Closing it counts a harvest and
+    -- drops the loot that has not arrived. Forced or not: wait for a real
+    -- gain. The 30s expiry above is what drops a harvest that never pays.
+    local before = pending.before
+    local hasGain = false
+    if type(before) ~= "table" then
+        before = {}
+    end
+    for uid, count in pairs(after) do
+        if (tonumber(count) or 0) > (tonumber(before[uid]) or 0) then
+            hasGain = true
+            break
+        end
+    end
+    if hasGain ~= true then
+        pending.lootDirty = nil
+        return false
+    end
     local learned = false
     local structural = false
     local products = {}

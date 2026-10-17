@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.436** - GrokBot leftovers: vial count, harvest learn, and window close.
+**Version 0.3.437** - The second harvest waits for its own loot.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -142,6 +142,7 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.437 | A second harvest stays open until its own loot is in the bag. A slow Apothecary press does not stretch the echo wait. A bag closed during AutoBrew stays closed. A missing vial is forgotten when the Apothecary tier changes or a store opens |
 | 0.3.436 | Cultivation steps up only when no vial can be bought. A resin refine skips butchered mains. A second harvest waits for its own loot. AutoBrew holds only the bag and bank (#70, #74, #76, #84, #85) |
 | 0.3.435 | With no vial, Cultivation levels on its own tier. AutoBrew rejects a container the Apothecary window would reject, and one stall line covers a missing vial. A plant or AutoBrew leaves an already open bag or bank open. A full crafting bag shows Craft bag full and prints that stall once (#82) |
 | 0.3.426 | A watch row flipped by the second demand pass keeps Apothecary, skill, and AutoGrow status. The stuck-climb answer lasts one frame. A tied brew yield leaves trailing outliers out of the average |

@@ -349,6 +349,57 @@ local function ArmEngineShowSuppress(sec)
     AA._suppressEngineShowUntil = now + (tonumber(sec) or 2)
 end
 
+-- Late init echoes arrive just after the 2.5s show suppress. A longer gap is
+-- the player's press inside the expect window. Do not learn the wait from it.
+local ECHO_LATE_SAMPLE_CAP = 6
+
+local function EchoLateMedian(dts)
+    local n = #dts
+    if n <= 0 then
+        return 0
+    end
+    local copy = {}
+    for i = 1, n do
+        copy[i] = dts[i]
+    end
+    table.sort(copy)
+    if n % 2 == 1 then
+        return copy[(n + 1) / 2]
+    end
+    return (copy[n / 2] + copy[n / 2 + 1]) / 2
+end
+
+local function NoteEchoLateSample(dt)
+    dt = tonumber(dt) or 0
+    if dt < 0 or dt > ECHO_LATE_SAMPLE_CAP then
+        return false
+    end
+    local dts = AA._echoLateDts
+    if type(dts) ~= "table" then
+        dts = {}
+        AA._echoLateDts = dts
+    end
+    if #dts >= 3 then
+        local med = EchoLateMedian(dts)
+        if dt > (med * 2) and dt > (med + 1) then
+            return false
+        end
+    end
+    dts[#dts + 1] = dt
+    if #dts > 8 then
+        table.remove(dts, 1)
+    end
+    local maxDt = 0
+    for i = 1, #dts do
+        if dts[i] > maxDt then
+            maxDt = dts[i]
+        end
+    end
+    AA._echoLateSamples = #dts
+    AA._echoLateMax = maxDt
+    return true
+end
+
 function AA.ClearEngineShowSuppress()
     AA._suppressEngineShow = false
     AA._suppressEngineShowUntil = 0
@@ -386,17 +437,16 @@ function AA.InstallStealthHooks()
                 local echoUntil = tonumber(AA._expectEchoUntil) or 0
                 if AA._echoPending == true and echoNow > 0 and echoNow < echoUntil then
                     local armed = tonumber(AA._echoArmedAt) or 0
-                    if armed > 0 and echoNow >= armed and StockPiler3.Debug and StockPiler3.Debug.LogOp then
+                    if armed > 0 and echoNow >= armed then
                         local dt = echoNow - armed
-                        local samples = (tonumber(AA._echoLateSamples) or 0) + 1
-                        local maxDt = tonumber(AA._echoLateMax) or 0
-                        if dt > maxDt then
-                            maxDt = dt
+                        NoteEchoLateSample(dt)
+                        if StockPiler3.Debug and StockPiler3.Debug.LogOp then
+                            StockPiler3.Debug.LogOp("brew", string.format(
+                                "echo-late dt=%.2f max=%.2f samples=%d",
+                                dt,
+                                tonumber(AA._echoLateMax) or 0,
+                                tonumber(AA._echoLateSamples) or 0))
                         end
-                        AA._echoLateSamples = samples
-                        AA._echoLateMax = maxDt
-                        StockPiler3.Debug.LogOp("brew", string.format(
-                            "echo-late dt=%.2f max=%.2f samples=%d", dt, maxDt, samples))
                     end
                     AA._echoPending = false
                     AA.ParkApoRoot()
@@ -407,6 +457,7 @@ function AA.InstallStealthHooks()
                 -- Player asked for the window. Stock layout may close the bag.
                 AA._suppressCascadeClose = false
                 AA._keepShown = nil
+                AA._cascadeSuppressed = nil
                 PlaceApoOnScreen()
                 local name = ApoRootName()
                 if type(DoesWindowExist) == "function"
@@ -433,6 +484,8 @@ end
 --- automatic layout list as Apothecary, so a brew show that joins the list
 --- closes whichever of them no longer fits. A player-opened Apothecary still
 --- uses the normal layout.
+local WindowIsShowing
+
 local function InstallCascadeGuard()
     local Cascade = WindowUtils and WindowUtils.Cascade
     if not Cascade or type(Cascade.Resolve) ~= "function" or AA._origCascadeResolve then
@@ -449,6 +502,17 @@ local function InstallCascadeGuard()
                 if type(entry) == "table" and type(entry.name) == "string" and keep[entry.name] == true then
                     saved[entry.name] = { fn = entry.closeFunction }
                     entry.closeFunction = function() end
+                    -- The queued close can still hide a window we just stubbed.
+                    -- Remember it so Restore can put that one back. A window
+                    -- that is already hidden was closed by the player.
+                    if WindowIsShowing(entry.name) then
+                        local suppressed = AA._cascadeSuppressed
+                        if type(suppressed) ~= "table" then
+                            suppressed = {}
+                            AA._cascadeSuppressed = suppressed
+                        end
+                        suppressed[entry.name] = true
+                    end
                 end
             end
         else
@@ -470,6 +534,11 @@ local function InstallCascadeGuard()
     end
 end
 
+WindowIsShowing = function(name)
+    return type(DoesWindowExist) == "function" and DoesWindowExist(name)
+        and type(WindowGetShowing) == "function" and WindowGetShowing(name) == true
+end
+
 local function CompanionWindowNames()
     local bag = "EA_Window_Backpack"
     if type(EA_Window_Backpack) == "table" and type(EA_Window_Backpack.windowName) == "string" then
@@ -484,25 +553,34 @@ local function RememberCompanionWindows()
         keep = {}
         AA._keepShown = keep
     end
+    local suppressed = AA._cascadeSuppressed
     local names = CompanionWindowNames()
     for i = 1, #names do
         local name = names[i]
-        if type(DoesWindowExist) == "function" and DoesWindowExist(name)
-            and WindowGetShowing(name) == true
-        then
+        if WindowIsShowing(name) then
             keep[name] = true
+            if type(suppressed) == "table" then
+                suppressed[name] = nil
+            end
+        elseif type(suppressed) ~= "table" or suppressed[name] ~= true then
+            -- Hidden, and this open's cascade did not stub it. The player
+            -- closed it. Do not put it back on the next retry.
+            keep[name] = nil
         end
     end
 end
 
 local function RestoreCompanionWindows()
     local keep = AA._keepShown
-    if type(keep) ~= "table" then
+    local suppressed = AA._cascadeSuppressed
+    AA._cascadeSuppressed = nil
+    if type(keep) ~= "table" or type(suppressed) ~= "table" then
         return
     end
-    for name, was in pairs(keep) do
-        if was == true and type(DoesWindowExist) == "function" and DoesWindowExist(name)
-            and WindowGetShowing(name) ~= true
+    for name, was in pairs(suppressed) do
+        if was == true and keep[name] == true
+            and type(DoesWindowExist) == "function" and DoesWindowExist(name)
+            and WindowIsShowing(name) ~= true
         then
             TryCall("WindowSetShowing", WindowSetShowing, name, true)
         end
@@ -520,6 +598,7 @@ function AA.EndStealthUi()
     AA._playerWantsApo = false
     AA._suppressCascadeClose = false
     AA._keepShown = nil
+    AA._cascadeSuppressed = nil
     UnparkApoRoot()
 end
 
@@ -626,12 +705,15 @@ function AA.OpenWindow(session)
     end
     AA._echoArmedAt = echoNow
     -- 10s until three late echoes have been timed. Then wait the longest
-    -- seen delay plus one second, so a player press is not held that long.
+    -- accepted delay plus one second, capped so a slow player press cannot
+    -- hold the window near 10s for the rest of the session.
     local echoWait = 10
     if (tonumber(AA._echoLateSamples) or 0) >= 3 then
         echoWait = (tonumber(AA._echoLateMax) or 0) + 1
         if echoWait < 3 then
             echoWait = 3
+        elseif echoWait > (ECHO_LATE_SAMPLE_CAP + 1) then
+            echoWait = ECHO_LATE_SAMPLE_CAP + 1
         end
     end
     AA._expectEchoUntil = echoNow + echoWait

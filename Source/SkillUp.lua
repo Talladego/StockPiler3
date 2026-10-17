@@ -1846,7 +1846,14 @@ SkillUp._apoStallLatch = nil
 SkillUp._apoBrewRow = nil
 
 function SkillUp.ApoTargetTier()
-    return SkillUp.FloorApoTier(SkillUp.GetApoSkill())
+    local tier = SkillUp.FloorApoTier(SkillUp.GetApoSkill())
+    -- "Vendor has no vial" was for the previous tier. The next shelf can
+    -- still sell one, so drop that flag when the tier changes.
+    if SkillUp._apoVialTier ~= nil and SkillUp._apoVialTier ~= tier then
+        SkillUp._apoNoVendorContainer = nil
+    end
+    SkillUp._apoVialTier = tier
+    return tier
 end
 
 function SkillUp.ShouldApoBrew()
@@ -2881,11 +2888,17 @@ function SkillUp.WatchDemandReserve(specOrUid)
 
     local Watch = StockPiler3.Watch
     local Inv = StockPiler3.Inventory
+    local RS = StockPiler3.RecipeSpec
     local snap = Inv and Inv.GetSnapGen and tonumber(Inv.GetSnapGen()) or 0
     local watchGen = Watch and Watch.GetGen and tonumber(Watch.GetGen()) or 0
+    -- Yield and per-craft counts follow the recipe stats generation. That
+    -- bump does not move the bag snap or the watch generation (FullCacheKey).
+    local statsGen = RS and RS.GetRecipeStatsGen and tonumber(RS.GetRecipeStatsGen()) or 0
     local cache = SkillUp._watchReserveCache
-    if type(cache) ~= "table" or cache.snap ~= snap or cache.watchGen ~= watchGen then
-        cache = { snap = snap, watchGen = watchGen, byUid = {} }
+    if type(cache) ~= "table" or cache.snap ~= snap or cache.watchGen ~= watchGen
+        or cache.statsGen ~= statsGen
+    then
+        cache = { snap = snap, watchGen = watchGen, statsGen = statsGen, byUid = {} }
         SkillUp._watchReserveCache = cache
     end
     local cached = cache.byUid[wantUid]
@@ -2894,7 +2907,6 @@ function SkillUp.WatchDemandReserve(specOrUid)
     end
 
     local need = 0
-    local RS = StockPiler3.RecipeSpec
     local SM = StockPiler3.SeedMap
 
     local watches = Watch and Watch.GetWatches and Watch.GetWatches() or {}

@@ -1166,6 +1166,11 @@ function Buy.OnMoneySettingsChanged()
 end
 
 function Buy.OnStoreShow()
+    local SU = StockPiler3.SkillUp
+    if SU then
+        -- Last visit's empty vial shelf does not apply to this one.
+        SU._apoNoVendorContainer = nil
+    end
     local VA = StockPiler3.VendorAdapter
     if VA and VA.EnsureStoreHook then
         VA.EnsureStoreHook()
