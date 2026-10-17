@@ -138,7 +138,7 @@
                 </Button>
                 <Button name="$parentSortName" inherits="StockPiler3_SortHeader" id="1" textalign="left">
                     <Size>
-                        <AbsPoint x="296" y="28" />
+                        <AbsPoint x="244" y="28" />
                     </Size>
                     <TextOffset x="8" y="4" />
                     <Anchors>
@@ -154,7 +154,7 @@
                     <TextOffset x="2" y="4" />
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="336" y="132" />
+                            <AbsPoint x="284" y="132" />
                         </Anchor>
                     </Anchors>
                 </Button>
@@ -165,7 +165,7 @@
                     <TextOffset x="4" y="4" />
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="376" y="132" />
+                            <AbsPoint x="324" y="132" />
                         </Anchor>
                     </Anchors>
                 </Button>
@@ -176,7 +176,7 @@
                     <TextOffset x="4" y="4" />
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="448" y="132" />
+                            <AbsPoint x="396" y="132" />
                         </Anchor>
                     </Anchors>
                 </Button>
@@ -187,7 +187,18 @@
                     <TextOffset x="4" y="4" />
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft">
-                            <AbsPoint x="504" y="132" />
+                            <AbsPoint x="452" y="132" />
+                        </Anchor>
+                    </Anchors>
+                </Button>
+                <Button name="$parentSortDuration" inherits="StockPiler3_SortHeader" id="11" textalign="left">
+                    <Size>
+                        <AbsPoint x="52" y="28" />
+                    </Size>
+                    <TextOffset x="4" y="4" />
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft">
+                            <AbsPoint x="516" y="132" />
                         </Anchor>
                     </Anchors>
                 </Button>
@@ -284,6 +295,7 @@
                             <ListColumn windowname="Effect" variable="effectText" format="wstring" />
                             <ListColumn windowname="Power" variable="powerText" format="wstring" />
                             <ListColumn windowname="Stability" variable="stabilityText" format="wstring" />
+                            <ListColumn windowname="Duration" variable="durationText" format="wstring" />
                             <ListColumn windowname="Multiplier" variable="multiplierText" format="wstring" />
                             <ListColumn windowname="SuperCrit" variable="superCritText" format="wstring" />
                             <ListColumn windowname="Yield" variable="yieldText" format="wstring" />

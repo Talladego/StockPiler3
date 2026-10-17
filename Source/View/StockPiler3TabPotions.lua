@@ -25,6 +25,7 @@ local SORT_IDS = {
     [8] = "watch",
     [9] = "level",
     [10] = "multiplier",
+    [11] = "duration",
 }
 
 local SORT_HEADERS = {
@@ -34,6 +35,7 @@ local SORT_HEADERS = {
     effect = "SP3TabPotionsSortEffect",
     power = "SP3TabPotionsSortPower",
     stability = "SP3TabPotionsSortStability",
+    duration = "SP3TabPotionsSortDuration",
     multiplier = "SP3TabPotionsSortMultiplier",
     superCrit = "SP3TabPotionsSortSuperCrit",
     yield = "SP3TabPotionsSortYield",
@@ -246,6 +248,11 @@ local function CompareRows(a, b, column, ascending)
             return CompareName(a, b)
         end
         return finish((a.stabilityNum or 0) < (b.stabilityNum or 0))
+    elseif column == "duration" then
+        if (a.durationNum or 0) == (b.durationNum or 0) then
+            return CompareName(a, b)
+        end
+        return finish((a.durationNum or 0) < (b.durationNum or 0))
     elseif column == "multiplier" then
         if (a.multiplierNum or 0) == (b.multiplierNum or 0) then
             return CompareName(a, b)
@@ -309,6 +316,7 @@ local function UpdateSortHeaderLabels()
         effect = T("potions.sort.effect"),
         power = T("potions.sort.power"),
         stability = T("potions.sort.stability"),
+        duration = T("potions.sort.duration"),
         multiplier = T("potions.sort.multiplier"),
         superCrit = T("potions.sort.super_crit"),
         yield = T("potions.sort.yield"),
@@ -420,6 +428,8 @@ local function BuildVisibleList()
             powerText = FormatSignedStat(powerNum),
             stabilityNum = stabilityNum,
             stabilityText = FormatSignedStat(stabilityNum),
+            durationNum = 0,
+            durationText = FormatSignedStat(0),
             multiplierNum = multiplierNum,
             multiplierText = FormatSignedStat(multiplierNum),
             superCritNum = superCritNum,
@@ -470,6 +480,8 @@ local function BuildVisibleList()
             row.powerText = FormatSignedStat(stats.power)
             row.stabilityNum = stats.stability
             row.stabilityText = FormatSignedStat(stats.stability)
+            row.durationNum = stats.duration
+            row.durationText = FormatSignedStat(stats.duration)
             row.multiplierNum = stats.multiplier
             row.multiplierText = FormatSignedStat(stats.multiplier)
             row.superCritNum = stats.superCrit
@@ -648,6 +660,7 @@ function StockPiler3TabPotions.UpdateRows()
                 LabelSetText(rowName .. "Effect", data.effectText or L"")
                 LabelSetText(rowName .. "Power", data.powerText or L"0")
                 LabelSetText(rowName .. "Stability", data.stabilityText or L"0")
+                LabelSetText(rowName .. "Duration", data.durationText or L"0")
                 LabelSetText(rowName .. "Multiplier", data.multiplierText or L"0")
                 LabelSetText(rowName .. "SuperCrit", data.superCritText or T("ui.dash"))
                 LabelSetText(rowName .. "Yield", data.yieldText or T("ui.dash"))

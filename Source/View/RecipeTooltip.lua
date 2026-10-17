@@ -18,7 +18,8 @@ end
 
 RecipeTooltip.SEP_LINE = T("recipe.sep")
 
---- Private row budget. Does not write Tooltips.NUM_ROWS.
+--- Private row windows. Tooltips.NUM_ROWS is raised only while this tip is drawn,
+--- then restored. SetTooltipText and Finalize ignore rows above that count.
 local RECIPE_TOOLTIP_MAX_ROWS = 80
 RecipeTooltip._numRows = 17
 
@@ -128,6 +129,10 @@ function RecipeTooltip.ShowColoredRows(anchorWindow, rows, anchor, maxRows)
         want = #rows
     end
     local engineMax = RecipeTooltip.EnsureRows(want)
+    local stockRows = tonumber(Tooltips.NUM_ROWS) or 17
+    if engineMax > stockRows then
+        Tooltips.NUM_ROWS = engineMax
+    end
     Tooltips.CreateTextOnlyTooltip(anchorWindow)
     local limit = engineMax
     if tonumber(maxRows) and tonumber(maxRows) < limit then
@@ -147,6 +152,9 @@ function RecipeTooltip.ShowColoredRows(anchorWindow, rows, anchor, maxRows)
     end
     Tooltips.Finalize()
     Tooltips.AnchorTooltip(anchor or Tooltips.ANCHOR_WINDOW_RIGHT)
+    if tonumber(Tooltips.NUM_ROWS) ~= stockRows then
+        Tooltips.NUM_ROWS = stockRows
+    end
 end
 
 --- Fit row budget without dropping ingredient dividers (--- before next ingredient).

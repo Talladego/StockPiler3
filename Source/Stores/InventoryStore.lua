@@ -517,6 +517,16 @@ function Inv.IsDirty()
 end
 
 --- CreateItemTooltip assumes bag-shaped fields; pad thin shells (DB/learned) so stock UI does not nil-index.
+local function TooltipWString(value)
+    if type(value) == "wstring" then
+        return value
+    end
+    if value == nil or type(towstring) ~= "function" then
+        return L""
+    end
+    return towstring(tostring(value))
+end
+
 function Inv.NormalizeItemDataForTooltip(itemData)
     if type(itemData) ~= "table" then
         return nil
@@ -602,12 +612,13 @@ function Inv.NormalizeItemDataForTooltip(itemData)
     if tonumber(data.itemSet) == nil then
         data.itemSet = 0
     end
-    if data.name == nil then
-        data.name = L""
+    if data.name == nil or type(data.name) ~= "wstring" then
+        data.name = TooltipWString(data.name)
     end
-    -- LabelSetText(ItemTooltipDescription, ...) rejects nil.
-    if data.description == nil then
-        data.description = L""
+    -- LabelSetText(ItemTooltipDescription, ...) rejects nil and narrow strings.
+    -- Learned rows keep the text in descriptionNarrow.
+    if data.description == nil or type(data.description) ~= "wstring" then
+        data.description = TooltipWString(data.description ~= nil and data.description or data.descriptionNarrow)
     end
     if data.iconNum == nil then
         data.iconNum = 0
@@ -647,8 +658,8 @@ function Inv.NormalizeItemDataForTooltip(itemData)
     if tonumber(data.customizedIconNum) == nil then
         data.customizedIconNum = 0
     end
-    if data.customizedIconName == nil then
-        data.customizedIconName = L""
+    if data.customizedIconName == nil or type(data.customizedIconName) ~= "wstring" then
+        data.customizedIconName = TooltipWString(data.customizedIconName)
     end
     return data
 end

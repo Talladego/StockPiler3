@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.419** - Watch tooltips read the plan's status and yield fields.
+**Version 0.3.420** - Potions show duration, and recipe tooltips draw every ingredient.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -142,6 +142,7 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.420 | Potions tab shows Dur between Stab and Mult. Item tooltip text is a wide string. Recipe tooltips draw the rows past the first 17 |
 | 0.3.419 | Watch tooltips print the plan's status, yield, and shared or pooled slot notes. The recipe tooltip keeps its own row count (#41 item 8) |
 | 0.3.418 | A short seed climb is picked again while AutoGrow is fill-blocked, about every two seconds, and an empty climb cache is dropped first. A stocked garden still keeps the empty plant answer |
 | 0.3.417 | Forgetting a potion recipe drops both recipe key lists and the Watch row. Watch toggles write character fields through Watch. A short seed climb is picked again when the fill-block wait ends (#41 item 8) |
