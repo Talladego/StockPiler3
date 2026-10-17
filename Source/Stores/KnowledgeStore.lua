@@ -9,7 +9,7 @@ local Know = StockPiler3.Knowledge
 -- Same list Persistence allows through shutdown. Includes skillUpRates so
 -- Ensure creates the table when a fresh account has not filled it yet.
 local ACCOUNT_TABLES = StockPiler3.Persistence.ACCOUNT_TABLES
-    or { "items", "grows", "refines", "recipes", "potions", "additives", "skillUpRates" }
+    or { "items", "grows", "refines", "recipes", "potions", "skillUpRates" }
 
 Know._gen = 0
 Know._ensuring = false
@@ -138,16 +138,11 @@ function Know.ValidateAndRepairSavedData()
     return report
 end
 
---- Legacy one-shot migrates, then idempotent ValidateAndRepairSavedData.
+--- Idempotent repair. Fingerprint V2-V4 and the plant-effect seed migrate are retired.
+--- Their latches stay on old saves so validation still accepts them.
 function Know.MigrateFingerprints()
-    if StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.MigrateRecipeFingerprintsV2 then
-        StockPiler3.RecipeSpec.MigrateRecipeFingerprintsV2()
-    end
-    if StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.MigrateRecipeFingerprintsV3 then
-        StockPiler3.RecipeSpec.MigrateRecipeFingerprintsV3()
-    end
-    if StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.MigrateRecipeFingerprintsV4 then
-        StockPiler3.RecipeSpec.MigrateRecipeFingerprintsV4()
+    if StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.FoldAlternateRecipeKeys then
+        StockPiler3.RecipeSpec.FoldAlternateRecipeKeys()
     end
     if StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.MigrateFractionalRecipeYields then
         StockPiler3.RecipeSpec.MigrateFractionalRecipeYields()
@@ -155,9 +150,6 @@ function Know.MigrateFingerprints()
     Know.ValidateAndRepairSavedData()
     if StockPiler3.RecipeSpec and StockPiler3.RecipeSpec.MigratePotionEffectKeys then
         StockPiler3.RecipeSpec.MigratePotionEffectKeys()
-    end
-    if StockPiler3.SeedMap and StockPiler3.SeedMap.MigratePlantEffectsFromSeeds then
-        StockPiler3.SeedMap.MigratePlantEffectsFromSeeds()
     end
 end
 

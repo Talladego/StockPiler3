@@ -7,7 +7,7 @@ StockPiler3.Persistence = StockPiler3.Persistence or {}
 local P = StockPiler3.Persistence
 
 -- vendorItems is session-only (see Knowledge.VendorItems); do not persist.
-local ACCOUNT_TABLES = { "items", "grows", "refines", "recipes", "potions", "additives", "skillUpRates" }
+local ACCOUNT_TABLES = { "items", "grows", "refines", "recipes", "potions", "skillUpRates" }
 P.ACCOUNT_TABLES = ACCOUNT_TABLES
 
 -- Historical leak keys (settings flags written onto Account). Strip on load.
@@ -39,6 +39,8 @@ local ACCOUNT_LEAKED_SETTINGS_KEYS = {
 
 -- Must include every ACCOUNT_TABLES key or Shutdown StripUnexpectedAccountKeys
 -- will delete them before SavedVariables write (wiped skillUpRates each reload).
+-- accountVersion and the migrate latches stay so old saves still validate.
+-- Nothing reads them to choose behavior.
 local ACCOUNT_ALLOWED = {
     accountVersion = true,
     recipeFingerprintMigrateV2 = true,
@@ -94,6 +96,10 @@ StockPiler3.DefaultSettings = {
     potionSortAscending = true,
     watchSortColumn = "prio",
     watchSortAscending = true,
+    plantSortColumn = "name",
+    plantSortAscending = true,
+    plantNameFilter = "",
+    plantEffectFilter = "",
 }
 
 StockPiler3.DefaultCharacterSettings = {
@@ -120,6 +126,9 @@ StockPiler3.DefaultCharacterSettings = {
     lastCultSkill = 0,
     lastApoSkill = 0,
     upgradeSeedsEnabled = false,
+    plantWatches = {},
+    -- false until Watch.MigratePriorityTiersIfNeeded assigns tiers.
+    watchPriorityTiersMigrated = false,
 }
 
 StockPiler3.DefaultAccount = {
@@ -129,7 +138,6 @@ StockPiler3.DefaultAccount = {
     refines = {},
     recipes = {},
     potions = {},
-    additives = {},
     skillUpRates = { v = 3, cult = {}, apo = {} },
 }
 
@@ -195,6 +203,7 @@ function P.EnsureSettings()
         s = P.CopyTable(StockPiler3.DefaultSettings)
         StockPiler3.Settings = s
     end
+    -- Kept on the save. Not used to choose behavior.
     if s.settingsVersion == nil then
         s.settingsVersion = 1
     end
@@ -221,6 +230,18 @@ function P.EnsureSettings()
     end
     if s.watchSortAscending == nil then
         s.watchSortAscending = true
+    end
+    if s.plantSortColumn == nil then
+        s.plantSortColumn = "name"
+    end
+    if s.plantSortAscending == nil then
+        s.plantSortAscending = true
+    end
+    if s.plantNameFilter == nil then
+        s.plantNameFilter = ""
+    end
+    if s.plantEffectFilter == nil then
+        s.plantEffectFilter = ""
     end
     if s.selectedTab == nil then
         s.selectedTab = 1
@@ -296,6 +317,19 @@ function P.EnsureCharacterBucketShape(char)
         end
     end
     char.growSeedBufferMin = ClampInt(char.growSeedBufferMin, 4, 20, 5)
+    if type(char.plantWatches) ~= "table" then
+        char.plantWatches = {}
+    end
+    char.watchPriorityTiersMigrated = char.watchPriorityTiersMigrated == true
+    local retired = {}
+    for k in pairs(char) do
+        if defaults[k] == nil then
+            retired[#retired + 1] = k
+        end
+    end
+    for i = 1, #retired do
+        char[retired[i]] = nil
+    end
     return char
 end
 
@@ -338,6 +372,10 @@ function P.EnsureAccount()
     -- Drop legacy persisted vendor catalog (session-only now; AutoBuy uses live store).
     if a.vendorItems ~= nil then
         a.vendorItems = nil
+    end
+    -- Plot additives live on the cultivator. Nothing reads Account.additives.
+    if a.additives ~= nil then
+        a.additives = nil
     end
     -- Only shape knowledge tables here - never migrate (would recurse via
     -- Recipes->GetAccount->EnsureAccount). Bootstrap calls MigrateFingerprints after.
