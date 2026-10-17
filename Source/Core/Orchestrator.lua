@@ -378,8 +378,11 @@ function Orch._TickBody()
             Sch.ArmOrchDecisionHold(2)
         end
         local hasSeeds = false
-        if usRefine then
+        local climbPending = Grow and Grow.ShortClimbPending and Grow.ShortClimbPending() == true
+        if usRefine and climbPending ~= true then
             -- Cheap probe clear; do not run PickPlantCandidate while refine-first.
+            -- A short potion climb still picks: stamping nil here left the level-50
+            -- seed unplanted until /sp3 all ran GetPlantJob itself.
             if Grow and Grow.MarkPlantJobProbed then
                 Grow.MarkPlantJobProbed(nil)
             end
@@ -502,17 +505,20 @@ function Orch._TickBody()
     -- refine for ~50s after harvest (idle 5s ticks until a dump probed the queue).
     local usRefineFirst = false
     local US = StockPiler3.UpgradeSeed
+    local climbPending = Grow and Grow.ShortClimbPending and Grow.ShortClimbPending() == true
     if US and US.IsEnabled and US.IsEnabled() == true
         and US.NeedsRefineFirst and US.NeedsRefineFirst() == true
     then
-        usRefineFirst = true
         if StockPiler3.Refine and StockPiler3.Refine.MarkRefineDue then
             StockPiler3.Refine.MarkRefineDue("upgrade-seed")
         end
-        if Grow and Grow.MarkPlantJobProbed then
-            Grow.MarkPlantJobProbed(nil)
-        elseif Grow and Grow.GetPlantJob then
-            Grow.GetPlantJob()
+        if climbPending ~= true then
+            usRefineFirst = true
+            if Grow and Grow.MarkPlantJobProbed then
+                Grow.MarkPlantJobProbed(nil)
+            elseif Grow and Grow.GetPlantJob then
+                Grow.GetPlantJob()
+            end
         end
     else
         Orch._refineFirstMisses = 0

@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.416** - SkillUp and Upgrade Seed share one plant-stock, buffer, and tier check.
+**Version 0.3.418** - A short seed climb keeps looking while AutoGrow is fill-blocked.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -142,6 +142,8 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.418 | A short seed climb is picked again while AutoGrow is fill-blocked, about every two seconds, and an empty climb cache is dropped first. A stocked garden still keeps the empty plant answer |
+| 0.3.417 | Forgetting a potion recipe drops both recipe key lists and the Watch row. Watch toggles write character fields through Watch. A short seed climb is picked again when the fill-block wait ends (#41 item 8) |
 | 0.3.416 | Plant-watch stock, the seed buffer, and the cultivation tier are shared. A plant watch with no learned plant is skipped. Buy rows and the stall sound are shared too (#41 item 7) |
 | 0.3.415 | Skill changes, craft chat, and session settle are events. Buy hears vendor updates on that event. Apothecary session flags go through Brew setters (#41 item 6) |
 | 0.3.414 | Macro enable sync, harvest button state, buffer-flag rebuild, upgrade-seed clear, and the watch throttle key go through owner functions (#41 item 5) |

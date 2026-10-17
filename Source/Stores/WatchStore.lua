@@ -759,6 +759,60 @@ function Watch.ClearAllPlantWatches()
     return enabledN
 end
 
+function Watch.ScrubPotionRecipeWatch(outputUid, recipeSpecKey)
+    outputUid = tonumber(outputUid) or 0
+    recipeSpecKey = tostring(recipeSpecKey or "")
+    local RS = StockPiler3.RecipeSpec
+    local watchKey = nil
+    if outputUid > 0 and recipeSpecKey ~= "" and RS and RS.PotionRecipeKey then
+        watchKey = RS.PotionRecipeKey(outputUid, recipeSpecKey)
+    end
+    local watches = Watch.GetWatches and Watch.GetWatches() or nil
+    if type(watches) ~= "table" then
+        return watchKey
+    end
+    local storeKey = nil
+    if watchKey ~= nil and type(watches[watchKey]) == "table" then
+        storeKey = watchKey
+    elseif Watch.ResolveWatchEntry then
+        local _, resolvedKey = Watch.ResolveWatchEntry(watchKey or ("uid:" .. tostring(outputUid)))
+        if resolvedKey ~= nil and type(watches[resolvedKey]) == "table" then
+            storeKey = resolvedKey
+            watchKey = resolvedKey
+        end
+    end
+    if storeKey ~= nil then
+        watches[storeKey] = nil
+        if Watch.BumpGen then
+            Watch.BumpGen()
+        end
+    end
+    return watchKey or storeKey
+end
+
+function Watch.SetCharacterField(name, value)
+    local allowed = {
+        autoGrowEnabled = true,
+        autoGrowAdditives = true,
+        growSeedBufferEnabled = true,
+        growSeedBufferMin = true,
+        autoBuyEnabled = true,
+        autoBuyReserveGold = true,
+        autoBuyBudgetGold = true,
+        autoBrewEnabled = true,
+        watchOptimisticOutcomeEstimate = true,
+    }
+    if allowed[name] ~= true then
+        return false
+    end
+    local row = CharacterRow(true)
+    if type(row) ~= "table" then
+        return false
+    end
+    row[name] = value
+    return true
+end
+
 function Watch.IsAutoGrowEnabled()
     local Caps = StockPiler3.TradeSkillCaps
     if Caps and Caps.CanAutoGrow and Caps.CanAutoGrow() ~= true then
