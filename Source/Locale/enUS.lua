@@ -99,6 +99,7 @@ StockPiler3.Locale.Packs[LANG] = {
     ["potions.sort.effect"] = L"Effect",
     ["potions.sort.power"] = L"Pwr",
     ["potions.sort.stability"] = L"Stab",
+    ["potions.sort.duration"] = L"Dur",
     ["potions.sort.multiplier"] = L"Mult",
     ["potions.sort.super_crit"] = L"SCrit",
     ["potions.sort.yield"] = L"Yield",

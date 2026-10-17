@@ -120,9 +120,7 @@
             </Size>
         </Button>
 
-        <!-- Potion row: Watch | Name | Effect | Power | Stability | Super-Crit | Yield | Stock | Recipe | Forget.
-             SCrit mirrors SPECIAL_CHANCE on recipe mats; may become display-only if we
-             ignore Super-Critical for stocking fingerprints (crit -> different potion uid). -->
+        <!-- Potion row: Watch | Name | Lvl | Effect | Pwr | Stab | Dur | Mult | SCrit | Yield | Stock | Recipe | Forget. -->
         <Window name="StockPiler3PotionRow">
             <Size>
                 <AbsPoint x="1000" y="32" />
@@ -175,7 +173,7 @@
 
                 <Label name="$parentName" font="font_chat_text" maxchars="48" textalign="leftcenter" handleinput="false" wordwrap="false">
                     <Size>
-                        <AbsPoint x="270" y="28" />
+                        <AbsPoint x="218" y="28" />
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
@@ -190,7 +188,7 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
-                            <AbsPoint x="336" y="2" />
+                            <AbsPoint x="284" y="2" />
                         </Anchor>
                     </Anchors>
                 </Label>
@@ -201,7 +199,7 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
-                            <AbsPoint x="376" y="2" />
+                            <AbsPoint x="324" y="2" />
                         </Anchor>
                     </Anchors>
                 </Label>
@@ -212,7 +210,7 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
-                            <AbsPoint x="448" y="2" />
+                            <AbsPoint x="396" y="2" />
                         </Anchor>
                     </Anchors>
                 </Label>
@@ -223,7 +221,18 @@
                     </Size>
                     <Anchors>
                         <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
-                            <AbsPoint x="504" y="2" />
+                            <AbsPoint x="452" y="2" />
+                        </Anchor>
+                    </Anchors>
+                </Label>
+
+                <Label name="$parentDuration" font="font_chat_text" maxchars="8" textalign="rightcenter" handleinput="false">
+                    <Size>
+                        <AbsPoint x="48" y="28" />
+                    </Size>
+                    <Anchors>
+                        <Anchor point="topleft" relativePoint="topleft" relativeTo="$parent">
+                            <AbsPoint x="516" y="2" />
                         </Anchor>
                     </Anchors>
                 </Label>

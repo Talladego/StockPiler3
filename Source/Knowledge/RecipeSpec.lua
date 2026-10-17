@@ -21,6 +21,7 @@ local ROLE_ORDER = {
 local CRAFT_BONUS = {
     STABILITY = 1,
     POWER = 2,
+    DURATION = 3,
     MULTIPLIER = 4,
     SPECIAL_CHANCE = 14,
 }
@@ -124,6 +125,9 @@ local function BonusValue(spec, ref)
     end
     if ref == CRAFT_BONUS.STABILITY then
         return tonumber(spec.stability) or 0
+    end
+    if ref == CRAFT_BONUS.DURATION then
+        return tonumber(spec.duration) or 0
     end
     return 0
 end
@@ -1540,6 +1544,7 @@ function RS.RecipeFingerprintStats(recipe, potionUid)
     local stats = {
         power = 0,
         stability = 0,
+        duration = 0,
         multiplier = 0,
         superCrit = 0,
         yield = 0,
@@ -1550,6 +1555,7 @@ function RS.RecipeFingerprintStats(recipe, potionUid)
     HydrateRecipeSlots(recipe)
     stats.power = SumSlotBonus(recipe.slots, CRAFT_BONUS.POWER)
     stats.stability = SumSlotBonus(recipe.slots, CRAFT_BONUS.STABILITY)
+    stats.duration = SumSlotBonus(recipe.slots, CRAFT_BONUS.DURATION)
     stats.multiplier = SumSlotBonus(recipe.slots, CRAFT_BONUS.MULTIPLIER)
     -- SCrit column: SPECIAL_CHANCE (Super-Critical). Display/fingerprint today;
     -- may stop counting for identity later - crit success is a different potion
