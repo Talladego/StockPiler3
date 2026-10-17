@@ -352,6 +352,8 @@ end
 function AA.ClearEngineShowSuppress()
     AA._suppressEngineShow = false
     AA._suppressEngineShowUntil = 0
+    AA._echoPending = false
+    AA._expectEchoUntil = 0
 end
 
 function AA.InstallStealthHooks()
@@ -361,19 +363,29 @@ function AA.InstallStealthHooks()
             local apo = AA.TradeSkill()
             local isApo = tradeSkill == nil or tradeSkill == apo
             -- Echo window (sync open or unexpired TTL): do not run stock ShowCurrentWindow.
-            -- Once EngineShowSuppressed expires it clears the latch, so this falls
-            -- through to the parked PlaceApoOnScreen path instead of returning forever.
+            -- Once that TTL expires, the next parked show inside the echo window
+            -- is the late init echo. Every later parked show is the player.
             if isApo and EngineShowSuppressed() then
+                -- The echo already arrived inside the 2.5s window. Consume it
+                -- so the player's next press is not treated as that echo.
+                -- The synchronous open latch is not the echo.
+                if AA._sp3Opening ~= true then
+                    AA._echoPending = false
+                    AA._expectEchoUntil = 0
+                end
                 return
             end
-            -- Parked stealth brew stays off-screen while AutoBrew owns the session.
-            -- A late CRAFTING_SHOW_WINDOW echo after the first SendInitCrafting
-            -- (login / reload) used this path and left the window up until close.
+            -- After the show-suppress TTL, one late CRAFTING_SHOW_WINDOW echo
+            -- is still expected from this open. Anything else on a parked
+            -- window is the player (the ability must still open the window).
             if isApo and AA._apoParked == true then
-                local Brew = StockPiler3.Brew
-                local session = Brew and Brew.GetSession and Brew.GetSession()
-                local owned = type(session) == "table" and session._brewOwnedSession == true
-                if owned then
+                local echoNow = 0
+                if type(GetGameTime) == "function" then
+                    echoNow = tonumber(GetGameTime()) or 0
+                end
+                local echoUntil = tonumber(AA._expectEchoUntil) or 0
+                if AA._echoPending == true and echoNow > 0 and echoNow < echoUntil then
+                    AA._echoPending = false
                     AA.ParkApoRoot()
                     return
                 end
@@ -503,6 +515,14 @@ function AA.OpenWindow(session)
     end
 
     ArmEngineShowSuppress(2.5)
+    -- One engine show after this open is the late echo (it arrives after the
+    -- 2.5s suppress). A later show while parked is the player's ability.
+    AA._echoPending = true
+    local echoNow = 0
+    if type(GetGameTime) == "function" then
+        echoNow = tonumber(GetGameTime()) or 0
+    end
+    AA._expectEchoUntil = echoNow + 10
     AA._sp3Opening = true
     -- A throw here used to leave the latch set and swallow the player's
     -- Apothecary ability until the window closed (ADP-19).
@@ -517,6 +537,8 @@ function AA.OpenWindow(session)
 end
 
 function AA.CloseWindow(session)
+    AA._echoPending = false
+    AA._expectEchoUntil = 0
     session = type(session) == "table" and session or nil
     local apo = AA.TradeSkill()
     local closeApo = session and session._brewOpenedApo == true

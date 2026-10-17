@@ -948,24 +948,52 @@ local function UpdateOptimisticModeCheckbox()
     syncingUi = false
 end
 
+local function SkillUpLevelKinds()
+    local SkillUp = StockPiler3.SkillUp
+    if not SkillUp or not SkillUp.CultLevelKind or not SkillUp.ApoLevelKind then
+        return "missing", "missing"
+    end
+    return SkillUp.CultLevelKind(), SkillUp.ApoLevelKind()
+end
+
+local function SkillUpWhyText(kind, skillName)
+    if kind == "max" then
+        return T("tip.watch.skillup_why_max", { skill = skillName })
+    end
+    if kind == "ready" then
+        return T("tip.watch.skillup_why_ready", { skill = skillName })
+    end
+    return T("tip.watch.skillup_why_missing", { skill = skillName })
+end
+
 local function UpdateSkillUpCheckboxes()
     local SkillUp = StockPiler3.SkillUp
-    local cultVis = SkillUp and SkillUp.IsCultVisible and SkillUp.IsCultVisible() == true
-    local apoVis = SkillUp and SkillUp.IsApoVisible and SkillUp.IsApoVisible() == true
-    local show = cultVis == true or apoVis == true
-    local cultOn = SkillUp and SkillUp.IsCultEnabled and SkillUp.IsCultEnabled() == true
-    local apoOn = SkillUp and SkillUp.IsApoEnabled and SkillUp.IsApoEnabled() == true
-    local on = (cultVis == true and cultOn == true) or (apoVis == true and apoOn == true)
+    if SkillUp and SkillUp.DropToggleIfUnlearned then
+        SkillUp.DropToggleIfUnlearned()
+    end
+    if SkillUp and SkillUp.AdoptReadySkills then
+        SkillUp.AdoptReadySkills()
+    end
+    local cultKind, apoKind = SkillUpLevelKinds()
+    local cultReady = cultKind == "ready"
+    local apoReady = apoKind == "ready"
+    local applicable = cultReady or apoReady
+    local cultOn = SkillUp and SkillUp.IsCultToggleOn and SkillUp.IsCultToggleOn() == true
+    local apoOn = SkillUp and SkillUp.IsApoToggleOn and SkillUp.IsApoToggleOn() == true
+    local on = (cultReady and cultOn) or (apoReady and apoOn)
+    local label = "SP3TabWatchSkillUpSkillsLabel"
 
     if DoesWindowExist(SKILLUP_SKILLS_WIN) then
-        WindowSetShowing(SKILLUP_SKILLS_WIN, show)
+        WindowSetShowing(SKILLUP_SKILLS_WIN, true)
         syncingUi = true
         ButtonSetCheckButtonFlag(SKILLUP_SKILLS_WIN, true)
-        ButtonSetPressedFlag(SKILLUP_SKILLS_WIN, show and on)
+        ButtonSetPressedFlag(SKILLUP_SKILLS_WIN, applicable and on)
+        ButtonSetDisabledFlag(SKILLUP_SKILLS_WIN, not applicable)
         syncingUi = false
     end
-    if DoesWindowExist("SP3TabWatchSkillUpSkillsLabel") then
-        WindowSetShowing("SP3TabWatchSkillUpSkillsLabel", show)
+    if DoesWindowExist(label) then
+        WindowSetShowing(label, true)
+        LabelSetTextColor(label, 255, 255, 255)
     end
 end
 
@@ -2228,17 +2256,16 @@ function StockPiler3TabWatch.OnToggleSkillUpSkills()
         return
     end
     local SkillUp = StockPiler3.SkillUp
-    local cultVis = SkillUp and SkillUp.IsCultVisible and SkillUp.IsCultVisible() == true
-    local apoVis = SkillUp and SkillUp.IsApoVisible and SkillUp.IsApoVisible() == true
-    if cultVis ~= true and apoVis ~= true then
+    local cultKind, apoKind = SkillUpLevelKinds()
+    if cultKind ~= "ready" and apoKind ~= "ready" then
         UpdateSkillUpCheckboxes()
         return
     end
     local on = ButtonGetPressedFlag(SKILLUP_SKILLS_WIN) == true
-    if cultVis == true and SkillUp.SetCultEnabled then
+    if cultKind == "ready" and SkillUp and SkillUp.SetCultEnabled then
         SkillUp.SetCultEnabled(on)
     end
-    if apoVis == true and SkillUp.SetApoEnabled then
+    if apoKind == "ready" and SkillUp and SkillUp.SetApoEnabled then
         SkillUp.SetApoEnabled(on)
     end
     NotifySettings(T("watch.skillup_skills_state", { state = OnOff(on) }))
@@ -3120,7 +3147,17 @@ function StockPiler3TabWatch.OnMouseOverOptimisticMode()
 end
 
 function StockPiler3TabWatch.OnMouseOverSkillUpSkills()
-    Tip(T("tip.watch.skillup_skills"))
+    local cultKind, apoKind = SkillUpLevelKinds()
+    if cultKind == "ready" and apoKind == "ready" then
+        Tip(T("tip.watch.skillup_skills"))
+        return
+    end
+    local cultName = T("watch.skill_name_cult")
+    local apoName = T("watch.skill_name_apo")
+    Tip(T("tip.watch.skillup_why_pair", {
+        cult = SkillUpWhyText(cultKind, cultName),
+        apo = SkillUpWhyText(apoKind, apoName),
+    }))
 end
 
 function StockPiler3TabWatch.OnMouseOverSeedBufferEnable()
