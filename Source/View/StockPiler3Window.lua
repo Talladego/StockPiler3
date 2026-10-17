@@ -68,9 +68,10 @@ function StockPiler3Window.RequestFooterRefresh()
 end
 
 --- Sync Harvest/Brew readiness: macros always; footer chrome only when window is open.
---- At most one full Footer/Macro paint per FrameCounter. Later same-frame callers store
---- the latest canHarvest/canBrew; if those change after the first paint, one deferred
---- flush is allowed so readiness is not dropped.
+--- At most one full Footer/Macro paint per FrameCounter. A later same-frame readiness
+--- change queues one deferred flush. A tab change paints on this call: the flush can
+--- be held for harvest or refine, and committing the new tab before the windows
+--- update made the flush look unchanged, leaving Harvest/Brew up on Potions.
 function StockPiler3Window.SyncActionReadiness(opts)
     opts = type(opts) == "table" and opts or {}
     local immediate = opts.immediate == true
@@ -107,8 +108,11 @@ function StockPiler3Window.SyncActionReadiness(opts)
     local canClearWatches = enabledWatches > 0
 
     -- Same-frame coalesce: first call paints; later calls only re-queue if inputs moved.
-    -- Exception: immediate + readiness flip must re-paint now (open-fail / op-lock greying
-    -- was deferred into plant quiet and left macros lit while clicks no-op).
+    -- Do not write the painted-state cache here. A deferred flush re-enters this
+    -- function, and a cache already equal to the new tab/readiness takes the
+    -- unchanged return below without ever calling WindowSetShowing.
+    -- Exception: immediate, or a tab change, re-paints now (open-fail / op-lock
+    -- greying was deferred into plant quiet and left macros lit while clicks no-op).
     if StockPiler3Window._footerSyncFrame == frame and frame > 0 then
         local prevH = StockPiler3Window._footerCanHarvest
         local prevB = StockPiler3Window._footerCanBrew
@@ -116,18 +120,14 @@ function StockPiler3Window.SyncActionReadiness(opts)
         local prevOnWatch = StockPiler3Window._footerOnWatch
         local prevOnPotions = StockPiler3Window._footerOnPotions
         local prevOnPlants = StockPiler3Window._footerOnPlants
-        local moved = prevH ~= canHarvest or prevB ~= canBrew
-            or prevClear ~= canClearWatches
-            or prevOnWatch ~= onWatch
+        local tabMoved = prevOnWatch ~= onWatch
             or prevOnPotions ~= onPotions
             or prevOnPlants ~= onPlants
-        StockPiler3Window._footerCanHarvest = canHarvest
-        StockPiler3Window._footerCanBrew = canBrew
-        StockPiler3Window._footerCanClearWatches = canClearWatches
-        StockPiler3Window._footerOnWatch = onWatch
-        StockPiler3Window._footerOnPotions = onPotions
-        StockPiler3Window._footerOnPlants = onPlants
-        if moved and immediate then
+        local moved = tabMoved
+            or prevH ~= canHarvest
+            or prevB ~= canBrew
+            or prevClear ~= canClearWatches
+        if moved and (immediate or tabMoved) then
             StockPiler3Window._footerSyncFrame = nil
             -- Fall through to full paint with latest readiness.
         else

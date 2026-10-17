@@ -227,6 +227,8 @@ local STATUS_TIP_COLORS = {
     unstable = COLOR_BLOCK,
     need_container_vendor = COLOR_BLOCK,
     no_vendor_container = COLOR_BLOCK,
+    no_vial = COLOR_BLOCK,
+    cult_for_apo = COLOR_WARN,
 }
 
 local function ApplyStatusColor(labelWin, statusKey)

@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.426** - A watch that changes its mind keeps its status rules, and a stuck climb is checked again each frame.
+**Version 0.3.435** - A full crafting bag prints one Apothecary skill-up stall line.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -142,6 +142,7 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.435 | With no vial, Cultivation levels on its own tier. AutoBrew rejects a container the Apothecary window would reject, and one stall line covers a missing vial. A plant or AutoBrew leaves an already open bag or bank open. A full crafting bag shows Craft bag full and prints that stall once (#82) |
 | 0.3.426 | A watch row flipped by the second demand pass keeps Apothecary, skill, and AutoGrow status. The stuck-climb answer lasts one frame. A tied brew yield leaves trailing outliers out of the average |
 | 0.3.425 | The seed-climb retry and the refine-first bypass run only when a climb is stuck and a plot is empty. A harvest replants on the next frame, and watch status follows the published demand (#73, #75) |
 | 0.3.424 | A later same-seed harvest keeps loot already in the bags. One engine show after an Apothecary open stays parked, and a player press still opens the window. Skill-up brews leave butchered stabilizers a short watch needs. A skill left off stays off until that skill is learned |

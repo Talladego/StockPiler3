@@ -391,6 +391,9 @@ function AA.InstallStealthHooks()
                 end
                 AA._playerWantsApo = true
                 AA.ClearEngineShowSuppress()
+                -- Player asked for the window. Stock layout may close the bag.
+                AA._suppressCascadeClose = false
+                AA._keepShown = nil
                 PlaceApoOnScreen()
                 local name = ApoRootName()
                 if type(DoesWindowExist) == "function"
@@ -413,14 +416,91 @@ function AA.InstallStealthHooks()
     end
 end
 
+--- AutoBrew must not run the stock cascade close. Bag and bank are on the same
+--- automatic layout list as Apothecary, so a brew show that joins the list
+--- closes whichever of them no longer fits. A player-opened Apothecary still
+--- uses the normal layout.
+local function InstallCascadeGuard()
+    local Cascade = WindowUtils and WindowUtils.Cascade
+    if not Cascade or type(Cascade.Resolve) ~= "function" or AA._origCascadeResolve then
+        return
+    end
+    AA._origCascadeResolve = Cascade.Resolve
+    Cascade.Resolve = function(...)
+        if AA._suppressCascadeClose ~= true or type(Cascade.List) ~= "table" then
+            return AA._origCascadeResolve(...)
+        end
+        local list = Cascade.List
+        local saved = {}
+        for i = 1, #list do
+            local entry = list[i]
+            if type(entry) == "table" and type(entry.name) == "string" then
+                saved[entry.name] = { fn = entry.closeFunction }
+                entry.closeFunction = function() end
+            end
+        end
+        local ok, err = pcall(AA._origCascadeResolve, ...)
+        list = Cascade.List
+        if type(list) == "table" then
+            for i = 1, #list do
+                local entry = list[i]
+                if type(entry) == "table" and type(entry.name) == "string" and saved[entry.name] then
+                    entry.closeFunction = saved[entry.name].fn
+                end
+            end
+        end
+        if not ok then
+            error(err)
+        end
+    end
+end
+
+local function CompanionWindowNames()
+    local bag = "EA_Window_Backpack"
+    if type(EA_Window_Backpack) == "table" and type(EA_Window_Backpack.windowName) == "string" then
+        bag = EA_Window_Backpack.windowName
+    end
+    return { bag, "BankWindow" }
+end
+
+local function RememberCompanionWindows()
+    AA._keepShown = {}
+    local names = CompanionWindowNames()
+    for i = 1, #names do
+        local name = names[i]
+        if type(DoesWindowExist) == "function" and DoesWindowExist(name)
+            and WindowGetShowing(name) == true
+        then
+            AA._keepShown[name] = true
+        end
+    end
+end
+
+local function RestoreCompanionWindows()
+    local keep = AA._keepShown
+    if type(keep) ~= "table" then
+        return
+    end
+    for name, was in pairs(keep) do
+        if was == true and type(DoesWindowExist) == "function" and DoesWindowExist(name)
+            and WindowGetShowing(name) ~= true
+        then
+            TryCall("WindowSetShowing", WindowSetShowing, name, true)
+        end
+    end
+end
+
 function AA.BeginOwnedSession()
     AA.InstallStealthHooks()
+    InstallCascadeGuard()
 end
 
 function AA.EndStealthUi()
     AA._sp3Opening = false
     AA.ClearEngineShowSuppress()
     AA._playerWantsApo = false
+    AA._suppressCascadeClose = false
+    AA._keepShown = nil
     UnparkApoRoot()
 end
 
@@ -428,8 +508,8 @@ end
 --- - AddToOpenList(MODE_AUTOMATIC) + Cascade.Resolve can close the vendor
 ---   (store is MODE_HIGHLANDER; overflow windows get Done/closeFunction)
 --- - EA_BackpackUtilsMediator.ShowBackpack() opens bags the player left closed
---- Cultivation planting uses AddCraftingItem and never opens CultivationWindow,
---- which is why plant jobs do not disturb bag/vendor the same way.
+--- Cultivation planting uses AddCraftingItem. The client may still show
+--- CultivationWindow; that layout is left to the default UI.
 local function ShowApoRootVisible()
     local name = ApoRootName()
     if not (DoesWindowExist and DoesWindowExist(name)) then
@@ -465,6 +545,7 @@ function AA.InitHeadlessSession()
     AA.SetSoftLocks(false)
     -- Re-park: engine CRAFTING_SHOW_WINDOW / SetStateData can reset anchors.
     AA.ParkApoRoot()
+    RestoreCompanionWindows()
 end
 
 function AA.HideWindowOnly()
@@ -496,6 +577,8 @@ function AA.OpenWindow(session)
     session = type(session) == "table" and session or nil
     local apo = AA.TradeSkill()
     AA.BeginOwnedSession()
+    AA._suppressCascadeClose = true
+    RememberCompanionWindows()
     AA._playerWantsApo = false
     if session and StockPiler3.Brew and StockPiler3.Brew.SetApoSessionFlags then
         StockPiler3.Brew.SetApoSessionFlags(session, {
@@ -610,7 +693,61 @@ function AA.CloseWindow(session)
             TryQuiet("RemoveFromOpenList", WindowUtils.RemoveFromOpenList, name)
         end
     end
+    RestoreCompanionWindows()
     AA.EndStealthUi()
+end
+
+--- Same gate as a manual drop on ApothecaryWindow.
+--- IsCraftingItem requires an Apothecary crafting-family bonus. A TYPE=container
+--- item with no family (Wilted Wild Weed) shows "0 - Container" and is refused
+--- by the window. AddCraftingContainer still accepts it, so AutoBrew must not.
+--- A bag copy with no craftingBonus table cannot be judged; leave it eligible.
+function AA.ItemIsAllowedInSlot(itemData, craftSlot)
+    craftSlot = tonumber(craftSlot)
+    if type(itemData) ~= "table" or craftSlot == nil then
+        return false
+    end
+    if type(itemData.craftingBonus) ~= "table" then
+        return true
+    end
+    if DataUtils and type(DataUtils.IsValidItem) == "function" then
+        if DataUtils.IsValidItem(itemData) ~= true then
+            return false
+        end
+    end
+    if type(ApothecaryWindow) == "table"
+        and type(ApothecaryWindow.ItemIsAllowedInSlot) == "function"
+    then
+        local ok, allowed = pcall(ApothecaryWindow.ItemIsAllowedInSlot, itemData, craftSlot)
+        if ok then
+            return allowed == true
+        end
+        return false
+    end
+    if not (CraftingSystem and type(CraftingSystem.IsCraftingItem) == "function"
+        and type(CraftingSystem.GetCraftingData) == "function"
+        and GameData and GameData.CraftingItemType)
+    then
+        return true
+    end
+    if CraftingSystem.IsCraftingItem(itemData, AA.TradeSkill()) ~= true then
+        return false
+    end
+    local _, resourceType = CraftingSystem.GetCraftingData(itemData)
+    local cit = GameData.CraftingItemType
+    resourceType = tonumber(resourceType) or 0
+    if resourceType == cit.CONTAINER or resourceType == cit.CONTAINER_DYE then
+        return craftSlot == 0
+    end
+    if resourceType == cit.MAIN_INGREDIENT or resourceType == cit.PIGMENT then
+        return craftSlot == 1
+    end
+    local minType = tonumber(cit.MIN_CRAFTING_ITEM_NUM)
+    local maxType = tonumber(cit.MAX_CRAFTING_ITEM_NUM)
+    if minType and maxType and resourceType >= minType and resourceType <= maxType then
+        return craftSlot >= 2 and craftSlot <= 4
+    end
+    return false
 end
 
 function AA.AddItemToCrafting(craftSlot, bagSlot, bagType)
@@ -620,6 +757,21 @@ function AA.AddItemToCrafting(craftSlot, bagSlot, bagType)
         return false
     end
     bagType = tonumber(bagType) or AA.CraftingBackpackType()
+    if type(EA_Window_Backpack) == "table"
+        and type(EA_Window_Backpack.GetItemsFromBackpack) == "function"
+    then
+        local okItems, items = pcall(EA_Window_Backpack.GetItemsFromBackpack, bagType)
+        local item = okItems and type(items) == "table" and items[bagSlot] or nil
+        if type(item) == "table" and AA.ItemIsAllowedInSlot(item, craftSlot) ~= true then
+            if StockPiler3.Debug and StockPiler3.Debug.LogOp then
+                StockPiler3.Debug.LogOp("brew", string.format(
+                    "window-reject uid=%s bag=%s bagType=%s craftSlot=%s",
+                    tostring(item.uniqueID), tostring(bagSlot), tostring(bagType), tostring(craftSlot)
+                ))
+            end
+            return false
+        end
+    end
     -- Stock ApothecaryWindow.AddItem stamps clientSlotList before the engine
     -- call; without it AddCraftingItem often no-ops while pcall still succeeds.
     if type(ApothecaryWindow) == "table" then
