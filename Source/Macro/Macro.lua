@@ -1124,6 +1124,12 @@ function Macro.OnMacroUpdated(macroId)
 end
 
 --- Coalesce hotbar enable sync (footer/cultivation storms). Drain via DrainEnabledSync.
+function Macro.CancelPendingEnabledSync()
+    Macro._enabledSyncPending = false
+    Macro._pendingCanHarvest = nil
+    Macro._pendingCanBrew = nil
+end
+
 function Macro.RequestEnabledSync(canHarvest, canBrew)
     Macro._enabledSyncPending = true
     if canHarvest ~= nil then

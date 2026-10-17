@@ -241,9 +241,9 @@ function StockPiler3Window.SyncActionReadiness(opts)
     if readinessChanged or immediate then
         if StockPiler3.Macro then
             if immediate and StockPiler3.Macro.RefreshMacroButtonAppearance then
-                StockPiler3.Macro._enabledSyncPending = false
-                StockPiler3.Macro._pendingCanHarvest = nil
-                StockPiler3.Macro._pendingCanBrew = nil
+                if StockPiler3.Macro.CancelPendingEnabledSync then
+                    StockPiler3.Macro.CancelPendingEnabledSync()
+                end
                 StockPiler3.Macro.RefreshMacroButtonAppearance({
                     canHarvest = canHarvest,
                     canBrew = canBrew,

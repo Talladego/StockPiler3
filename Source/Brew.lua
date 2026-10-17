@@ -955,9 +955,9 @@ local function ForceBrewUiRefresh(opts)
     elseif StockPiler3.Macro and StockPiler3.Macro.RefreshMacroButtonAppearance then
         local canHarvest = StockPiler3.Grow and StockPiler3.Grow.CanHarvestNow
             and StockPiler3.Grow.CanHarvestNow() == true
-        StockPiler3.Macro._enabledSyncPending = false
-        StockPiler3.Macro._pendingCanHarvest = nil
-        StockPiler3.Macro._pendingCanBrew = nil
+        if StockPiler3.Macro.CancelPendingEnabledSync then
+            StockPiler3.Macro.CancelPendingEnabledSync()
+        end
         StockPiler3.Macro.RefreshMacroButtonAppearance({
             canHarvest = canHarvest,
             canBrew = Brew.CanBrewNow() == true,
@@ -2942,8 +2942,8 @@ function Brew.RegisterEventHandlers()
                 Brew._readyNotifyKeys = nil
                 Brew._brewReadyLatched = false
                 Brew._brewEnableAnnounced = nil
-                if StockPiler3.Grow then
-                    StockPiler3.Grow._harvestEnableAnnounced = false
+                if StockPiler3.Grow and StockPiler3.Grow.ResetHarvestEnableAnnounced then
+                    StockPiler3.Grow.ResetHarvestEnableAnnounced()
                 end
                 Brew.ClearOpenFailBackoff()
                 Brew.InvalidateCanBrewCache()

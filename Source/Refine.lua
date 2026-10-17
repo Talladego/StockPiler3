@@ -705,8 +705,8 @@ end
 
 function Refine.RequestBufferFlagsRebuild()
     local Sch = StockPiler3.Scheduler
-    if Sch then
-        Sch._pendingBufferFlagsRebuild = true
+    if Sch and Sch.RequestBufferFlagsRebuild then
+        Sch.RequestBufferFlagsRebuild()
     end
 end
 

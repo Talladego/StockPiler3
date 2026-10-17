@@ -470,8 +470,6 @@ function Bridge.OnLoadingEnd()
     if StockPiler3.Garden then
         if StockPiler3.Garden.MarkSyncAllDue then
             StockPiler3.Garden.MarkSyncAllDue()
-        elseif StockPiler3.Garden._syncAllDue ~= nil then
-            StockPiler3.Garden._syncAllDue = true
         elseif StockPiler3.Garden.SyncAll then
             StockPiler3.Garden.SyncAll()
         end

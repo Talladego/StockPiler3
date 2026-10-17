@@ -632,6 +632,10 @@ function Sch.ShouldDeferWarmHaveBag()
     return false
 end
 
+function Sch.RequestBufferFlagsRebuild()
+    Sch._pendingBufferFlagsRebuild = true
+end
+
 --- Expose prewarm enqueue for PickPlantCandidate cold-cache path.
 function Sch.RequestCachePrewarm(reason)
     return RequestCachePrewarm(reason)

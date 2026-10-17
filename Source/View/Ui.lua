@@ -33,6 +33,12 @@ function Ui.BypassWatchThrottle()
     Ui._watchUiFlushedAt = 0
 end
 
+--- Clear only the content key. Trade-skill updates use this so the flush
+--- interval stays on _watchUiFlushedAt.
+function Ui.ClearWatchThrottleKey()
+    Ui._watchUiLastKey = nil
+end
+
 local function IsWatchTabVisible()
     if not DoesWindowExist("StockPiler3Window") then
         return false

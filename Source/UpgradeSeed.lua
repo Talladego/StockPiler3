@@ -14,6 +14,11 @@ local US = StockPiler3.UpgradeSeed
 
 US._stallLatch = nil
 US._active = nil -- last pick { familyKey, haveReq, needReq, why }
+
+function US.ClearActive()
+    US._active = nil
+end
+
 US._upgradeTargetsCache = nil
 US._upgradeTargetsKey = nil
 
