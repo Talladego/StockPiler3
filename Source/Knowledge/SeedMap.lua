@@ -1339,6 +1339,9 @@ local function SpecProductCacheKey(spec)
     return ""
 end
 
+local _growableCache = {}
+local _growableCacheGen = nil
+
 local function PlantUidCacheGen()
     local snap = 0
     if StockPiler3.Inventory and StockPiler3.Inventory.GetSnapGen then
@@ -1354,7 +1357,7 @@ end
 --- Cultivation main/extender/stimulant/goldweed growable; resin byproducts not.
 --- Cultivation linkage (grows/refines) wins over butcher ProductMatches.
 --- Explicit isRefinable==false blocks optimistic cult-role -> plant (chitin/scales/etc.).
-function SM.IsGrowableSpec(spec)
+local function IsGrowableSpecUncached(spec)
     if type(spec) ~= "table" then
         return false
     end
@@ -1421,6 +1424,28 @@ function SM.IsGrowableSpec(spec)
         end
     end
     return false
+end
+
+--- Memo per uid for the bag snapshot and knowledge generation. BrewAvailableForSpec
+--- asks this for every seedless slot; butcher fingerprints otherwise scan Account.items.
+function SM.IsGrowableSpec(spec)
+    if type(spec) ~= "table" then
+        return false
+    end
+    local gen = PlantUidCacheGen()
+    if gen ~= _growableCacheGen then
+        _growableCache = {}
+        _growableCacheGen = gen
+    end
+    local uid = tonumber(spec.uid) or tonumber(spec.uniqueID) or tonumber(spec.boundUid) or 0
+    if uid > 0 and _growableCache[uid] ~= nil then
+        return _growableCache[uid] == true
+    end
+    local growable = IsGrowableSpecUncached(spec) == true
+    if uid > 0 then
+        _growableCache[uid] = growable
+    end
+    return growable
 end
 
 --- Resolve plant uid for fingerprint specs (no bound uid) via ProductMatches.
@@ -1924,6 +1949,13 @@ function SM.TryCompletePendingHarvest(force)
     if type(pending) ~= "table" then
         return false
     end
+    -- A missed loot event must not learn a later bank or mail gain.
+    local started = tonumber(pending.startedAt) or 0
+    local now = NowSec()
+    if started > 0 and now > 0 and (now - started) > 30 then
+        SM.PendingHarvestMap()[plotKey] = nil
+        return false
+    end
     -- Crafting chat said the harvest failed: do not learn any bag delta as a product.
     if pending.chatCriticalFailure == true then
         return SM.CompletePendingHarvestAsCritFail()
@@ -1956,10 +1988,12 @@ function SM.TryCompletePendingHarvest(force)
                 bucket.specialMomentHits = (tonumber(bucket.specialMomentHits) or 0) + 1
             end
         end
+        local credited = {}
         for uid, count in pairs(after) do
             local prev = tonumber(pending.before[uid]) or 0
             local delta = count - prev
             if delta > 0 then
+                credited[uid] = delta
                 local accepted, isNew = RecordHarvestProduct(seedUid, uid, delta)
                 if accepted == true then
                     if isNew == true then
@@ -1987,6 +2021,14 @@ function SM.TryCompletePendingHarvest(force)
                             skillReq = sReq,
                         }
                     end
+                end
+            end
+        end
+        local others = SM.PendingHarvestMap()
+        for uid, delta in pairs(credited) do
+            for key, other in pairs(others) do
+                if key ~= plotKey and type(other) == "table" and type(other.before) == "table" then
+                    other.before[uid] = (tonumber(other.before[uid]) or 0) + delta
                 end
             end
         end

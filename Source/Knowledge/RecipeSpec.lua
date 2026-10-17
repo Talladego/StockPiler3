@@ -500,28 +500,33 @@ local function StampIncompleteMainEffect(recipe)
             and tostring(spec.role or slot.role or "") == "main"
             and (spec.incomplete == true or (tonumber(spec.effectId) or 0) <= 0)
         then
-            local notRefinable = spec.isRefinable == false
-            if spec.isRefinable == nil then
-                -- Prefer learned vendor/butcher twin refinable flag at this fingerprint.
-                local items = StockPiler3.Account and StockPiler3.Account.items
-                if type(items) == "table" and MS and MS.ProductMatches then
-                    for uidKey, row in pairs(items) do
-                        if type(row) == "table" and row.isRefinable == false then
-                            local rowUid = tonumber(row.uniqueID) or tonumber(uidKey) or 0
-                            local probe = row
-                            if rowUid > 0 and StockPiler3.Items and StockPiler3.Items.AsItemData then
-                                probe = StockPiler3.Items.AsItemData(rowUid) or row
-                            end
-                            if MS.ProductMatches(probe, spec) == true then
-                                notRefinable = true
-                                break
+            local boundUid = tonumber(spec.boundUid) or tonumber(spec.uid) or tonumber(slot and slot.uid) or 0
+            if boundUid > 0 and StockPiler3.Items and StockPiler3.Items.StoreItem then
+                local skipKey = tostring(boundUid) .. ":" .. tostring(effectId)
+                RS._effectFallbackSkip = RS._effectFallbackSkip or {}
+                if RS._effectFallbackSkip[skipKey] == true then
+                    ResolveSlotSpec(slot)
+                else
+                local notRefinable = spec.isRefinable == false
+                if spec.isRefinable == nil then
+                    -- Prefer learned vendor/butcher twin refinable flag at this fingerprint.
+                    local items = StockPiler3.Account and StockPiler3.Account.items
+                    if type(items) == "table" and MS and MS.ProductMatches then
+                        for uidKey, row in pairs(items) do
+                            if type(row) == "table" and row.isRefinable == false then
+                                local rowUid = tonumber(row.uniqueID) or tonumber(uidKey) or 0
+                                local probe = row
+                                if rowUid > 0 and StockPiler3.Items and StockPiler3.Items.AsItemData then
+                                    probe = StockPiler3.Items.AsItemData(rowUid) or row
+                                end
+                                if MS.ProductMatches(probe, spec) == true then
+                                    notRefinable = true
+                                    break
+                                end
                             end
                         end
                     end
                 end
-            end
-            local boundUid = tonumber(spec.boundUid) or tonumber(spec.uid) or tonumber(slot and slot.uid) or 0
-            if boundUid > 0 and StockPiler3.Items and StockPiler3.Items.StoreItem then
                 local learned = StockPiler3.Items.GetByUid and StockPiler3.Items.GetByUid(boundUid) or nil
                 local craftingBonus = {}
                 local function pushBonus(ref, val)
@@ -547,6 +552,16 @@ local function StampIncompleteMainEffect(recipe)
                     end
                 end
                 pushBonus(effectRef, effectId)
+                local itemType = 0
+                if type(learned) == "table" then
+                    itemType = tonumber(learned.itemType) or tonumber(learned.type) or 0
+                end
+                if itemType <= 0 and GameData and GameData.ItemTypes then
+                    itemType = tonumber(GameData.ItemTypes.CRAFTING) or 0
+                end
+                if itemType <= 0 then
+                    itemType = 34
+                end
                 local payload = {
                     uniqueID = boundUid,
                     name = (type(learned) == "table" and learned.name) or spec.name,
@@ -554,15 +569,17 @@ local function StampIncompleteMainEffect(recipe)
                     craftingSkillRequirement = (type(learned) == "table" and learned.skillReq) or spec.skillLevel,
                     tradeSkill = (type(learned) == "table" and learned.tradeSkill) or spec.tradeSkill,
                     cultivationType = (type(learned) == "table" and learned.cultivationType) or spec.cultivationType,
+                    itemType = itemType,
                 }
                 if notRefinable then
                     payload.isRefinable = false
                 end
-                StockPiler3.Items.StoreItem(payload, "mat")
-                if StockPiler3.Knowledge and StockPiler3.Knowledge.Touch then
-                    StockPiler3.Knowledge.Touch("effect-fallback")
+                local stored = StockPiler3.Items.StoreItem(payload, "mat")
+                if type(stored) ~= "table" then
+                    RS._effectFallbackSkip[skipKey] = true
                 end
                 ResolveSlotSpec(slot)
+                end
             end
         end
     end
@@ -1109,7 +1126,12 @@ local function GrowReserveForSpec(spec)
     if seedUid <= 0 then
         -- Plant-only cushion (Cult-max s0, e.g. Savage Marshroot): hold bufferMin
         -- of the plant itself so brewRespectGrowReserve cannot burn the stack.
+        -- Resin, vials, and butchered stabilizers have no seed and are not plants.
+        -- Reserving them left SkillUp at seed_buffer with a full seed buffer (#79).
         if isSeed or plantOrSeedUid <= 0 then
+            return 0
+        end
+        if not (SM and SM.IsGrowableSpec and SM.IsGrowableSpec(spec) == true) then
             return 0
         end
         local Inv = StockPiler3.Inventory

@@ -16,7 +16,9 @@
 --
 -- Apo (when Skill up Apo is on and watches allow idle SkillUp):
 --   Brew only at FloorApoTier (exact rung). No lower-tier waste after
---   tier-up - wait for Cult to supply that tier's main/resin.
+--   tier-up. A lower cultivation main waits for Cult to supply this tier.
+--   A butcher main has no seed: it is not seed-buffer reserved. Flask buy
+--   is unchanged (exact-tier main in bags, AutoBuy on).
 --   Idle when watches stocked+buffer OK, or when every short watch is
 --   progress-blocked (AG off / vendor stall / need_skill) and buffer OK.
 --   Never consume plants/seeds still claimed by short watches
@@ -24,11 +26,13 @@
 --   for SkillUp refine - buffer headroom is a refine target, not a hold).
 --   Apo brew uses the same seed-buffer headroom reserve as normal potion
 --   watches (no extra standing plant cushion when the seed buffer is full).
---   Stabilizer: Arboreal Resin byproduct only. Compose main + container
---   (+0/+1/+2) + lowest-skillReq resins that still reach engine HIGH (sum > 0).
---   Prefer burning lower-tier resin over fewer units of Hale/Resilient when both
---   stabilize. Resin short -> refine leftover lower-tier mains first, then
---   surplus of the exact-floor brew main (keep >=1 for brew).
+--   Stabilizer: any positive-stability stabilizer at or under the floor
+--   (Arboreal Resin or a butchered stabilizer). Compose main + container
+--   (+0/+1/+2) + lowest-skillReq stabilizers that still reach engine HIGH
+--   (sum > 0). Prefer burning lower-tier stabilizers over fewer units of a
+--   stronger one when both stabilize. Resin short -> refine leftover
+--   lower-tier mains first, then surplus of the exact-floor brew main
+--   (keep >=1 for brew).
 --   Never hard-stall on "upgrade plant exists" when that plant cannot
 --   actually refine (fall through to same-tier refine / plant / AutoBuy).
 --   SkillUp crafts are not recorded as known potions (BrewLearn skips
@@ -108,6 +112,27 @@ end
 function SkillUp.IsApoVisible()
     local apo = SkillUp.GetApoSkill()
     return apo > 0 and apo < (SkillUp.APO_MAX or 200)
+end
+
+--- "missing" (not learned), "max" (at the cap), or "ready" (can still level).
+function SkillUp.LevelKind(level, maxLevel)
+    level = tonumber(level) or 0
+    maxLevel = tonumber(maxLevel) or 200
+    if level <= 0 then
+        return "missing"
+    end
+    if level >= maxLevel then
+        return "max"
+    end
+    return "ready"
+end
+
+function SkillUp.CultLevelKind()
+    return SkillUp.LevelKind(SkillUp.GetCultSkill(), SkillUp.CULT_MAX or 200)
+end
+
+function SkillUp.ApoLevelKind()
+    return SkillUp.LevelKind(SkillUp.GetApoSkill(), SkillUp.APO_MAX or 200)
 end
 
 --- CharRow toggle only (ignores skill blips). Used to keep Watch rows mounted.
@@ -3006,10 +3031,11 @@ function SkillUp.PlantFeedstockReserve(seedUid, plantUid)
 end
 
 --- How many of this plant stack are safe for SkillUp Apo brew (and resin convert).
---- plantCount - PlantFeedstockReserve. Unresolved seedUid -> 0.
---- SkillUp refine-into-buffer uses PlantRefineSurplus instead (buffer headroom is
---- a refine target there, not a plant hold).
-function SkillUp.PlantBrewSurplus(plantUid, seedUid, plantCount)
+--- plantCount - PlantFeedstockReserve. Unresolved cultivation seed -> 0.
+--- A non-growable main (butchered ingredient) has no seed; surplus is the
+--- stack minus any watch claim. SkillUp refine-into-buffer uses
+--- PlantRefineSurplus instead (buffer headroom is a refine target there).
+function SkillUp.PlantBrewSurplus(plantUid, seedUid, plantCount, spec)
     plantUid = tonumber(plantUid) or 0
     seedUid = tonumber(seedUid) or 0
     plantCount = tonumber(plantCount) or 0
@@ -3019,7 +3045,7 @@ function SkillUp.PlantBrewSurplus(plantUid, seedUid, plantCount)
     if seedUid <= 0 and plantUid > 0 then
         local SM = StockPiler3.SeedMap
         if SM and SM.ResolveSeedUidForPlant then
-            seedUid = tonumber(SM.ResolveSeedUidForPlant(plantUid, nil)) or 0
+            seedUid = tonumber(SM.ResolveSeedUidForPlant(plantUid, spec)) or 0
         end
         if seedUid <= 0 and SM and SM.GetSeedUidsForPlant then
             local seeds = SM.GetSeedUidsForPlant(plantUid) or {}
@@ -3028,8 +3054,25 @@ function SkillUp.PlantBrewSurplus(plantUid, seedUid, plantCount)
             end
         end
     end
-    -- Unresolved seed: buffer math unavailable - do not treat stack as SkillUp surplus.
     if seedUid <= 0 then
+        local SM = StockPiler3.SeedMap
+        if type(spec) ~= "table" and plantUid > 0 then
+            local MS = StockPiler3.MaterialSpec
+            if MS and MS.FromUid then
+                spec = MS.FromUid(plantUid)
+            end
+        end
+        -- Butchered / vendor mains are not seed-buffer feedstock.
+        if type(spec) == "table" and tostring(spec.role or "") == "main"
+            and (not SM or not SM.IsGrowableSpec or SM.IsGrowableSpec(spec) ~= true)
+        then
+            local watchNeed = SkillUp.WatchDemandReserve(plantUid)
+            local surplus = plantCount - watchNeed
+            if surplus < 0 then
+                return 0
+            end
+            return surplus
+        end
         return 0
     end
     local reserve = SkillUp.PlantFeedstockReserve(seedUid, plantUid)
@@ -3165,7 +3208,8 @@ local function ResinStabNeeded(mainStab, containerStab)
 end
 
 --- List bag candidates for Apo SkillUp role.
---- Main: exact FloorApoTier only. Container: skillReq <= floor. Stabilizer: resin byproduct.
+--- Main: exact FloorApoTier only (cultivation plant or butchered main).
+--- Container: skillReq <= floor. Stabilizer: resin or butchered stabilizer.
 function SkillUp.ListApoBagMaterials(role, opts)
     role = tostring(role or "")
     opts = type(opts) == "table" and opts or {}
@@ -3203,11 +3247,16 @@ function SkillUp.ListApoBagMaterials(role, opts)
             return
         end
         local specRole = tostring(spec.role or "")
+        local isResin = IsApoResinSpec(spec, item)
         if role == "stabilizer" then
-            if specRole ~= "stabilizer" and specRole ~= "goldweed" and not IsApoResinSpec(spec, item) then
-                return
-            end
-            if not IsApoResinSpec(spec, item) then
+            if isResin then
+                -- Arboreal Resin stays the cultivator stabilizer.
+            elseif specRole == "stabilizer"
+                and not (SM and SM.SpecHasGoldweedMultiplier and SM.SpecHasGoldweedMultiplier(spec) == true)
+                and not (MS and MS.IsCultivationAdditive and MS.IsCultivationAdditive(item) == true)
+            then
+                -- Butchered / vendor stabilizer. Competes with resin on the same rules.
+            else
                 return
             end
         elseif specRole ~= role then
@@ -3231,7 +3280,7 @@ function SkillUp.ListApoBagMaterials(role, opts)
         if role == "main" then
             seedUid = ResolveSeedUidForPlantItem(item, uid)
             if not ignoreReserve then
-                brewable = SkillUp.PlantBrewSurplus(uid, seedUid, count)
+                brewable = SkillUp.PlantBrewSurplus(uid, seedUid, count, spec)
                 if brewable < 1 then
                     return
                 end
@@ -3277,6 +3326,7 @@ function SkillUp.ListApoBagMaterials(role, opts)
             item = item,
             spec = spec,
             role = role == "stabilizer" and "stabilizer" or role,
+            resin = isResin == true,
         }
     end)
     return list
@@ -3320,21 +3370,27 @@ function SkillUp.PickApoBagMaterial(role, opts)
     return best
 end
 
---- Build a stable inventable recipe from bag surplus (container + main + resin).
---- Main must be exact Apo floor; resins prefer lowest that stabilize with container stab.
+--- Build a stable inventable recipe from bag surplus (container + main + stabilizer).
+--- Every exact-floor main is eligible (heal, regen, stat, plant, or butchered).
+--- The largest usable surplus is brewed first. One brew still uses one main.
 function SkillUp.BuildApoBrewRecipe()
     if SkillUp.ShouldApoBrew() ~= true then
         return nil
     end
-    local main = SkillUp.PickApoBagMaterial("main")
-    if type(main) ~= "table" then
+    local mains = SkillUp.ListApoBagMaterials("main")
+    if #mains == 0 then
         if SkillUp.PickApoBagMaterial("main", { ignoreReserve = true }) ~= nil then
             return nil, "seed_buffer"
         end
         local lower = SkillUp.ListApoBagMaterials("main", { exactTier = false, ignoreReserve = true })
         local targetTier = SkillUp.ApoTargetTier()
+        local SM = StockPiler3.SeedMap
         for i = 1, #lower do
-            if (tonumber(lower[i].skillReq) or 0) < targetTier then
+            local cand = lower[i]
+            if (tonumber(cand.skillReq) or 0) < targetTier
+                and SM and SM.IsGrowableSpec and type(cand.spec) == "table"
+                and SM.IsGrowableSpec(cand.spec) == true
+            then
                 return nil, "wait_cult"
             end
         end
@@ -3345,21 +3401,6 @@ function SkillUp.BuildApoBrewRecipe()
     local resins = SkillUp.ListApoBagMaterials("stabilizer")
     if #containers == 0 then
         return nil, "need_mats"
-    end
-    if #resins == 0 then
-        local anyStableWithoutResin = false
-        for i = 1, #containers do
-            local c = containers[i]
-            if (tonumber(c.uid) or 0) ~= (tonumber(main.uid) or 0) then
-                if ResinStabNeeded(main.stability, c.stability) <= 0 then
-                    anyStableWithoutResin = true
-                    break
-                end
-            end
-        end
-        if not anyStableWithoutResin then
-            return nil, "need_resin"
-        end
     end
 
     table.sort(containers, function(a, b)
@@ -3373,8 +3414,7 @@ function SkillUp.BuildApoBrewRecipe()
         end
         return (tonumber(a.count) or 0) > (tonumber(b.count) or 0)
     end)
-    -- Prefer lowest-tier resin that can still stabilize (burn Gooey/Slimy before Hale).
-    -- Tip text: "Prefers lower resins ... that still go green."
+    -- Prefer lowest-tier stabilizer that can still stabilize.
     table.sort(resins, function(a, b)
         local ta, tb = tonumber(a.skillReq) or 0, tonumber(b.skillReq) or 0
         if ta ~= tb then
@@ -3391,7 +3431,7 @@ function SkillUp.BuildApoBrewRecipe()
     local bestRecipe, bestParts = nil, nil
     local bestCost = 1e9
 
-    local function tryCombo(container, resin, resinUnits)
+    local function tryCombo(main, container, resin, resinUnits)
         if (tonumber(container.uid) or 0) == (tonumber(main.uid) or 0) then
             return
         end
@@ -3445,16 +3485,15 @@ function SkillUp.BuildApoBrewRecipe()
         if RS and RS.RecipeIsStable and RS.RecipeIsStable({ slots = slots }) ~= true then
             return
         end
-        -- Prefer lower resin skillReq first (burn leftover tiers), then fewer
-        -- units, then lower resin/container stab. Do not prefer high-tier resin
-        -- just because it needs fewer slots.
+        -- Largest main surplus first. Stabilizer skill only breaks a tie.
         local rReq = 0
         local rStab = 0
         if type(resin) == "table" then
             rReq = tonumber(resin.skillReq) or 0
             rStab = tonumber(resin.stability) or 0
         end
-        local cost = rReq * 10000
+        local cost = -((tonumber(main.count) or 0) * 1000000)
+            + rReq * 10000
             + resinUnits * 100
             + rStab
             + (tonumber(container.stability) or 0)
@@ -3478,23 +3517,26 @@ function SkillUp.BuildApoBrewRecipe()
         end
     end
 
-    for ci = 1, #containers do
-        local container = containers[ci]
-        local needStab = ResinStabNeeded(main.stability, container.stability)
-        if needStab <= 0 then
-            tryCombo(container, nil, 0)
-        else
-            for ri = 1, #resins do
-                local resin = resins[ri]
-                local rStab = tonumber(resin.stability) or 0
-                if rStab > 0 then
-                    local units = math.ceil(needStab / rStab)
-                    if units < 1 then
-                        units = 1
-                    end
-                    if units <= 3 then
-                        for u = units, 3 do
-                            tryCombo(container, resin, u)
+    for mi = 1, #mains do
+        local main = mains[mi]
+        for ci = 1, #containers do
+            local container = containers[ci]
+            local needStab = ResinStabNeeded(main.stability, container.stability)
+            if needStab <= 0 then
+                tryCombo(main, container, nil, 0)
+            else
+                for ri = 1, #resins do
+                    local resin = resins[ri]
+                    local rStab = tonumber(resin.stability) or 0
+                    if rStab > 0 then
+                        local units = math.ceil(needStab / rStab)
+                        if units < 1 then
+                            units = 1
+                        end
+                        if units <= 3 then
+                            for u = units, 3 do
+                                tryCombo(main, container, resin, u)
+                            end
                         end
                     end
                 end
@@ -3543,7 +3585,36 @@ function SkillUp.BuildApoBrewRow(opts)
     end
     if craftable < 1 then
         SkillUp._apoBrewRow = nil
-        local heldForBuffer = SkillUp.PickApoBagMaterial("main", { ignoreReserve = true }) ~= nil
+        -- A main in bags is not enough: seed_buffer only when a slot has the
+        -- stack but the grow reserve holds it below one craft. A missing vial
+        -- is need_mats (#79).
+        local heldForBuffer = false
+        local slots = recipe.slots
+        if type(slots) == "table" and RS.CountItemsMatchingSpec and RS.BrewAvailableForSpec then
+            for i = 1, #slots do
+                local slot = slots[i]
+                if type(slot) == "table" then
+                    local spec = slot.spec
+                    if RS.ResolveSlotSpec then
+                        spec = RS.ResolveSlotSpec(slot) or spec
+                    end
+                    if type(spec) == "table" then
+                        local per = 1
+                        if RS.EffectiveSpecPerCraft then
+                            per = math.max(1, tonumber(RS.EffectiveSpecPerCraft(slot, slots)) or 1)
+                        else
+                            per = math.max(1, tonumber(slot.perCraft) or 1)
+                        end
+                        local bag = tonumber(RS.CountItemsMatchingSpec(spec)) or 0
+                        local avail = tonumber(RS.BrewAvailableForSpec(spec)) or 0
+                        if bag >= per and avail < per then
+                            heldForBuffer = true
+                            break
+                        end
+                    end
+                end
+            end
+        end
         if heldForBuffer and StockPiler3.Refine and StockPiler3.Refine.MarkRefineDue then
             StockPiler3.Refine.MarkRefineDue("skill-up-buffer")
         end
@@ -4237,34 +4308,57 @@ local function TradeSkillIcon(kind)
     return Caps and Caps.GetCultivationIcon and tonumber(Caps.GetCultivationIcon()) or 0
 end
 
+--- Sticky 0 is a confirmed unlearn, not a combat blip (those keep the last level).
+--- Clear that skill's toggle so its watch row leaves while the skill is gone.
+function SkillUp.DropToggleIfUnlearned()
+    if type(CharRow(false)) ~= "table" then
+        return
+    end
+    -- Before the first trade-skill pulse a missing persist reads 0. That is
+    -- not an unlearn, and clearing here would drop a saved toggle on login.
+    local Caps = StockPiler3.TradeSkillCaps
+    if not Caps or Caps._skillsReady ~= true then
+        return
+    end
+    if (tonumber(SkillUp.GetCultSkill()) or 0) <= 0 and SkillUp.IsCultToggleOn() == true then
+        SkillUp.SetCultEnabled(false)
+    end
+    if (tonumber(SkillUp.GetApoSkill()) or 0) <= 0 and SkillUp.IsApoToggleOn() == true then
+        SkillUp.SetApoEnabled(false)
+    end
+end
+
+--- The checkbox is one switch for every skill that can still level.
+--- Learning Apothecary while Cultivating skill-up is already on (or the
+--- reverse) turns the new skill on without another click.
+function SkillUp.AdoptReadySkills()
+    if type(CharRow(false)) ~= "table" then
+        return
+    end
+    local cultOn = SkillUp.IsCultToggleOn() == true
+    local apoOn = SkillUp.IsApoToggleOn() == true
+    if cultOn ~= true and apoOn ~= true then
+        return
+    end
+    if SkillUp.IsCultVisible() == true and cultOn ~= true then
+        SkillUp.SetCultEnabled(true)
+    end
+    if SkillUp.IsApoVisible() == true and apoOn ~= true then
+        SkillUp.SetApoEnabled(true)
+    end
+end
+
 --- True when the Cult SkillUp watch row should mount.
---- Active while Cult or Apo SkillUp is enabled; or Cult/Apo skill blips to 0
---- with CharRow toggle still on. Hidden at Cult/Apo 200 (toggles may linger).
+--- Only while Cultivating is learned, under 200, and its toggle is on.
+--- A combat blip still counts: GetCultSkill keeps the last level. At 200 the
+--- toggle may linger, but the row stays hidden.
 function SkillUp.WantCultWatchRow()
-    if SkillUp.IsCultEnabled() == true or SkillUp.IsApoEnabled() == true then
-        return true
-    end
-    local cult = SkillUp.GetCultSkill()
-    local apo = SkillUp.GetApoSkill()
-    if cult <= 0 and SkillUp.IsCultToggleOn() == true then
-        return true
-    end
-    if apo <= 0 and SkillUp.IsApoToggleOn() == true then
-        return true
-    end
-    return false
+    return SkillUp.IsCultEnabled() == true
 end
 
 --- True when the Apo SkillUp watch row should mount.
 function SkillUp.WantApoWatchRow()
-    if SkillUp.IsApoEnabled() == true then
-        return true
-    end
-    local apo = SkillUp.GetApoSkill()
-    if apo <= 0 and SkillUp.IsApoToggleOn() == true then
-        return true
-    end
-    return false
+    return SkillUp.IsApoEnabled() == true
 end
 
 local function BuildCultWatchStatusRow()
@@ -4588,7 +4682,7 @@ local function BuildApoWatchStatusRow()
 end
 
 --- True when ephemeral SkillUp rows should appear on the Watch tab.
---- Enabled SkillUp (under cap) or transient skill blip; not at Cult/Apo 200.
+--- Each row mounts only while that skill is learned and under 200.
 function SkillUp.ShouldShowWatchStatus()
     return SkillUp.WantCultWatchRow() == true or SkillUp.WantApoWatchRow() == true
 end

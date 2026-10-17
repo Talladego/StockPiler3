@@ -18,10 +18,30 @@ end
 
 RecipeTooltip.SEP_LINE = T("recipe.sep")
 
---- Private row windows. Tooltips.NUM_ROWS is raised only while this tip is drawn,
---- then restored. SetTooltipText and Finalize ignore rows above that count.
+--- Private row windows. Tooltips.NUM_ROWS stays raised until the next ClearTooltip
+--- so stock clear walks the extra rows. SetTooltipText ignores rows above that count.
 local RECIPE_TOOLTIP_MAX_ROWS = 80
+local STOCK_TOOLTIP_ROWS = 17
 RecipeTooltip._numRows = 17
+RecipeTooltip._raisedRows = nil
+
+local function InstallClearTooltipHook()
+    if RecipeTooltip._origClearTooltip or not Tooltips or type(Tooltips.ClearTooltip) ~= "function" then
+        return
+    end
+    RecipeTooltip._origClearTooltip = Tooltips.ClearTooltip
+    Tooltips.ClearTooltip = function()
+        local raised = tonumber(RecipeTooltip._raisedRows) or 0
+        if raised > STOCK_TOOLTIP_ROWS then
+            Tooltips.NUM_ROWS = raised
+        end
+        RecipeTooltip._origClearTooltip()
+        if raised > STOCK_TOOLTIP_ROWS then
+            Tooltips.NUM_ROWS = STOCK_TOOLTIP_ROWS
+            RecipeTooltip._raisedRows = nil
+        end
+    end
+end
 
 local function RgbDef(rgb)
     if not rgb then
@@ -129,11 +149,18 @@ function RecipeTooltip.ShowColoredRows(anchorWindow, rows, anchor, maxRows)
         want = #rows
     end
     local engineMax = RecipeTooltip.EnsureRows(want)
-    local stockRows = tonumber(Tooltips.NUM_ROWS) or 17
+    InstallClearTooltipHook()
+    local stockRows = STOCK_TOOLTIP_ROWS
     if engineMax > stockRows then
+        RecipeTooltip._raisedRows = engineMax
         Tooltips.NUM_ROWS = engineMax
     end
     Tooltips.CreateTextOnlyTooltip(anchorWindow)
+    -- ClearTooltip restores the stock count. Raise it again for this draw.
+    if engineMax > stockRows then
+        RecipeTooltip._raisedRows = engineMax
+        Tooltips.NUM_ROWS = engineMax
+    end
     local limit = engineMax
     if tonumber(maxRows) and tonumber(maxRows) < limit then
         limit = tonumber(maxRows)
@@ -152,9 +179,6 @@ function RecipeTooltip.ShowColoredRows(anchorWindow, rows, anchor, maxRows)
     end
     Tooltips.Finalize()
     Tooltips.AnchorTooltip(anchor or Tooltips.ANCHOR_WINDOW_RIGHT)
-    if tonumber(Tooltips.NUM_ROWS) ~= stockRows then
-        Tooltips.NUM_ROWS = stockRows
-    end
 end
 
 --- Fit row budget without dropping ingredient dividers (--- before next ingredient).

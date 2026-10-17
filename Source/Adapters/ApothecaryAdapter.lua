@@ -366,17 +366,8 @@ function AA.InstallStealthHooks()
             if isApo and EngineShowSuppressed() then
                 return
             end
-            -- Parked stealth brew stays off-screen while AutoBrew owns the session.
-            -- A late CRAFTING_SHOW_WINDOW echo after the first SendInitCrafting
-            -- (login / reload) used this path and left the window up until close.
+            -- After the show-suppress TTL, a press on a parked window is the player.
             if isApo and AA._apoParked == true then
-                local Brew = StockPiler3.Brew
-                local session = Brew and Brew.GetSession and Brew.GetSession()
-                local owned = type(session) == "table" and session._brewOwnedSession == true
-                if owned then
-                    AA.ParkApoRoot()
-                    return
-                end
                 AA._playerWantsApo = true
                 AA.ClearEngineShowSuppress()
                 PlaceApoOnScreen()

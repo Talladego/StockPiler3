@@ -386,6 +386,13 @@ function Bridge.OnTradeSkillUpdated()
         if Refine and Refine.MarkRefineDue then
             Refine.MarkRefineDue("skill")
         end
+        local SkillUp = StockPiler3.SkillUp
+        if SkillUp and SkillUp.DropToggleIfUnlearned then
+            SkillUp.DropToggleIfUnlearned()
+        end
+        if SkillUp and SkillUp.AdoptReadySkills then
+            SkillUp.AdoptReadySkills()
+        end
         if StockPiler3.Scheduler and StockPiler3.Scheduler.EnqueuePlanRebuild then
             StockPiler3.Scheduler.EnqueuePlanRebuild()
         end

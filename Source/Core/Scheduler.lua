@@ -472,9 +472,9 @@ local function OnInventorySnapshot()
     -- never WarmHave or PatchWatch inside this handler.
     local RP = StockPiler3.RefinePipeline
     local refineBusy = RP and RP.HasOutstanding and RP.HasOutstanding() == true
-    if not plantQuiet and not storm and not brewSession and not refineBusy then
+    if not suppressed and not brewSession and not refineBusy then
         Sch.EnqueuePlanRebuild({ nudge = true })
-    elseif plantQuiet or storm then
+    elseif suppressed then
         -- Bag moves during quiet/storm: latch rebuild after quiet-end invalidate.
         -- Without this, remounted WarmHave stamps stale craftable and Watch only
         -- catches up on a later stack move.
