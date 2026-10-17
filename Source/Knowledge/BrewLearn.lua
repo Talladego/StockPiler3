@@ -727,3 +727,9 @@ function BL.OnCreatedChat(createdName)
     BL.MarkInventoryCraftPollDue()
     return false
 end
+
+function BL.OnCraftChat(payload)
+    if type(payload) == "table" and payload.kind == "created" then
+        BL.OnCreatedChat(payload.name)
+    end
+end

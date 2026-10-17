@@ -39,6 +39,40 @@ function Ui.ClearWatchThrottleKey()
     Ui._watchUiLastKey = nil
 end
 
+function Ui.OnTradeSkillsChanged(payload)
+    payload = type(payload) == "table" and payload or {}
+    if Ui.InvalidateSkillGates then
+        Ui.InvalidateSkillGates()
+    end
+    local Bus = StockPiler3.EventBus
+    if payload.reason == "trade-caps" then
+        Ui.ClearWatchThrottleKey()
+        if Bus and Bus.FireWatchUiDirty then
+            Bus.FireWatchUiDirty({ reason = "trade-caps" })
+        end
+        return
+    end
+    if Ui.BypassWatchThrottle then
+        Ui.BypassWatchThrottle()
+    end
+    if Bus and Bus.FireWatchUiDirty then
+        Bus.FireWatchUiDirty({ reason = "trade-skill" })
+    end
+end
+
+function Ui.OnSessionSettled()
+    if Ui.InvalidateSkillGates then
+        Ui.InvalidateSkillGates()
+    end
+    if Ui.BypassWatchThrottle then
+        Ui.BypassWatchThrottle()
+    end
+    local Bus = StockPiler3.EventBus
+    if Bus and Bus.FireWatchUiDirty then
+        Bus.FireWatchUiDirty({ reason = "session-settle" })
+    end
+end
+
 local function IsWatchTabVisible()
     if not DoesWindowExist("StockPiler3Window") then
         return false

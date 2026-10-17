@@ -3,7 +3,7 @@
 ----------------------------------------------------------------
 
 StockPiler3 = StockPiler3 or {}
-StockPiler3.Version = L"0.3.414"
+StockPiler3.Version = L"0.3.415"
 
 local function T(key, tokens)
     return StockPiler3.Util.T(key, tokens)
@@ -567,6 +567,43 @@ function StockPiler3.Initialize()
     if StockPiler3.EngineEventBridge and StockPiler3.EngineEventBridge.Register then
         StockPiler3.EngineEventBridge.Register()
     end
+    local Bus = StockPiler3.EventBus
+    local E = StockPiler3.Events
+    if Bus and Bus.Subscribe and E then
+        if E.TRADE_SKILLS_CHANGED then
+            if StockPiler3.Ui and StockPiler3.Ui.OnTradeSkillsChanged then
+                Bus.Subscribe(E.TRADE_SKILLS_CHANGED, StockPiler3.Ui.OnTradeSkillsChanged)
+            end
+            if StockPiler3.Grow and StockPiler3.Grow.OnTradeSkillsChanged then
+                Bus.Subscribe(E.TRADE_SKILLS_CHANGED, StockPiler3.Grow.OnTradeSkillsChanged)
+            end
+            if StockPiler3.Scheduler and StockPiler3.Scheduler.OnTradeSkillsChanged then
+                Bus.Subscribe(E.TRADE_SKILLS_CHANGED, StockPiler3.Scheduler.OnTradeSkillsChanged)
+            end
+        end
+        if E.CRAFT_CHAT then
+            if StockPiler3.SeedMap and StockPiler3.SeedMap.OnCraftChat then
+                Bus.Subscribe(E.CRAFT_CHAT, StockPiler3.SeedMap.OnCraftChat)
+            end
+            if StockPiler3.Grow and StockPiler3.Grow.OnCraftChat then
+                Bus.Subscribe(E.CRAFT_CHAT, StockPiler3.Grow.OnCraftChat)
+            end
+            if StockPiler3.BrewLearn and StockPiler3.BrewLearn.OnCraftChat then
+                Bus.Subscribe(E.CRAFT_CHAT, StockPiler3.BrewLearn.OnCraftChat)
+            end
+            if StockPiler3.Brew and StockPiler3.Brew.OnCraftChat then
+                Bus.Subscribe(E.CRAFT_CHAT, StockPiler3.Brew.OnCraftChat)
+            end
+        end
+        if E.SESSION_SETTLED then
+            if StockPiler3.Ui and StockPiler3.Ui.OnSessionSettled then
+                Bus.Subscribe(E.SESSION_SETTLED, StockPiler3.Ui.OnSessionSettled)
+            end
+            if StockPiler3Window and StockPiler3Window.OnSessionSettled then
+                Bus.Subscribe(E.SESSION_SETTLED, StockPiler3Window.OnSessionSettled)
+            end
+        end
+    end
     if StockPiler3.CraftChatAdapter and StockPiler3.CraftChatAdapter.RegisterChat then
         StockPiler3.CraftChatAdapter.RegisterChat()
     end
@@ -581,6 +618,13 @@ function StockPiler3.Initialize()
     end
     if StockPiler3.Ui and StockPiler3.Ui.RegisterEventRefresh then
         StockPiler3.Ui.RegisterEventRefresh()
+    end
+    if Bus and Bus.Subscribe and E and E.VENDOR_UPDATED
+        and StockPiler3.Buy and StockPiler3.Buy.OnStoreUpdated
+    then
+        Bus.Subscribe(E.VENDOR_UPDATED, function(payload)
+            StockPiler3.Buy.OnStoreUpdated(type(payload) == "table" and payload or { refreshLists = true })
+        end)
     end
     if StockPiler3.Brew and StockPiler3.Brew.RegisterEventHandlers then
         StockPiler3.Brew.RegisterEventHandlers()

@@ -171,10 +171,7 @@ local function NotifyStoreUpdated()
     local B = StockPiler3.EventBus
     local E = StockPiler3.Events
     if B and E and E.VENDOR_UPDATED then
-        B.Fire(E.VENDOR_UPDATED, { gen = VA._matchIndexGen })
-    end
-    if StockPiler3.Buy and StockPiler3.Buy.OnStoreUpdated then
-        StockPiler3.Buy.OnStoreUpdated({ refreshLists = true })
+        B.Fire(E.VENDOR_UPDATED, { gen = VA._matchIndexGen, refreshLists = true })
     end
     if StockPiler3.Scheduler and StockPiler3.Scheduler.WakeAutoBuy then
         StockPiler3.Scheduler.WakeAutoBuy()

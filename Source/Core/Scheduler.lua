@@ -787,32 +787,12 @@ local function MaybeFinishSessionSettle()
         return
     end
     Sch._sessionSettleArmed = false
-    local Ui = StockPiler3.Ui
-    if Ui then
-        if Ui.InvalidateSkillGates then
-            Ui.InvalidateSkillGates()
-        end
-        if Ui.BypassWatchThrottle then
-            Ui.BypassWatchThrottle()
-        end
-    end
     local Bus = StockPiler3.EventBus
-    if Bus and Bus.FireWatchUiDirty then
-        Bus.FireWatchUiDirty({ reason = "session-settle" })
+    local E = StockPiler3.Events
+    if Bus and E and E.SESSION_SETTLED then
+        Bus.Fire(E.SESSION_SETTLED, { reason = "session-settle" })
     end
     Sch.EnqueuePlanRebuild({ urgent = true })
-    if DoesWindowExist("StockPiler3Window")
-        and WindowGetShowing("StockPiler3Window") == true
-        and StockPiler3Window and StockPiler3Window.BeginOpenPaint
-    then
-        StockPiler3Window.BeginOpenPaint()
-    end
-    -- One readiness pass after settle so a Harvest/Brew button that is already
-    -- lit gets its ready chime (announce is suppressed during the settle window).
-    if StockPiler3Window and StockPiler3Window.SyncActionReadiness then
-        StockPiler3Window._footerSyncFrame = nil
-        StockPiler3Window.SyncActionReadiness({ immediate = true })
-    end
 end
 
 function Sch.MarkAwaitingSessionLoad()
@@ -891,6 +871,14 @@ function Sch.EnqueueBagFlush(needQueue)
     if needQueue == true then
         Sch._bagNeedQueue = true
     end
+end
+
+function Sch.OnTradeSkillsChanged(payload)
+    if type(payload) == "table" and payload.reason == "trade-caps" then
+        return
+    end
+    Sch.EnqueuePlanRebuild({ urgent = true })
+    Sch.WakeAutoGrow()
 end
 
 function Sch.EnqueuePlanRebuild(opts)
