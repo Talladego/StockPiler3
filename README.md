@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.412** - A brew that records yield recounts Craftable without a manual cache wipe.
+**Version 0.3.413** - Harvest and plant holds expire once per frame, and the fill block uses one clock.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -142,6 +142,7 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.413 | Harvest storm and plant quiet are read-only. Their expiry runs once per frame. The fill block has one owner, in seconds, and AutoGrow uses one work check (#41 item 4) |
 | 0.3.412 | Recipe yield and success counts bump a stats generation in the plan cache and Craftable stamp. Publishing a plan and Watch setting clicks no longer wipe caches the key already covers (#41 item 2) |
 | 0.3.411 | Plan builds use the rows being built, copy carried SkillUp rows, and leave the live watch table off the published plan (#41 item 3). Empty plant picks skip the bag walk, a real plant waits one frame, and Craftable uses the repeated integer bag yield |
 | 0.3.410 | Demand, focus, and seed-line caches use the full generation key. Manual cache clears stay (#41 item 2) |

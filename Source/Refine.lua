@@ -544,8 +544,7 @@ local function EnsureBufferFlagsCached()
     if Refine._allowBufferFlagsRebuild ~= true then
         local Sch = StockPiler3.Scheduler
         local quiet = Sch and (
-            (Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true)
-            or (Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true)
+            (Sch.IsSuppressed and Sch.IsSuppressed() == true)
             or (Sch.IsOrchDecisionHold and Sch.IsOrchDecisionHold() == true)
         )
         local Orch = StockPiler3.Orchestrator
@@ -1179,8 +1178,7 @@ function Refine.CollectIntents()
         local Sch = StockPiler3.Scheduler
         local hold = Sch and (
             (Sch.IsOrchDecisionHold and Sch.IsOrchDecisionHold() == true)
-            or (Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true)
-            or (Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true)
+            or (Sch.IsSuppressed and Sch.IsSuppressed() == true)
         )
         if hold == true then
             demand = RS.BuildBalancedSpecDemand({ cacheOnly = true })

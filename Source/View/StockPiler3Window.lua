@@ -298,10 +298,7 @@ function StockPiler3Window.FlushPendingFooterRefresh()
     local brewJob = StockPiler3.Brew and StockPiler3.Brew.IsLoadJobActive
         and StockPiler3.Brew.IsLoadJobActive() == true
     if not brewJob then
-        if Sch and Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
-            return
-        end
-        if Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+        if Sch and Sch.IsSuppressed and Sch.IsSuppressed() == true then
             return
         end
     end

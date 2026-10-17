@@ -68,11 +68,7 @@ local function ShouldSkipPump()
         if Sch.SkipPlanThisFrameActive and Sch.SkipPlanThisFrameActive() == true then
             return true
         end
-        if Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true then
-            return true
-        end
-        -- Plant/refine quiet: never WarmHave/Demand bag work under CultivationUpdated.
-        if Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true then
+        if Sch.IsSuppressed and Sch.IsSuppressed() == true then
             return true
         end
     end

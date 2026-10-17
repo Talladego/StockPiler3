@@ -83,7 +83,8 @@ local function HasPendingBufferRefine()
     return false
 end
 
-local function HasAutoGrowWork()
+function Orch.HasAutoGrowWork(opts)
+    opts = type(opts) == "table" and opts or {}
     local Watch = StockPiler3.Watch
     if not Watch or not Watch.IsAutoGrowEnabled or Watch.IsAutoGrowEnabled() ~= true then
         return false
@@ -92,7 +93,7 @@ local function HasAutoGrowWork()
     if Grow and Grow.NeedsCurrentStageAdditive and Grow.NeedsCurrentStageAdditive() then
         return true
     end
-    if Orch.IsFillBlocked() then
+    if opts.respectFillBlock == true and Orch.IsFillBlocked() then
         local RP = StockPiler3.RefinePipeline
         if RP and RP.HasOutstanding and RP.HasOutstanding() then
             return true
@@ -103,22 +104,35 @@ local function HasAutoGrowWork()
     if RP and RP.HasOutstanding and RP.HasOutstanding() then
         return true
     end
-    if Grow and Grow.HasEmptyPlot and Grow.HasEmptyPlot() then
+    if opts.emptyPlot == true and Grow and Grow.HasEmptyPlot and Grow.HasEmptyPlot() then
         return true
     end
     local Refine = StockPiler3.Refine
-    if Refine and Refine._refineDirty == true then
+    if opts.refineDirty == true and Refine and Refine._refineDirty == true then
         return true
     end
-    -- Freshness-aware peek: only trust a hit whose cache key still matches.
-    -- Nil/stale falls through to full HasPendingBufferRefine (may rebuild).
-    if Refine and Refine.PeekFreshBufferPending then
+    if opts.peek == "fresh" and Refine and Refine.PeekFreshBufferPending then
         local peeked = Refine.PeekFreshBufferPending()
         if peeked ~= nil then
             return peeked == true
         end
+    elseif opts.peek == "cached" then
+        return Refine and Refine.PeekCachedBufferPending and Refine.PeekCachedBufferPending() == true
     end
-    return HasPendingBufferRefine()
+    if opts.rebuildOnStale == true then
+        return HasPendingBufferRefine()
+    end
+    return false
+end
+
+local function HasAutoGrowWork()
+    return Orch.HasAutoGrowWork({
+        respectFillBlock = true,
+        emptyPlot = true,
+        refineDirty = true,
+        peek = "fresh",
+        rebuildOnStale = true,
+    }) == true
 end
 
 local function ClearFillIfBufferOk()
@@ -160,18 +174,15 @@ function Orch.SetBrewPhase(phase)
 end
 
 function Orch.IsFillBlocked()
-    if Orch._fillBlocked == true then
-        return true
-    end
-    local Grow = StockPiler3.Grow
-    if Grow and Grow.IsFillBlocked and Grow.IsFillBlocked() == true then
-        return true
-    end
-    return false
+    return Orch._fillBlocked == true
 end
 
 --- only extend until-time if later than current; wait is seconds via NowSec
 function Orch.SetFillBlocked(wait)
+    if Orch._fillBlockWrite == true then
+        return
+    end
+    Orch._fillBlockWrite = true
     wait = tonumber(wait) or 0
     if wait < 0 then
         wait = 0
@@ -190,31 +201,22 @@ function Orch.SetFillBlocked(wait)
         Orch._fillBlockedWait = wait
     end
     Orch._fillBlocked = true
-    local Grow = StockPiler3.Grow
-    if Grow and Grow.SetFillBlocked then
-        Grow.SetFillBlocked(true, Orch._fillBlockedWait)
-    end
+    Orch._fillBlockWrite = false
 end
 
 function Orch.ClearFillBlocked()
+    if Orch._fillBlockWrite == true then
+        return
+    end
+    Orch._fillBlockWrite = true
     Orch._fillBlocked = false
     Orch._fillBlockedWait = 0
     Orch._fillBlockedUntil = 0
-    local Grow = StockPiler3.Grow
-    if Grow and Grow.ClearFillBlocked then
-        Grow.ClearFillBlocked()
-    end
+    Orch._fillBlockWrite = false
 end
 
 function Orch.DecayFillBlocked()
     if Orch._fillBlocked ~= true then
-        -- Grow may still be latched after Orch wait hit 0 on a prior tick.
-        local Grow = StockPiler3.Grow
-        if Grow and Grow.IsFillBlocked and Grow.IsFillBlocked() == true
-            and Grow.ClearFillBlocked
-        then
-            Grow.ClearFillBlocked()
-        end
         return
     end
     local now = 0
@@ -433,11 +435,10 @@ function Orch._TickBody()
         return
     end
 
-    local plantQuiet = Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true
-    local harvestStorm = Sch and Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true
+    local suppressed = Sch and Sch.IsSuppressed and Sch.IsSuppressed() == true
     local settling = Sch and Sch.IsSessionSettling and Sch.IsSessionSettling() == true
     -- plant quiet / harvest storm / session settle -> fast tick, no grow probes
-    if plantQuiet or harvestStorm or settling then
+    if suppressed or settling then
         if Sch and Sch.SetAutoGrowIdle then
             Sch.SetAutoGrowIdle(false)
         end

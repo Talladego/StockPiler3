@@ -824,8 +824,7 @@ local function BuildVisibleList(opts)
     -- Never sync-force Planner.Build from Watch paint (SP2 Flatten). Empty/stale
     -- plan: keep previous rows and enqueue a coalesced rebuild.
     local Sch = StockPiler3.Scheduler
-    local holdBuild = (Sch and Sch.IsHarvestStorm and Sch.IsHarvestStorm() == true)
-        or (Sch and Sch.IsPlantQuiet and Sch.IsPlantQuiet() == true)
+    local holdBuild = (Sch and Sch.IsSuppressed and Sch.IsSuppressed() == true)
         or (Sch and Sch.IsPlanRebuildPending and Sch.IsPlanRebuildPending() == true)
     local snap = StockPiler3.PlanSnapshot and StockPiler3.PlanSnapshot.Get
         and StockPiler3.PlanSnapshot.Get()
