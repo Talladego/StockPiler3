@@ -3434,6 +3434,16 @@ function SkillUp.BuildApoBrewRecipe()
         return (tonumber(a.count) or 0) > (tonumber(b.count) or 0)
     end)
 
+    -- Largest surplus first. The first main that can form a stable recipe wins.
+    table.sort(mains, function(a, b)
+        local ca = tonumber(a.count) or 0
+        local cb = tonumber(b.count) or 0
+        if ca ~= cb then
+            return ca > cb
+        end
+        return (tonumber(a.uid) or 0) < (tonumber(b.uid) or 0)
+    end)
+
     local RS = StockPiler3.RecipeSpec
     local bestRecipe, bestParts = nil, nil
     local bestCost = 1e9
@@ -3492,15 +3502,14 @@ function SkillUp.BuildApoBrewRecipe()
         if RS and RS.RecipeIsStable and RS.RecipeIsStable({ slots = slots }) ~= true then
             return
         end
-        -- Largest main surplus first. Stabilizer skill only breaks a tie.
+        -- Mains are already ordered by surplus. Stabilizer skill breaks ties.
         local rReq = 0
         local rStab = 0
         if type(resin) == "table" then
             rReq = tonumber(resin.skillReq) or 0
             rStab = tonumber(resin.stability) or 0
         end
-        local cost = -((tonumber(main.count) or 0) * 1000000)
-            + rReq * 10000
+        local cost = rReq * 10000
             + resinUnits * 100
             + rStab
             + (tonumber(container.stability) or 0)
@@ -3548,6 +3557,9 @@ function SkillUp.BuildApoBrewRecipe()
                     end
                 end
             end
+        end
+        if type(bestRecipe) == "table" then
+            break
         end
     end
 
@@ -4384,11 +4396,17 @@ function SkillUp.AdoptReadySkills()
 end
 
 --- True when the Cult SkillUp watch row should mount.
---- Only while Cultivating is learned, under 200, and its toggle is on.
---- A combat blip still counts: GetCultSkill keeps the last level. At 200 the
---- toggle may linger, but the row stays hidden.
+--- While Cultivating can still level and its toggle is on, or while it is
+--- planting to assist Apothecary (including at Cultivation 200). Apothecary
+--- alone, with Cultivation unlearned, stays hidden.
 function SkillUp.WantCultWatchRow()
-    return SkillUp.IsCultEnabled() == true
+    if SkillUp.IsCultEnabled() == true then
+        return true
+    end
+    if SkillUp.IsApoEnabled() == true and (tonumber(SkillUp.GetCultSkill()) or 0) > 0 then
+        return true
+    end
+    return false
 end
 
 --- True when the Apo SkillUp watch row should mount.

@@ -60,12 +60,12 @@ end
 function RecipeTooltip.EnsureRows(want)
     want = tonumber(want) or 0
     if want < 1 then
-        return tonumber(RecipeTooltip._numRows) or 17
+        return tonumber(RecipeTooltip._numRows) or STOCK_TOOLTIP_ROWS
     end
     if want > RECIPE_TOOLTIP_MAX_ROWS then
         want = RECIPE_TOOLTIP_MAX_ROWS
     end
-    local have = tonumber(RecipeTooltip._numRows) or 17
+    local have = tonumber(RecipeTooltip._numRows) or STOCK_TOOLTIP_ROWS
     if have >= want then
         return have
     end

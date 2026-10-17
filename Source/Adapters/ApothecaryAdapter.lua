@@ -366,6 +366,13 @@ function AA.InstallStealthHooks()
             -- Once that TTL expires, the next parked show inside the echo window
             -- is the late init echo. Every later parked show is the player.
             if isApo and EngineShowSuppressed() then
+                -- The echo already arrived inside the 2.5s window. Consume it
+                -- so the player's next press is not treated as that echo.
+                -- The synchronous open latch is not the echo.
+                if AA._sp3Opening ~= true then
+                    AA._echoPending = false
+                    AA._expectEchoUntil = 0
+                end
                 return
             end
             -- After the show-suppress TTL, one late CRAFTING_SHOW_WINDOW echo
