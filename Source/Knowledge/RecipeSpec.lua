@@ -880,6 +880,18 @@ local function ResolveOutcome(recipe, potionUid)
     return oc
 end
 
+-- Session counter. A brew updates yield and success without a knowledge or bag
+-- generation bump. Planner cache and craftable stamp keys include this.
+RS._recipeStatsGen = tonumber(RS._recipeStatsGen) or 0
+
+function RS.GetRecipeStatsGen()
+    return tonumber(RS._recipeStatsGen) or 0
+end
+
+local function BumpRecipeStatsGen()
+    RS._recipeStatsGen = (tonumber(RS._recipeStatsGen) or 0) + 1
+end
+
 --- Returns the bottle count added to yield totals, or nil when the delta is
 --- ignored. Successes always increment: a bad delta must not lower the
 --- success rate. Saved productSum / successes are not rewritten.
@@ -2971,6 +2983,7 @@ function RS.StoreLearnedRecipeSpec(materials, outputs, opts)
         end
     end
     RS.SlimRecipeForStorage(recipe)
+    BumpRecipeStatsGen()
     local relinked = tonumber(RS.RelinkPotionRecipeKeysFromOutcomes()) or 0
     if relinked > 0 then
         structuralChange = true

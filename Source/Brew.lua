@@ -2697,7 +2697,6 @@ local function SyncWatchLiveCountsAfterBrew()
     end
     if Planner.LiveRecount then
         Planner.LiveRecount({
-            invalidateStamps = true,
             syncSnapshot = true,
             allowWarmHave = true,
             forceRecountCraftable = true,
