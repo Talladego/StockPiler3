@@ -889,9 +889,11 @@ end
 
 --- Integer with the most samples, once it has at least 3 hits and is
 --- strictly ahead of the next integer. Nil until that lead exists.
+--- Also returns bestN and secondN (0 when there are no counts) so a tie
+--- can be told from "no mode yet".
 local function ModeFromQtyCounts(counts)
     if type(counts) ~= "table" then
-        return nil
+        return nil, 0, 0
     end
     local bestQty = nil
     local bestN = 0
@@ -910,9 +912,9 @@ local function ModeFromQtyCounts(counts)
         end
     end
     if bestQty ~= nil and bestN >= YIELD_MODE_MIN_HITS and bestN > secondN then
-        return bestQty
+        return bestQty, bestN, secondN
     end
-    return nil
+    return nil, bestN, secondN
 end
 
 local function ResolveOutcome(recipe, potionUid)
@@ -972,12 +974,30 @@ local function RecordOutcome(recipe, potionUid, quality, qty)
     oc.successes = (tonumber(oc.successes) or 0) + 1
     oc.quality = quality or oc.quality
     local qtyInt = WholeBottleQty(qty)
-    local mode = ModeFromQtyCounts(oc.qtyCounts)
-    -- Once one integer is strictly ahead, any other quantity is not a
-    -- plausible single craft. Leave it out of qtyCounts and productSum so
-    -- it cannot tie or replace that mode.
+    -- Count every whole quantity so a later integer can overtake the mode.
+    -- productSum takes the current mode, any value before a mode exists, or
+    -- a quantity tied for that lead. A trailing outlier during a tie is ignored.
+    if qtyInt ~= nil then
+        if type(oc.qtyCounts) ~= "table" then
+            oc.qtyCounts = {}
+        end
+        local qk = tostring(qtyInt)
+        oc.qtyCounts[qk] = (tonumber(oc.qtyCounts[qk]) or 0) + 1
+    end
+    local mode, bestN, secondN = ModeFromQtyCounts(oc.qtyCounts)
+    local tiedLead = mode == nil
+        and (tonumber(bestN) or 0) >= YIELD_MODE_MIN_HITS
+        and bestN == secondN
     local acceptQty = nil
-    if mode ~= nil then
+    if tiedLead then
+        local leadN = 0
+        if qtyInt ~= nil and type(oc.qtyCounts) == "table" then
+            leadN = tonumber(oc.qtyCounts[tostring(qtyInt)]) or 0
+        end
+        if leadN > 0 and leadN == bestN then
+            acceptQty = qtyInt
+        end
+    elseif mode ~= nil then
         if qtyInt ~= nil and qtyInt == mode then
             acceptQty = qtyInt
         end
@@ -988,13 +1008,6 @@ local function RecordOutcome(recipe, potionUid, quality, qty)
     end
     if acceptQty == nil then
         return nil
-    end
-    if qtyInt ~= nil then
-        if type(oc.qtyCounts) ~= "table" then
-            oc.qtyCounts = {}
-        end
-        local qk = tostring(qtyInt)
-        oc.qtyCounts[qk] = (tonumber(oc.qtyCounts[qk]) or 0) + 1
     end
     oc.productSum = (tonumber(oc.productSum) or 0) + acceptQty
     oc.yieldSamples = (tonumber(oc.yieldSamples) or 0) + 1

@@ -1009,6 +1009,9 @@ end
 function Sch.ArmPlantNextFrame()
     Sch._armPlantNext = true
     Sch._skipBuyThisFrame = true
+    -- The next OnUpdate owes an Orchestrator tick, so the plant is one frame
+    -- later instead of a full tick with plan and paint suppressed.
+    Sch._autoAccum = AutoTickIntervalSec()
 end
 
 function Sch.BuySkippedThisFrame()
@@ -1018,6 +1021,8 @@ end
 function Sch.OnUpdate(timeElapsed)
     local plantFrame = Sch._armPlantNext == true
     if plantFrame then
+        Sch._armPlantNext = false
+        Sch._armedPlantDue = true
         Sch._skipPlanThisFrame = true
         Sch._skipUiThisFrame = true
         Sch._skipBuyThisFrame = true
@@ -1112,16 +1117,21 @@ function Sch.OnUpdate(timeElapsed)
             local skipOrch = StockPiler3.Brew
                 and StockPiler3.Brew.IsLoadJobActive
                 and StockPiler3.Brew.IsLoadJobActive() == true
-            if not skipOrch
-                and StockPiler3.Orchestrator and StockPiler3.Orchestrator.Tick
-            then
-                if plantFrame then
-                    Sch._armPlantNext = false
-                end
-                StockPiler3.Orchestrator.Tick()
-                if plantFrame and Sch._armPlantNext ~= true then
-                    Sch._skipBuyThisFrame = false
-                end
+            local tickFn = StockPiler3.Orchestrator and StockPiler3.Orchestrator.Tick
+            local ranTick = false
+            local tickOk, tickErr = true, nil
+            if not skipOrch and tickFn then
+                ranTick = true
+                tickOk, tickErr = pcall(tickFn)
+            end
+            -- Clear even when Tick throws or this owed tick did not run.
+            -- Leaving the flag set let a later pick skip the one-frame defer.
+            if Sch._armedPlantDue == true and Sch._armPlantNext ~= true then
+                Sch._skipBuyThisFrame = false
+            end
+            Sch._armedPlantDue = false
+            if ranTick and tickOk ~= true then
+                error(tickErr or "Orchestrator.Tick failed", 0)
             end
         end
     end
