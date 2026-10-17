@@ -243,15 +243,24 @@ local function FullCacheKey(suffix)
     local frame = tonumber(StockPiler3.FrameCounter) or 0
     local RS = StockPiler3.RecipeSpec
     local statsGen = RS and RS.GetRecipeStatsGen and RS.GetRecipeStatsGen() or 0
+    local Inv = StockPiler3.Inventory
+    local Watch = StockPiler3.Watch
+    local snap = Inv and Inv.GetSnapGen and tonumber(Inv.GetSnapGen()) or 0
+    local watchGen = Watch and Watch.GetGen and tonumber(Watch.GetGen()) or 0
     local base = Planner._fullCacheBase
     if frame <= 0 or Planner._fullCacheFrame ~= frame
-        or Planner._fullCacheStatsGen ~= statsGen or type(base) ~= "string"
+        or Planner._fullCacheStatsGen ~= statsGen
+        or Planner._fullCacheSnap ~= snap
+        or Planner._fullCacheWatch ~= watchGen
+        or type(base) ~= "string"
     then
         base = FormatCacheKey(ReadGens())
         if frame > 0 then
             Planner._fullCacheFrame = frame
             Planner._fullCacheBase = base
             Planner._fullCacheStatsGen = statsGen
+            Planner._fullCacheSnap = snap
+            Planner._fullCacheWatch = watchGen
         end
     end
     if suffix == nil or suffix == "" then

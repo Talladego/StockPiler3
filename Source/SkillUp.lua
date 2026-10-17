@@ -531,6 +531,7 @@ function SkillUp.TargetMaxSkill()
         local apo = tonumber(SkillUp.GetApoSkill()) or 0
         if apo > 0 and apo < (SkillUp.APO_MAX or 200)
             and (tonumber(SkillUp.CountApoContainers()) or 0) < 1
+            and SkillUp.ApoVialObtainable() ~= true
         then
             return cultTier
         end
@@ -1845,7 +1846,14 @@ SkillUp._apoStallLatch = nil
 SkillUp._apoBrewRow = nil
 
 function SkillUp.ApoTargetTier()
-    return SkillUp.FloorApoTier(SkillUp.GetApoSkill())
+    local tier = SkillUp.FloorApoTier(SkillUp.GetApoSkill())
+    -- "Vendor has no vial" was for the previous tier. The next shelf can
+    -- still sell one, so drop that flag when the tier changes.
+    if SkillUp._apoVialTier ~= nil and SkillUp._apoVialTier ~= tier then
+        SkillUp._apoNoVendorContainer = nil
+    end
+    SkillUp._apoVialTier = tier
+    return tier
 end
 
 function SkillUp.ShouldApoBrew()
@@ -2759,12 +2767,21 @@ local function WindowAcceptsApoItem(item, role)
 end
 
 --- Count usable Apo-tier (or below) containers currently in bags.
+--- Memoized per inventory snap and Apo tier. TargetMaxSkill and the watch
+--- row call this on every seed pick and paint.
 function SkillUp.CountApoContainers()
     local targetTier = SkillUp.ApoTargetTier()
     if targetTier < 1 then
         targetTier = 1
     end
     local Inv = StockPiler3.Inventory
+    local snap = Inv and Inv.GetSnapGen and tonumber(Inv.GetSnapGen()) or 0
+    if SkillUp._apoContainerCount ~= nil
+        and SkillUp._apoContainerSnap == snap
+        and SkillUp._apoContainerTier == targetTier
+    then
+        return SkillUp._apoContainerCount
+    end
     local MS = StockPiler3.MaterialSpec
     local SM = StockPiler3.SeedMap
     if not (Inv and Inv.ForEachItem and MS and MS.FromItemData) then
@@ -2801,7 +2818,22 @@ function SkillUp.CountApoContainers()
         end
         total = total + count
     end)
+    SkillUp._apoContainerSnap = snap
+    SkillUp._apoContainerTier = targetTier
+    SkillUp._apoContainerCount = total
     return total
+end
+
+--- AutoBuy can restock vials, and the last vendor visit did not lack them.
+--- TargetMaxSkill uses this so Cultivation stays on Apo's tier while a vial
+--- is still buyable. Do not call ShouldApoBuyContainer: it needs an exact-tier
+--- main and loops back through ShouldApoBrew.
+function SkillUp.ApoVialObtainable()
+    local Watch = StockPiler3.Watch
+    if not (Watch and Watch.IsAutoBuyEnabled and Watch.IsAutoBuyEnabled() == true) then
+        return false
+    end
+    return SkillUp._apoNoVendorContainer ~= true
 end
 
 function SkillUp.ShouldApoBuyContainer()
@@ -2854,10 +2886,27 @@ function SkillUp.WatchDemandReserve(specOrUid)
         return 0
     end
 
-    local need = 0
     local Watch = StockPiler3.Watch
-    local RS = StockPiler3.RecipeSpec
     local Inv = StockPiler3.Inventory
+    local RS = StockPiler3.RecipeSpec
+    local snap = Inv and Inv.GetSnapGen and tonumber(Inv.GetSnapGen()) or 0
+    local watchGen = Watch and Watch.GetGen and tonumber(Watch.GetGen()) or 0
+    -- Yield and per-craft counts follow the recipe stats generation. That
+    -- bump does not move the bag snap or the watch generation (FullCacheKey).
+    local statsGen = RS and RS.GetRecipeStatsGen and tonumber(RS.GetRecipeStatsGen()) or 0
+    local cache = SkillUp._watchReserveCache
+    if type(cache) ~= "table" or cache.snap ~= snap or cache.watchGen ~= watchGen
+        or cache.statsGen ~= statsGen
+    then
+        cache = { snap = snap, watchGen = watchGen, statsGen = statsGen, byUid = {} }
+        SkillUp._watchReserveCache = cache
+    end
+    local cached = cache.byUid[wantUid]
+    if cached ~= nil then
+        return cached
+    end
+
+    local need = 0
     local SM = StockPiler3.SeedMap
 
     local watches = Watch and Watch.GetWatches and Watch.GetWatches() or {}
@@ -2936,6 +2985,7 @@ function SkillUp.WatchDemandReserve(specOrUid)
         end
     end
 
+    cache.byUid[wantUid] = need
     return need
 end
 
@@ -3279,12 +3329,15 @@ function SkillUp.ListApoBagMaterials(role, opts)
             return
         end
         local specRole = tostring(spec.role or "")
-        local isResin = IsApoResinSpec(spec, item)
+        local isResin = false
+        if role == "stabilizer" then
+            isResin = IsApoResinSpec(spec, item) == true
+        end
         if role == "stabilizer" then
             if isResin then
                 -- Arboreal Resin stays the cultivator stabilizer.
             elseif specRole == "stabilizer"
-                and not (SM and SM.SpecHasGoldweedMultiplier and SM.SpecHasGoldweedMultiplier(spec) == true)
+                and not (SM and SM.IsGrowableSpec and SM.IsGrowableSpec(spec) == true)
                 and not (MS and MS.IsCultivationAdditive and MS.IsCultivationAdditive(item) == true)
             then
                 -- Butchered / vendor stabilizer. Competes with resin on the same rules.
@@ -3421,12 +3474,32 @@ function SkillUp.BuildApoBrewRecipe()
     end
     local mains = SkillUp.ListApoBagMaterials("main")
     if #mains == 0 then
-        if SkillUp.PickApoBagMaterial("main", { ignoreReserve = true }) ~= nil then
+        local heldList = SkillUp.ListApoBagMaterials("main", { ignoreReserve = true })
+        local SM = StockPiler3.SeedMap
+        local anyHeld = false
+        local anyGrowable = false
+        if type(heldList) == "table" then
+            for i = 1, #heldList do
+                local held = heldList[i]
+                if type(held) == "table" then
+                    anyHeld = true
+                    if SM and SM.IsGrowableSpec and type(held.spec) == "table"
+                        and SM.IsGrowableSpec(held.spec) == true
+                    then
+                        anyGrowable = true
+                        break
+                    end
+                end
+            end
+        end
+        if anyGrowable then
             return nil, "seed_buffer"
+        end
+        if anyHeld then
+            return nil, "need_mats"
         end
         local lower = SkillUp.ListApoBagMaterials("main", { exactTier = false, ignoreReserve = true })
         local targetTier = SkillUp.ApoTargetTier()
-        local SM = StockPiler3.SeedMap
         for i = 1, #lower do
             local cand = lower[i]
             if (tonumber(cand.skillReq) or 0) < targetTier
@@ -3711,7 +3784,7 @@ function SkillUp.BuildApoBrewRow(opts)
         recipe = recipe,
         recipeYield = 5,
         skillUp = true,
-        statusKey = "ready_to_craft",
+        statusKey = CraftBagBlocksBrew() and "craft_bag_full" or "ready_to_craft",
         autoGrow = true,
         craftable = craftable,
         craftableSafe = true,
@@ -3887,31 +3960,40 @@ function SkillUp.AppendApoResinRefineIntents(intents, appendFn)
 
     if type(pick) ~= "table" then
         source = "brew-main"
-        local main = SkillUp.PickApoBagMaterial("main")
-        if type(main) ~= "table" then
-            -- Never ignoreReserve - that burned buffer plants for resin.
-            return
-        end
-        local plantUid = tonumber(main.uid) or 0
-        local seedUid = tonumber(main.seedUid) or 0
-        if plantUid <= 0 then
-            return
-        end
+        local mains = SkillUp.ListApoBagMaterials("main")
+        local SM = StockPiler3.SeedMap
         local Inv = StockPiler3.Inventory
-        local bagCount = Inv and Inv.CountByUid and tonumber(Inv.CountByUid(plantUid))
-            or tonumber(main.bagCount) or 0
-        local uses, surplus = ApoResinRefineUses(plantUid, seedUid, main.spec, bagCount, true)
-        if uses < 1 then
+        table.sort(mains, function(a, b)
+            return (tonumber(a.count) or 0) > (tonumber(b.count) or 0)
+        end)
+        for i = 1, #mains do
+            local main = mains[i]
+            if type(main) == "table" and type(main.spec) == "table"
+                and SM and SM.IsGrowableSpec and SM.IsGrowableSpec(main.spec) == true
+            then
+                local plantUid = tonumber(main.uid) or 0
+                local seedUid = tonumber(main.seedUid) or 0
+                if plantUid > 0 then
+                    local bagCount = Inv and Inv.CountByUid and tonumber(Inv.CountByUid(plantUid))
+                        or tonumber(main.bagCount) or tonumber(main.count) or 0
+                    local uses, surplus = ApoResinRefineUses(plantUid, seedUid, main.spec, bagCount, true)
+                    if (tonumber(uses) or 0) >= 1 then
+                        pick = {
+                            plantUid = plantUid,
+                            seedUid = seedUid,
+                            spec = main.spec,
+                            uses = uses,
+                            surplus = surplus,
+                            req = apoTier,
+                        }
+                        break
+                    end
+                end
+            end
+        end
+        if type(pick) ~= "table" then
             return
         end
-        pick = {
-            plantUid = plantUid,
-            seedUid = seedUid,
-            spec = main.spec,
-            uses = uses,
-            surplus = surplus,
-            req = apoTier,
-        }
     end
 
     local plantUid = tonumber(pick.plantUid) or 0
@@ -4109,6 +4191,25 @@ function SkillUp.CollectContainerBuyJobs()
     return jobs
 end
 
+--- Same AutoBuy mapping the stall chat uses, so the watch row does not say
+--- "No vial" while chat says to open a vendor.
+function SkillUp.MapApoBuyStall(why)
+    why = tostring(why or "")
+    if why == "wait_cult" or why == "need_resin" or why == "seed_buffer"
+        or why == "unstable" or why == "craft_bag_full"
+    then
+        return why
+    end
+    if SkillUp.ShouldApoBuyContainer() ~= true then
+        return why
+    end
+    local VA = StockPiler3.VendorAdapter
+    if not (VA and VA.IsStoreOpen and VA.IsStoreOpen() == true) then
+        return "need_container_vendor"
+    end
+    return "no_vendor_container"
+end
+
 --- Notify once per Apo stall reason; clear latch when condition lifts.
 function SkillUp.MaybeNotifyApoStall(why)
     if SkillUp.ShouldApoBrew() ~= true then
@@ -4124,18 +4225,7 @@ function SkillUp.MaybeNotifyApoStall(why)
     if why == "need_mats" and (tonumber(SkillUp.CountApoContainers()) or 0) < 1 then
         why = "no_vial"
     end
-    -- Do not mask mat/resin/Cult waits with vial AutoBuy prompts.
-    if why ~= "wait_cult" and why ~= "need_resin" and why ~= "seed_buffer"
-        and why ~= "unstable" and why ~= "craft_bag_full"
-        and SkillUp.ShouldApoBuyContainer() == true
-    then
-        local VA = StockPiler3.VendorAdapter
-        if not (VA and VA.IsStoreOpen and VA.IsStoreOpen() == true) then
-            why = "need_container_vendor"
-        else
-            why = "no_vendor_container"
-        end
-    end
+    why = SkillUp.MapApoBuyStall(why)
     if SkillUp._apoStallLatch == why then
         return
     end
@@ -4774,6 +4864,7 @@ local function BuildApoWatchStatusRow()
     if statusKey ~= "ready_to_craft" and (waitingKey == nil or waitingKey == "fallback_blocked") then
         local block = SkillUp.ApoProgressBlock()
         if block ~= nil then
+            block = SkillUp.MapApoBuyStall(block)
             statusKey, statusText = ApoStatusFromWhy(block)
             craftable = 0
             target = 0

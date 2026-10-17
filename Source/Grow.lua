@@ -29,8 +29,6 @@ Grow._pendingAdditiveAt = Grow._pendingAdditiveAt or {}
 Grow._fillCursor = Grow._fillCursor or 1
 Grow._additiveCursor = Grow._additiveCursor or 1
 Grow._lastPlantedSeedUid = 0
-Grow._fillBlocked = false
-Grow._plantWaitTicks = 0
 Grow._plantQueueDirty = true
 Grow._cachedPlantJob = nil
 Grow._plantJobProbed = false
@@ -853,15 +851,10 @@ function Grow.IsSeedBufferSatisfied()
 end
 
 function Grow.SetFillBlocked(blocked, waitTicks)
-    if Grow._fillBlockWrite == true then
-        return
-    end
     local Orch = StockPiler3.Orchestrator
     if not Orch then
-        Grow._fillBlockWrite = false
         return
     end
-    Grow._fillBlockWrite = true
     if blocked == true then
         local ticks = tonumber(waitTicks) or 0
         if ticks < 0 then
@@ -881,7 +874,6 @@ function Grow.SetFillBlocked(blocked, waitTicks)
     elseif Orch.ClearFillBlocked then
         Orch.ClearFillBlocked()
     end
-    Grow._fillBlockWrite = false
 end
 
 function Grow.ClearFillBlocked()
@@ -891,9 +883,6 @@ end
 function Grow.IsFillBlocked()
     local Orch = StockPiler3.Orchestrator
     return Orch and Orch.IsFillBlocked and Orch.IsFillBlocked() == true
-end
-
-function Grow.DecayPlantWaitTicks()
 end
 
 function Grow.OnTradeSkillsChanged(payload)

@@ -273,6 +273,9 @@ function LB.OnUpdateProcessed()
             end
         end
         if forceOneShot then
+            -- Oldest entry, even when lootDirty was missed. TryComplete
+            -- still leaves it pending when the bag shows no gain, so two
+            -- updates cannot close a plot before its own loot lands.
             DrainHarvestCompleteLearn(true)
         else
             local willAttempt = SM.ShouldAttemptHarvestComplete

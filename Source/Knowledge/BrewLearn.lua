@@ -292,9 +292,7 @@ local function LatchSkillUpOrigin()
     then
         return true
     end
-    -- Sticky: session may already be cleared (after-brew-skillup-done) before
-    -- inventory learn completes; keep the last SkillUp arm until CompletePending.
-    return BL._lastBoardSkillUpOrigin == true
+    return false
 end
 
 --- Prefer the loaded brew-session recipe over a thin board snapshot.
@@ -485,6 +483,7 @@ function BL.CompletePendingCraftLearn(opts)
         end
         if stale then
             BL._pendingCraft = nil
+            BL._lastBoardSkillUpOrigin = nil
         end
         return false
     end

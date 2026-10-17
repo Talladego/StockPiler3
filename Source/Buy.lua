@@ -1166,6 +1166,11 @@ function Buy.OnMoneySettingsChanged()
 end
 
 function Buy.OnStoreShow()
+    local SU = StockPiler3.SkillUp
+    if SU then
+        -- Last visit's empty vial shelf does not apply to this one.
+        SU._apoNoVendorContainer = nil
+    end
     local VA = StockPiler3.VendorAdapter
     if VA and VA.EnsureStoreHook then
         VA.EnsureStoreHook()
@@ -1506,10 +1511,22 @@ function Buy.IssueOne(opId)
     local zeroCost = 0
     local noMatch = 0
     local cooldownBlocked = false
+    local containerMatched = false
     for i = 1, #jobs do
         local job = jobs[i]
         local item, unitCost = Buy.FindStoreMatch(job)
         unitCost = tonumber(unitCost) or 0
+        if job.skillUp == true and tostring(job.role or "") == "container" then
+            local SU = StockPiler3.SkillUp
+            if type(item) == "table" then
+                containerMatched = true
+                if SU then
+                    SU._apoNoVendorContainer = nil
+                end
+            elseif containerMatched ~= true and SU then
+                SU._apoNoVendorContainer = true
+            end
+        end
         if type(item) ~= "table" then
             noMatch = noMatch + 1
         elseif unitCost <= 0 then
