@@ -1434,6 +1434,32 @@ local function PlanWantsPlant()
     return false
 end
 
+--- True when the published plan still needs a seed. Orchestrator uses this so a
+--- refine-first stamp cannot hide that climb.
+function Grow.ShortClimbPending()
+    return PlanWantsPlant() == true
+end
+
+--- Nil plant answers retry while a watch is short, including during fill block.
+--- A stocked plan keeps the nil. The gap stops a pick on every blocked tick.
+local function ShortClimbRetryDue()
+    if PlanWantsPlant() ~= true then
+        return false
+    end
+    local now = 0
+    if StockPiler3.Util and StockPiler3.Util.NowSec then
+        now = tonumber(StockPiler3.Util.NowSec()) or 0
+    end
+    local last = tonumber(Grow._shortClimbRetryAt) or 0
+    if now > 0 and last > 0 and (now - last) < 2 then
+        return false
+    end
+    if now > 0 then
+        Grow._shortClimbRetryAt = now
+    end
+    return true
+end
+
 --- Idle SkillUp plant job. Independent of watch-demand cache (no-watch skill-up).
 --- Plan rows already say nothing needs a seed. Avoid the demand / seed-line walk.
 --- nil when there is no snapshot (caller must do the full pick).
@@ -1713,14 +1739,19 @@ function Grow.GetPlantJob()
         local SkillUp = StockPiler3.SkillUp
         local skillUpIdle = SkillUp and SkillUp.ShouldCultPlant and SkillUp.ShouldCultPlant() == true
             and Grow.HasEmptyPlot and Grow.HasEmptyPlot() == true
-        -- Fill-block ticks keep the nil (a pick every tick was the empty-plot hitch).
-        -- Once the block expires, a short watch / seed climb picks again. A stocked
-        -- plan still keeps the nil so idle ticks do not bag-walk.
-        local Orch = StockPiler3.Orchestrator
-        local fillBlocked = Orch and Orch.IsFillBlocked and Orch.IsFillBlocked() == true
-        local retryShort = fillBlocked ~= true and PlanWantsPlant() == true
+        -- A short watch retries even while fill-blocked. The 0.3.417 retry waited
+        -- for the block to clear, and the block was the thing sitting on this nil.
+        local retryShort = ShortClimbRetryDue()
         if skillUpIdle ~= true and retryShort ~= true then
             return cached
+        end
+        if retryShort == true then
+            local US = StockPiler3.UpgradeSeed
+            if US and US.FreshTargetsPending and US.FreshTargetsPending() ~= true
+                and US.InvalidateUpgradeTargetsCache
+            then
+                US.InvalidateUpgradeTargetsCache()
+            end
         end
     end
     -- PickPlantCandidate already ends on SkillUp. Do not replay it here:
