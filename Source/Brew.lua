@@ -1112,6 +1112,36 @@ function Brew.GetSession()
     return GetSession()
 end
 
+function Brew.SetApoSessionFlags(session, flags)
+    if type(session) ~= "table" or type(flags) ~= "table" then
+        return
+    end
+    if flags.idleForceClosed ~= nil then
+        session._idleForceClosed = flags.idleForceClosed == true
+    end
+    if flags.owned ~= nil then
+        session._brewOwnedSession = flags.owned == true
+    end
+    if flags.stealth ~= nil then
+        session._brewApoStealth = flags.stealth == true
+    end
+    if flags.openedApo ~= nil then
+        session._brewOpenedApo = flags.openedApo == true
+    end
+    if flags.openedBackpack ~= nil then
+        session._brewOpenedBackpack = flags.openedBackpack == true
+    end
+    if flags.placedOnBoard ~= nil then
+        session._brewPlacedOnBoard = flags.placedOnBoard == true
+    end
+end
+
+function Brew.OnCraftChat(payload)
+    if type(payload) == "table" and payload.kind == "bad_seed" then
+        Brew.OnCraftServerReject()
+    end
+end
+
 function Brew.ArmBrewOpLock(seconds)
     seconds = tonumber(seconds) or Brew.BREW_OP_LOCK_SEC
     if seconds < 0.4 then

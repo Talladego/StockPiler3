@@ -497,6 +497,19 @@ local function WatchHasContent()
     return US and US.ShouldShowWatchStatus and US.ShouldShowWatchStatus() == true
 end
 
+function StockPiler3Window.OnSessionSettled()
+    if DoesWindowExist("StockPiler3Window")
+        and WindowGetShowing("StockPiler3Window") == true
+        and StockPiler3Window.BeginOpenPaint
+    then
+        StockPiler3Window.BeginOpenPaint()
+    end
+    if StockPiler3Window.SyncActionReadiness then
+        StockPiler3Window._footerSyncFrame = nil
+        StockPiler3Window.SyncActionReadiness({ immediate = true })
+    end
+end
+
 function StockPiler3Window.BeginOpenPaint()
     StockPiler3Window._openPaintPending = true
     StockPiler3Window._openPaintGaveUp = false

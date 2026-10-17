@@ -1726,6 +1726,40 @@ function SM.MarkHarvestLootDirty()
     end
 end
 
+function SM.OnCraftChat(payload)
+    if type(payload) ~= "table" then
+        return
+    end
+    local kind = tostring(payload.kind or "")
+    local pending = SM._pendingHarvest
+    local CC = StockPiler3.CraftChatAdapter
+    if kind == "critical_failure" then
+        if type(pending) == "table" then
+            pending.chatCriticalFailure = true
+            if SM.CompletePendingHarvestAsCritFail then
+                SM.CompletePendingHarvestAsCritFail()
+            end
+        elseif CC and CC.ArmHarvestFailSticky then
+            CC.ArmHarvestFailSticky()
+        end
+    elseif kind == "critical_success" then
+        if type(pending) == "table" then
+            pending.chatCriticalSuccess = true
+        elseif CC and CC.ArmHarvestSuccessSticky then
+            CC.ArmHarvestSuccessSticky()
+        end
+    elseif kind == "special_moment" then
+        if type(pending) == "table" then
+            pending.chatCriticalSuccess = true
+            pending.chatSpecialMoment = true
+        elseif CC and CC.ArmHarvestSpecialMomentSticky then
+            CC.ArmHarvestSpecialMomentSticky()
+        end
+    elseif kind == "harvested" then
+        SM.MarkHarvestLootDirty()
+    end
+end
+
 function SM.ShouldAttemptHarvestComplete(force)
     if type(SM._pendingHarvest) ~= "table" then
         return false

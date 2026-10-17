@@ -896,6 +896,13 @@ end
 function Grow.DecayPlantWaitTicks()
 end
 
+function Grow.OnTradeSkillsChanged(payload)
+    if type(payload) == "table" and payload.reason == "trade-caps" then
+        return
+    end
+    Grow.InvalidatePlantQueue({ reason = "trade-skill" })
+end
+
 function Grow.InvalidatePlantQueue(opts)
     opts = type(opts) == "table" and opts or {}
     Grow._plantQueueDirty = true
@@ -2610,6 +2617,12 @@ end
 
 function Grow.WakeAfterHarvestChat()
     Grow.WakeAfterHarvest(0, { soft = true })
+end
+
+function Grow.OnCraftChat(payload)
+    if type(payload) == "table" and payload.kind == "harvested" then
+        Grow.WakeAfterHarvestChat()
+    end
 end
 
 function Grow.ExpireStalePending()

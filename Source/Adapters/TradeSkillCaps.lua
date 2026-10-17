@@ -307,18 +307,10 @@ function Caps.OnTradeSkillPulse()
             PersistSticky()
             changed = newCult ~= prevCult or newApo ~= prevApo
             if changed then
-                local Ui = StockPiler3.Ui
-                if Ui then
-                    if Ui.InvalidateSkillGates then
-                        Ui.InvalidateSkillGates()
-                    end
-                    if Ui.ClearWatchThrottleKey then
-                        Ui.ClearWatchThrottleKey()
-                    end
-                    local Bus = StockPiler3.EventBus
-                    if Bus and Bus.FireWatchUiDirty then
-                        Bus.FireWatchUiDirty({ reason = "trade-caps" })
-                    end
+                local Bus = StockPiler3.EventBus
+                local E = StockPiler3.Events
+                if Bus and E and E.TRADE_SKILLS_CHANGED then
+                    Bus.Fire(E.TRADE_SKILLS_CHANGED, { reason = "trade-caps" })
                 end
             end
         else
@@ -380,29 +372,10 @@ function Caps.OnTradeSkillPulse()
             ))
         end
         if changed then
-            local Ui = StockPiler3.Ui
-            if Ui then
-                if Ui.InvalidateSkillGates then
-                    Ui.InvalidateSkillGates()
-                end
-                if Ui.BypassWatchThrottle then
-                    Ui.BypassWatchThrottle()
-                end
-            end
             local Bus = StockPiler3.EventBus
-            if Bus and Bus.FireWatchUiDirty then
-                Bus.FireWatchUiDirty({ reason = "trade-skill" })
-            end
-            local Grow = StockPiler3.Grow
-            if Grow and Grow.InvalidatePlantQueue then
-                Grow.InvalidatePlantQueue({ reason = "trade-skill" })
-            end
-            local Sch = StockPiler3.Scheduler
-            if Sch and Sch.EnqueuePlanRebuild then
-                Sch.EnqueuePlanRebuild({ urgent = true })
-            end
-            if Sch and Sch.WakeAutoGrow then
-                Sch.WakeAutoGrow()
+            local E = StockPiler3.Events
+            if Bus and E and E.TRADE_SKILLS_CHANGED then
+                Bus.Fire(E.TRADE_SKILLS_CHANGED, { reason = "trade-skill" })
             end
         end
     end

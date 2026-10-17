@@ -413,38 +413,18 @@ function CC.ConsumeHarvestSpecialMomentSticky()
     return StickyFresh(at)
 end
 
-local function NoteHarvestCriticalFailure()
-    local pending = StockPiler3.SeedMap and StockPiler3.SeedMap._pendingHarvest
-    if type(pending) == "table" then
-        pending.chatCriticalFailure = true
-        if StockPiler3.SeedMap.CompletePendingHarvestAsCritFail then
-            StockPiler3.SeedMap.CompletePendingHarvestAsCritFail()
-        end
-        return
-    end
+function CC.ArmHarvestFailSticky()
     CC._harvestFailStickyAt = NowSec()
 end
 
-local function NoteHarvestSpecialMoment()
-    local pending = StockPiler3.SeedMap and StockPiler3.SeedMap._pendingHarvest
-    if type(pending) == "table" then
-        pending.chatCriticalSuccess = true
-        pending.chatSpecialMoment = true
-        return
-    end
-    local now = NowSec()
-    CC._harvestOkStickyAt = now
-    -- Same TTL as crit success: orphan SM chat must not tag a later harvest.
-    CC._harvestSpecialMomentStickyAt = now
+function CC.ArmHarvestSuccessSticky()
+    CC._harvestOkStickyAt = NowSec()
 end
 
-local function NoteHarvestCriticalSuccess()
-    local pending = StockPiler3.SeedMap and StockPiler3.SeedMap._pendingHarvest
-    if type(pending) == "table" then
-        pending.chatCriticalSuccess = true
-        return
-    end
-    CC._harvestOkStickyAt = NowSec()
+function CC.ArmHarvestSpecialMomentSticky()
+    local now = NowSec()
+    CC._harvestOkStickyAt = now
+    CC._harvestSpecialMomentStickyAt = now
 end
 
 local function ParseCraftingLine(text)
@@ -520,27 +500,10 @@ function CC.OnChatTextArrived()
     if type(parsed) ~= "table" then
         return
     end
-    if parsed.kind == "critical_failure" then
-        NoteHarvestCriticalFailure()
-    elseif parsed.kind == "critical_success" then
-        NoteHarvestCriticalSuccess()
-    elseif parsed.kind == "special_moment" then
-        NoteHarvestSpecialMoment()
-    elseif parsed.kind == "harvested" then
-        if StockPiler3.SeedMap and StockPiler3.SeedMap.MarkHarvestLootDirty then
-            StockPiler3.SeedMap.MarkHarvestLootDirty()
-        end
-        if StockPiler3.Grow and StockPiler3.Grow.WakeAfterHarvestChat then
-            StockPiler3.Grow.WakeAfterHarvestChat()
-        end
-    elseif parsed.kind == "created" then
-        if StockPiler3.BrewLearn and StockPiler3.BrewLearn.OnCreatedChat then
-            StockPiler3.BrewLearn.OnCreatedChat(parsed.name)
-        end
-    elseif parsed.kind == "bad_seed" then
-        if StockPiler3.Brew and StockPiler3.Brew.OnCraftServerReject then
-            StockPiler3.Brew.OnCraftServerReject()
-        end
+    local Bus = StockPiler3.EventBus
+    local E = StockPiler3.Events
+    if Bus and E and E.CRAFT_CHAT then
+        Bus.Fire(E.CRAFT_CHAT, parsed)
     end
 end
 

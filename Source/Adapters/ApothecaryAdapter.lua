@@ -461,7 +461,9 @@ function AA.EnforceStealthHide(session)
     end
     AA.BeginOwnedSession()
     if AA.IsWindowOpen() and AA.ParkApoRoot() then
-        session._brewApoStealth = true
+        if session and StockPiler3.Brew and StockPiler3.Brew.SetApoSessionFlags then
+            StockPiler3.Brew.SetApoSessionFlags(session, { stealth = true })
+        end
         return true
     end
     return false
@@ -475,16 +477,18 @@ function AA.OpenWindow(session)
     local apo = AA.TradeSkill()
     AA.BeginOwnedSession()
     AA._playerWantsApo = false
-    if session then
-        session._idleForceClosed = false
-        session._brewOwnedSession = true
-        session._brewApoStealth = false
+    if session and StockPiler3.Brew and StockPiler3.Brew.SetApoSessionFlags then
+        StockPiler3.Brew.SetApoSessionFlags(session, {
+            idleForceClosed = false,
+            owned = true,
+            stealth = false,
+        })
     end
 
     -- Already stealth-active: do not re-show (OpenWindow retries must not flash).
     if AA.IsCraftingSessionActive() == true and AA._apoParked == true then
-        if session then
-            session._brewApoStealth = true
+        if session and StockPiler3.Brew and StockPiler3.Brew.SetApoSessionFlags then
+            StockPiler3.Brew.SetApoSessionFlags(session, { stealth = true })
         end
         AA.ParkApoRoot()
         return true
@@ -496,8 +500,10 @@ function AA.OpenWindow(session)
     -- Apothecary ability until the window closed (ADP-19).
     TryCall("AA.InitHeadlessSession", AA.InitHeadlessSession)
     AA._sp3Opening = false
-    if AA.IsWindowOpen() and AA.ParkApoRoot() and session then
-        session._brewApoStealth = true
+    if AA.IsWindowOpen() and AA.ParkApoRoot() and session
+        and StockPiler3.Brew and StockPiler3.Brew.SetApoSessionFlags
+    then
+        StockPiler3.Brew.SetApoSessionFlags(session, { stealth = true })
     end
     return AA.CraftingSkillType() == apo
 end
@@ -512,12 +518,14 @@ function AA.CloseWindow(session)
     local playerVisible = AA.IsWindowOpen()
     local apoSkillActive = AA.CraftingSkillType() == apo
 
-    if session then
-        session._brewOpenedApo = false
-        session._brewOpenedBackpack = false
-        session._brewOwnedSession = false
-        session._brewApoStealth = false
-        session._brewPlacedOnBoard = false
+    if session and StockPiler3.Brew and StockPiler3.Brew.SetApoSessionFlags then
+        StockPiler3.Brew.SetApoSessionFlags(session, {
+            openedApo = false,
+            openedBackpack = false,
+            owned = false,
+            stealth = false,
+            placedOnBoard = false,
+        })
     end
 
     local endEngine = ownedSession or stealth or closeApo
