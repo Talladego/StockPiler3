@@ -2047,13 +2047,15 @@ function StockPiler3TabWatch.OnToggleEnabled()
         UpdateEnableCheckbox()
         return
     end
-    local row = CharRow(true)
-    if type(row) ~= "table" then
+    local on = ButtonGetPressedFlag(ENABLE_WIN) == true
+    local Watch = StockPiler3.Watch
+    if not Watch or not Watch.SetCharacterField
+        or Watch.SetCharacterField("autoGrowEnabled", on) ~= true
+    then
         return
     end
-    row.autoGrowEnabled = ButtonGetPressedFlag(ENABLE_WIN) == true
-    NotifySettings(T("watch.autogrow", { state = OnOff(row.autoGrowEnabled) }))
-    if row.autoGrowEnabled ~= true and StockPiler3.Orchestrator and StockPiler3.Orchestrator.OnAutoGrowDisabled then
+    NotifySettings(T("watch.autogrow", { state = OnOff(on) }))
+    if on ~= true and StockPiler3.Orchestrator and StockPiler3.Orchestrator.OnAutoGrowDisabled then
         StockPiler3.Orchestrator.OnAutoGrowDisabled()
     end
     AfterWatchSettingsChanged()
@@ -2074,12 +2076,14 @@ function StockPiler3TabWatch.OnToggleAdditives()
         UpdateAdditivesCheckbox()
         return
     end
-    local row = CharRow(true)
-    if type(row) ~= "table" then
+    local on = ButtonGetPressedFlag(ADDITIVES_WIN) == true
+    local Watch = StockPiler3.Watch
+    if not Watch or not Watch.SetCharacterField
+        or Watch.SetCharacterField("autoGrowAdditives", on) ~= true
+    then
         return
     end
-    row.autoGrowAdditives = ButtonGetPressedFlag(ADDITIVES_WIN) == true
-    NotifySettings(T("watch.additives", { state = OnOff(row.autoGrowAdditives) }))
+    NotifySettings(T("watch.additives", { state = OnOff(on) }))
     AfterWatchSettingsChanged()
 end
 
@@ -2095,12 +2099,14 @@ function StockPiler3TabWatch.OnToggleSeedBuffer()
         UpdateSeedBufferEnableCheckbox()
         return
     end
-    local row = CharRow(true)
-    if type(row) ~= "table" then
+    local on = ButtonGetPressedFlag(SEED_BUFFER_ENABLE_WIN) == true
+    local Watch = StockPiler3.Watch
+    if not Watch or not Watch.SetCharacterField
+        or Watch.SetCharacterField("growSeedBufferEnabled", on) ~= true
+    then
         return
     end
-    row.growSeedBufferEnabled = ButtonGetPressedFlag(SEED_BUFFER_ENABLE_WIN) == true
-    NotifySettings(T("watch.seed_buffer", { state = OnOff(row.growSeedBufferEnabled) }))
+    NotifySettings(T("watch.seed_buffer", { state = OnOff(on) }))
     AfterWatchSettingsChanged()
     UpdateSeedBufferEnableCheckbox()
 end
@@ -2144,14 +2150,16 @@ function StockPiler3TabWatch.OnToggleAutoBuy()
         UpdateAutoBuyCheckbox()
         return
     end
-    local row = CharRow(true)
-    if type(row) ~= "table" then
+    local on = ButtonGetPressedFlag(AUTOBUY_WIN) == true
+    local Watch = StockPiler3.Watch
+    if not Watch or not Watch.SetCharacterField
+        or Watch.SetCharacterField("autoBuyEnabled", on) ~= true
+    then
         return
     end
-    row.autoBuyEnabled = ButtonGetPressedFlag(AUTOBUY_WIN) == true
-    NotifySettings(T("watch.autobuy", { state = OnOff(row.autoBuyEnabled) }))
+    NotifySettings(T("watch.autobuy", { state = OnOff(on) }))
     AfterSoftMoneySetting()
-    if row.autoBuyEnabled == true and StockPiler3.Scheduler and StockPiler3.Scheduler.WakeAutoBuy then
+    if on == true and StockPiler3.Scheduler and StockPiler3.Scheduler.WakeAutoBuy then
         StockPiler3.Scheduler.WakeAutoBuy()
     end
     if StockPiler3.Buy and StockPiler3.Buy.InvalidateJobsCache then
@@ -2171,12 +2179,14 @@ function StockPiler3TabWatch.OnToggleAutoBrew()
         UpdateAutoBrewCheckbox()
         return
     end
-    local row = CharRow(true)
-    if type(row) ~= "table" then
+    local on = ButtonGetPressedFlag(AUTOBREW_WIN) == true
+    local Watch = StockPiler3.Watch
+    if not Watch or not Watch.SetCharacterField
+        or Watch.SetCharacterField("autoBrewEnabled", on) ~= true
+    then
         return
     end
-    row.autoBrewEnabled = ButtonGetPressedFlag(AUTOBREW_WIN) == true
-    NotifySettings(T("watch.autobrew", { state = OnOff(row.autoBrewEnabled) }))
+    NotifySettings(T("watch.autobrew", { state = OnOff(on) }))
     UpdateAutoBrewCheckbox()
     if StockPiler3.Brew and StockPiler3.Brew.InvalidateCanBrewCache then
         StockPiler3.Brew.InvalidateCanBrewCache()
@@ -2197,12 +2207,14 @@ function StockPiler3TabWatch.OnToggleOptimisticMode()
         UpdateOptimisticModeCheckbox()
         return
     end
-    local row = CharRow(true)
-    if type(row) ~= "table" then
+    local on = ButtonGetPressedFlag(OPTIMISTIC_MODE_WIN) == true
+    local Watch = StockPiler3.Watch
+    if not Watch or not Watch.SetCharacterField
+        or Watch.SetCharacterField("watchOptimisticOutcomeEstimate", on) ~= true
+    then
         return
     end
-    row.watchOptimisticOutcomeEstimate = ButtonGetPressedFlag(OPTIMISTIC_MODE_WIN) == true
-    NotifySettings(T("watch.optimistic_mode", { state = OnOff(row.watchOptimisticOutcomeEstimate) }))
+    NotifySettings(T("watch.optimistic_mode", { state = OnOff(on) }))
     AfterWatchSettingsChanged()
     UpdateOptimisticModeCheckbox()
 end
@@ -2246,16 +2258,21 @@ local function AdjustSeedBuffer(flags, dir)
         UpdateSeedBufferEnableCheckbox()
         return
     end
-    local row = CharRow(true)
-    if type(row) ~= "table" then
-        return
+    local cur = 5
+    local row = CharRow(false)
+    if type(row) == "table" then
+        cur = tonumber(row.growSeedBufferMin) or 5
     end
-    local cur = tonumber(row.growSeedBufferMin) or 5
     local nextVal = Clamp(cur + ChipDelta(flags, dir), 4, 20)
     if nextVal == cur then
         return
     end
-    row.growSeedBufferMin = nextVal
+    local Watch = StockPiler3.Watch
+    if not Watch or not Watch.SetCharacterField
+        or Watch.SetCharacterField("growSeedBufferMin", nextVal) ~= true
+    then
+        return
+    end
     NotifySettings(T("watch.setting_eq", {
         label = T("watch.setting.seed_buffer"),
         value = tostring(nextVal),
@@ -2265,16 +2282,21 @@ local function AdjustSeedBuffer(flags, dir)
 end
 
 local function AdjustReserve(flags, dir)
-    local row = CharRow(true)
-    if type(row) ~= "table" then
-        return
+    local cur = 10
+    local row = CharRow(false)
+    if type(row) == "table" then
+        cur = tonumber(row.autoBuyReserveGold) or 10
     end
-    local cur = tonumber(row.autoBuyReserveGold) or 10
     local nextVal = Clamp(cur + ChipDelta(flags, dir), 1, 99)
     if nextVal == cur then
         return
     end
-    row.autoBuyReserveGold = nextVal
+    local Watch = StockPiler3.Watch
+    if not Watch or not Watch.SetCharacterField
+        or Watch.SetCharacterField("autoBuyReserveGold", nextVal) ~= true
+    then
+        return
+    end
     NotifySettings(T("watch.setting_eq", {
         label = T("watch.setting.reserve"),
         value = tostring(nextVal),
@@ -2284,16 +2306,21 @@ local function AdjustReserve(flags, dir)
 end
 
 local function AdjustBudget(flags, dir)
-    local row = CharRow(true)
-    if type(row) ~= "table" then
-        return
+    local cur = 50
+    local row = CharRow(false)
+    if type(row) == "table" then
+        cur = tonumber(row.autoBuyBudgetGold) or 50
     end
-    local cur = tonumber(row.autoBuyBudgetGold) or 50
     local nextVal = Clamp(cur + ChipDelta(flags, dir), 1, 999)
     if nextVal == cur then
         return
     end
-    row.autoBuyBudgetGold = nextVal
+    local Watch = StockPiler3.Watch
+    if not Watch or not Watch.SetCharacterField
+        or Watch.SetCharacterField("autoBuyBudgetGold", nextVal) ~= true
+    then
+        return
+    end
     NotifySettings(T("watch.setting_eq", {
         label = T("watch.setting.budget"),
         value = tostring(nextVal),

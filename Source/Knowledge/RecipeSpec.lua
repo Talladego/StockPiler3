@@ -2758,6 +2758,107 @@ function RS.ScrubOrphanSubsetRecipes()
     return removed
 end
 
+function RS.ForgetPotionRecipeLink(outputUid, recipeSpecKey)
+    outputUid = tonumber(outputUid) or 0
+    recipeSpecKey = tostring(recipeSpecKey or "")
+    if outputUid <= 0 or recipeSpecKey == "" then
+        return false
+    end
+    local potions = PotionsTable()
+    local recipes = RecipesTable()
+    if type(potions) ~= "table" or type(recipes) ~= "table" then
+        return false
+    end
+    local potionKey = RS.PotionKeyFromUid(outputUid)
+    local potion = potions[potionKey]
+    local recipe = recipes[recipeSpecKey]
+    local hadLink = false
+    if type(potion) == "table" then
+        local keys = CollectPotionRecipeKeyList(potion)
+        for i = 1, #keys do
+            if keys[i] == recipeSpecKey then
+                hadLink = true
+                break
+            end
+        end
+    end
+    if type(recipe) == "table" and type(recipe.outcomes) == "table"
+        and type(recipe.outcomes[tostring(outputUid)]) == "table"
+    then
+        hadLink = true
+    end
+    if not hadLink then
+        return false
+    end
+
+    local function drop(list)
+        if type(list) ~= "table" then
+            return nil
+        end
+        local trimmed = {}
+        for i = 1, #list do
+            if tostring(list[i] or "") ~= recipeSpecKey then
+                trimmed[#trimmed + 1] = list[i]
+            end
+        end
+        return trimmed
+    end
+
+    if type(potion) == "table" then
+        if type(potion.recipeKeys) == "table" then
+            potion.recipeKeys = drop(potion.recipeKeys)
+        end
+        if type(potion.alternateRecipeSpecKeys) == "table" then
+            potion.alternateRecipeSpecKeys = drop(potion.alternateRecipeSpecKeys)
+        end
+        if potion.activeRecipeKey == recipeSpecKey
+            or potion.activeRecipeSpecKey == recipeSpecKey
+            or potion.recipeSpecKey == recipeSpecKey
+        then
+            local nextKey = type(potion.recipeKeys) == "table" and potion.recipeKeys[1] or nil
+            if nextKey == nil and type(potion.alternateRecipeSpecKeys) == "table" then
+                nextKey = potion.alternateRecipeSpecKeys[1]
+            end
+            potion.activeRecipeKey = nextKey
+            potion.activeRecipeSpecKey = nextKey
+            potion.recipeSpecKey = nextKey
+        end
+        if #CollectPotionRecipeKeyList(potion) == 0 then
+            potions[potionKey] = nil
+        end
+    end
+
+    if type(recipe) == "table" and type(recipe.outcomes) == "table" then
+        recipe.outcomes[tostring(outputUid)] = nil
+        local remaining = false
+        for _ in pairs(recipe.outcomes) do
+            remaining = true
+            break
+        end
+        if not remaining then
+            local stillLinked = false
+            for _, other in pairs(potions) do
+                if type(other) == "table" then
+                    local oks = CollectPotionRecipeKeyList(other)
+                    for i = 1, #oks do
+                        if oks[i] == recipeSpecKey then
+                            stillLinked = true
+                            break
+                        end
+                    end
+                end
+                if stillLinked then
+                    break
+                end
+            end
+            if not stillLinked then
+                recipes[recipeSpecKey] = nil
+            end
+        end
+    end
+    return true
+end
+
 function RS.RelinkPotionRecipeKeysFromOutcomes()
     local recipes = RecipesTable()
     local potions = PotionsTable()

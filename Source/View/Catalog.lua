@@ -147,54 +147,6 @@ function Catalog.PotionHaveCombined(potion)
     return tonumber(StockPiler3.Inventory.CountByUid(uid)) or 0
 end
 
-local function ScrubWatchKey(key)
-    key = tostring(key or "")
-    if key == "" then
-        return
-    end
-    local watches = StockPiler3.Watch and StockPiler3.Watch.GetWatches and StockPiler3.Watch.GetWatches()
-    if type(watches) == "table" and watches[key] ~= nil then
-        watches[key] = nil
-        if StockPiler3.Watch.BumpGen then
-            StockPiler3.Watch.BumpGen()
-        end
-    end
-end
-
-local function ScrubPotionWatchForRecipe(outputUid, recipeSpecKey)
-    local Watch = StockPiler3.Watch
-    if not Watch then
-        return nil
-    end
-    outputUid = tonumber(outputUid) or 0
-    recipeSpecKey = tostring(recipeSpecKey or "")
-    local RS = StockPiler3.RecipeSpec
-    local watchKey = nil
-    if outputUid > 0 and recipeSpecKey ~= "" and RS and RS.PotionRecipeKey then
-        watchKey = RS.PotionRecipeKey(outputUid, recipeSpecKey)
-    end
-    local watches = Watch.GetWatches and Watch.GetWatches() or nil
-    if type(watches) ~= "table" then
-        return watchKey
-    end
-    local storeKey = nil
-    if watchKey ~= nil and type(watches[watchKey]) == "table" then
-        storeKey = watchKey
-    elseif Watch.ResolveWatchEntry then
-        local _, resolvedKey = Watch.ResolveWatchEntry(watchKey or ("uid:" .. tostring(outputUid)))
-        if resolvedKey ~= nil and type(watches[resolvedKey]) == "table" then
-            storeKey = resolvedKey
-            watchKey = resolvedKey
-        end
-    end
-    if storeKey ~= nil then
-        watches[storeKey] = nil
-        if Watch.BumpGen then
-            Watch.BumpGen()
-        end
-    end
-    return watchKey or storeKey
-end
 
 --- Unlink one potion fingerprint from its learned recipe. Shared recipes stay if other potions remain.
 function Catalog.ForgetPotionRecipeLink(outputUid, recipeSpecKey)
@@ -205,8 +157,6 @@ function Catalog.ForgetPotionRecipeLink(outputUid, recipeSpecKey)
         if removed and StockPiler3.Knowledge and StockPiler3.Knowledge.Touch then
             StockPiler3.Knowledge.Touch()
         end
-    else
-        removed = Catalog._ForgetPotionRecipeLinkLocal(outputUid, recipeSpecKey) == true
     end
     if removed == true then
         outputUid = tonumber(outputUid) or 0
@@ -218,110 +168,12 @@ function Catalog.ForgetPotionRecipeLink(outputUid, recipeSpecKey)
                 StockPiler3.Items.RemoveByUid(outputUid)
             end
         end
-        -- Match plant Forget: drop the matching watch so Watch tab cannot keep a ghost.
-        ScrubPotionWatchForRecipe(outputUid, recipeSpecKey)
+        local Watch = StockPiler3.Watch
+        if Watch and Watch.ScrubPotionRecipeWatch then
+            Watch.ScrubPotionRecipeWatch(outputUid, recipeSpecKey)
+        end
     end
     return removed
-end
-
-function Catalog._ForgetPotionRecipeLinkLocal(outputUid, recipeSpecKey)
-    local RS = StockPiler3.RecipeSpec
-    outputUid = tonumber(outputUid) or 0
-    recipeSpecKey = tostring(recipeSpecKey or "")
-    if outputUid <= 0 or recipeSpecKey == "" then
-        return false
-    end
-
-    local potions = StockPiler3.Knowledge and StockPiler3.Knowledge.Potions and StockPiler3.Knowledge.Potions()
-    local recipes = StockPiler3.Knowledge and StockPiler3.Knowledge.Recipes and StockPiler3.Knowledge.Recipes()
-    if type(potions) ~= "table" or type(recipes) ~= "table" then
-        return false
-    end
-
-    local potionKey = RS and RS.PotionKeyFromUid and RS.PotionKeyFromUid(outputUid)
-        or ("uid:" .. tostring(outputUid))
-    local potion = potions[potionKey]
-    local recipe = recipes[recipeSpecKey]
-    local hadLink = false
-
-    if type(potion) == "table" then
-        local keys = PotionRecipeKeys(potion)
-        for i = 1, #keys do
-            if keys[i] == recipeSpecKey then
-                hadLink = true
-                break
-            end
-        end
-    end
-    if type(recipe) == "table" and type(recipe.outcomes) == "table"
-        and type(recipe.outcomes[tostring(outputUid)]) == "table"
-    then
-        hadLink = true
-    end
-    if not hadLink then
-        return false
-    end
-
-    if type(potion) == "table" then
-        local keys = PotionRecipeKeys(potion)
-        local trimmed = {}
-        for i = 1, #keys do
-            if keys[i] ~= recipeSpecKey then
-                trimmed[#trimmed + 1] = keys[i]
-            end
-        end
-        potion.recipeKeys = trimmed
-        if potion.activeRecipeKey == recipeSpecKey or potion.activeRecipeSpecKey == recipeSpecKey
-            or potion.recipeSpecKey == recipeSpecKey
-        then
-            potion.activeRecipeKey = trimmed[1]
-            potion.activeRecipeSpecKey = trimmed[1]
-            potion.recipeSpecKey = trimmed[1]
-        end
-        if #trimmed == 0 then
-            potions[potionKey] = nil
-        end
-    end
-
-    if type(recipe) == "table" and type(recipe.outcomes) == "table" then
-        recipe.outcomes[tostring(outputUid)] = nil
-        local remaining = false
-        for _ in pairs(recipe.outcomes) do
-            remaining = true
-            break
-        end
-        if not remaining then
-            -- Keep recipe only if another potion still lists it.
-            local stillLinked = false
-            for _, other in pairs(potions) do
-                if type(other) == "table" then
-                    local oks = PotionRecipeKeys(other)
-                    for i = 1, #oks do
-                        if oks[i] == recipeSpecKey then
-                            stillLinked = true
-                            break
-                        end
-                    end
-                end
-                if stillLinked then
-                    break
-                end
-            end
-            if not stillLinked then
-                recipes[recipeSpecKey] = nil
-            end
-        end
-    end
-
-    if RS and RS.PotionRecipeKey then
-        ScrubWatchKey(RS.PotionRecipeKey(outputUid, recipeSpecKey))
-    end
-    if StockPiler3.Knowledge and StockPiler3.Knowledge.Touch then
-        StockPiler3.Knowledge.Touch()
-    elseif StockPiler3.Knowledge and StockPiler3.Knowledge.BumpGen then
-        StockPiler3.Knowledge.BumpGen()
-    end
-    return true
 end
 
 ----------------------------------------------------------------

@@ -1403,6 +1403,37 @@ local function LogPlantPick(job)
     ))
 end
 
+--- Published plan still wants a seed (short bottle, upgrading, or need seeds).
+--- A probed nil must not stick across fill-block expiry in that case.
+local function PlanWantsPlant()
+    local PS = StockPiler3.PlanSnapshot
+    local plan = PS and PS.Get and PS.Get() or nil
+    local rows = type(plan) == "table" and plan.rows or nil
+    if type(rows) ~= "table" then
+        return false
+    end
+    for i = 1, #rows do
+        local row = rows[i]
+        if type(row) == "table" then
+            local key = tostring(row.statusKey or "")
+            if key == "upgrading_seed" or key == "need_seeds" then
+                return true
+            end
+            local gap = tonumber(row.bottleGap)
+            if gap == nil then
+                local target = tonumber(row.potionMin) or tonumber(row.target) or 0
+                local have = tonumber(row.potionHave) or tonumber(row.have) or 0
+                local craftable = tonumber(row.craftable) or 0
+                gap = math.max(0, target - have - craftable)
+            end
+            if (tonumber(gap) or 0) > 0 then
+                return true
+            end
+        end
+    end
+    return false
+end
+
 --- Idle SkillUp plant job. Independent of watch-demand cache (no-watch skill-up).
 --- Plan rows already say nothing needs a seed. Avoid the demand / seed-line walk.
 --- nil when there is no snapshot (caller must do the full pick).
@@ -1680,9 +1711,15 @@ function Grow.GetPlantJob()
         end
         -- Nil-cache must not hide SkillUp when plots are empty (no watch demand).
         local SkillUp = StockPiler3.SkillUp
-        if not (SkillUp and SkillUp.ShouldCultPlant and SkillUp.ShouldCultPlant() == true
-            and Grow.HasEmptyPlot and Grow.HasEmptyPlot() == true)
-        then
+        local skillUpIdle = SkillUp and SkillUp.ShouldCultPlant and SkillUp.ShouldCultPlant() == true
+            and Grow.HasEmptyPlot and Grow.HasEmptyPlot() == true
+        -- Fill-block ticks keep the nil (a pick every tick was the empty-plot hitch).
+        -- Once the block expires, a short watch / seed climb picks again. A stocked
+        -- plan still keeps the nil so idle ticks do not bag-walk.
+        local Orch = StockPiler3.Orchestrator
+        local fillBlocked = Orch and Orch.IsFillBlocked and Orch.IsFillBlocked() == true
+        local retryShort = fillBlocked ~= true and PlanWantsPlant() == true
+        if skillUpIdle ~= true and retryShort ~= true then
             return cached
         end
     end
