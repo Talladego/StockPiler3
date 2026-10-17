@@ -355,9 +355,6 @@ local function UnlinkPotionRecipeKey(potionUid, recipeKey)
     if type(potion.recipeKeys) == "table" then
         potion.recipeKeys = scrubList(potion.recipeKeys)
     end
-    if type(potion.alternateRecipeSpecKeys) == "table" then
-        potion.alternateRecipeSpecKeys = scrubList(potion.alternateRecipeSpecKeys)
-    end
     for _, field in ipairs({ "activeRecipeKey", "activeRecipeSpecKey", "recipeSpecKey" }) do
         if tostring(potion[field] or "") == recipeKey then
             local keys = potion.recipeKeys
@@ -503,14 +500,11 @@ local function StampIncompleteMainEffect(recipe)
             and tostring(spec.role or slot.role or "") == "main"
             and (spec.incomplete == true or (tonumber(spec.effectId) or 0) <= 0)
         then
-            spec.effectId = effectId
-            spec.bonuses = type(spec.bonuses) == "table" and spec.bonuses or {}
-            spec.bonuses[effectRef] = effectId
-            spec.incomplete = false
+            local notRefinable = spec.isRefinable == false
             if spec.isRefinable == nil then
                 -- Prefer learned vendor/butcher twin refinable flag at this fingerprint.
                 local items = StockPiler3.Account and StockPiler3.Account.items
-                if type(items) == "table" and MS.ProductMatches then
+                if type(items) == "table" and MS and MS.ProductMatches then
                     for uidKey, row in pairs(items) do
                         if type(row) == "table" and row.isRefinable == false then
                             local rowUid = tonumber(row.uniqueID) or tonumber(uidKey) or 0
@@ -519,15 +513,56 @@ local function StampIncompleteMainEffect(recipe)
                                 probe = StockPiler3.Items.AsItemData(rowUid) or row
                             end
                             if MS.ProductMatches(probe, spec) == true then
-                                spec.isRefinable = false
+                                notRefinable = true
                                 break
                             end
                         end
                     end
                 end
             end
-            if type(slot) == "table" then
-                slot.spec = spec
+            local boundUid = tonumber(spec.boundUid) or tonumber(spec.uid) or tonumber(slot and slot.uid) or 0
+            if boundUid > 0 and StockPiler3.Items and StockPiler3.Items.StoreItem then
+                local learned = StockPiler3.Items.GetByUid and StockPiler3.Items.GetByUid(boundUid) or nil
+                local craftingBonus = {}
+                local function pushBonus(ref, val)
+                    ref = tonumber(ref) or 0
+                    if ref > 0 and val ~= nil then
+                        craftingBonus[#craftingBonus + 1] = {
+                            bonusReference = ref,
+                            bonusValue = val,
+                        }
+                    end
+                end
+                if type(learned) == "table" and type(learned.bonuses) == "table" then
+                    for ref, val in pairs(learned.bonuses) do
+                        if tonumber(ref) ~= effectRef then
+                            pushBonus(ref, val)
+                        end
+                    end
+                elseif type(spec.bonuses) == "table" then
+                    for ref, val in pairs(spec.bonuses) do
+                        if tonumber(ref) ~= effectRef then
+                            pushBonus(ref, val)
+                        end
+                    end
+                end
+                pushBonus(effectRef, effectId)
+                local payload = {
+                    uniqueID = boundUid,
+                    name = (type(learned) == "table" and learned.name) or spec.name,
+                    craftingBonus = craftingBonus,
+                    craftingSkillRequirement = (type(learned) == "table" and learned.skillReq) or spec.skillLevel,
+                    tradeSkill = (type(learned) == "table" and learned.tradeSkill) or spec.tradeSkill,
+                    cultivationType = (type(learned) == "table" and learned.cultivationType) or spec.cultivationType,
+                }
+                if notRefinable then
+                    payload.isRefinable = false
+                end
+                StockPiler3.Items.StoreItem(payload, "mat")
+                if StockPiler3.Knowledge and StockPiler3.Knowledge.Touch then
+                    StockPiler3.Knowledge.Touch("effect-fallback")
+                end
+                ResolveSlotSpec(slot)
             end
         end
     end
@@ -781,7 +816,7 @@ local function PotionRecipeKeys(potion)
     if type(potion.recipeKeys) == "table" then
         return potion.recipeKeys
     end
-    return potion.alternateRecipeSpecKeys
+    return nil
 end
 
 local function EnsureBrewStats(recipe)
@@ -2448,7 +2483,7 @@ local function IsWeakerFingerprint(weakKey, strongKey)
         or IsIncompleteMainUpgrade(weakKey, strongKey)
 end
 
---- Union of recipeKeys + alternateRecipeSpecKeys + active pointers (deduped).
+--- recipeKeys plus the active pointers (deduped).
 local function CollectPotionRecipeKeyList(potion)
     local seen = {}
     local out = {}
@@ -2465,11 +2500,6 @@ local function CollectPotionRecipeKeyList(potion)
     if type(potion.recipeKeys) == "table" then
         for i = 1, #potion.recipeKeys do
             add(potion.recipeKeys[i])
-        end
-    end
-    if type(potion.alternateRecipeSpecKeys) == "table" then
-        for i = 1, #potion.alternateRecipeSpecKeys do
-            add(potion.alternateRecipeSpecKeys[i])
         end
     end
     add(potion.activeRecipeKey)
@@ -2549,7 +2579,7 @@ end
 
 local function ApplyPotionRecipeKeyList(potion, kept)
     potion.recipeKeys = kept
-    potion.alternateRecipeSpecKeys = kept
+    potion.alternateRecipeSpecKeys = nil
     local active = tostring(potion.activeRecipeKey or potion.activeRecipeSpecKey or "")
     local activeOk = false
     for i = 1, #kept do
@@ -2814,17 +2844,11 @@ function RS.ForgetPotionRecipeLink(outputUid, recipeSpecKey)
         if type(potion.recipeKeys) == "table" then
             potion.recipeKeys = drop(potion.recipeKeys)
         end
-        if type(potion.alternateRecipeSpecKeys) == "table" then
-            potion.alternateRecipeSpecKeys = drop(potion.alternateRecipeSpecKeys)
-        end
         if potion.activeRecipeKey == recipeSpecKey
             or potion.activeRecipeSpecKey == recipeSpecKey
             or potion.recipeSpecKey == recipeSpecKey
         then
             local nextKey = type(potion.recipeKeys) == "table" and potion.recipeKeys[1] or nil
-            if nextKey == nil and type(potion.alternateRecipeSpecKeys) == "table" then
-                nextKey = potion.alternateRecipeSpecKeys[1]
-            end
             potion.activeRecipeKey = nextKey
             potion.activeRecipeSpecKey = nextKey
             potion.recipeSpecKey = nextKey
@@ -3113,8 +3137,44 @@ function RS.StoreLearnedRecipeSpec(materials, outputs, opts)
     return true
 end
 
+--- Fold alternateRecipeSpecKeys into recipeKeys and drop the duplicate list.
+function RS.FoldAlternateRecipeKeys()
+    local potions = PotionsTable()
+    if type(potions) ~= "table" then
+        return 0
+    end
+    local folded = 0
+    for _, potion in pairs(potions) do
+        if type(potion) == "table" and potion.alternateRecipeSpecKeys ~= nil then
+            local seen = {}
+            local keys = {}
+            local function add(k)
+                k = tostring(k or "")
+                if k ~= "" and seen[k] ~= true then
+                    seen[k] = true
+                    keys[#keys + 1] = k
+                end
+            end
+            if type(potion.recipeKeys) == "table" then
+                for i = 1, #potion.recipeKeys do
+                    add(potion.recipeKeys[i])
+                end
+            end
+            if type(potion.alternateRecipeSpecKeys) == "table" then
+                for i = 1, #potion.alternateRecipeSpecKeys do
+                    add(potion.alternateRecipeSpecKeys[i])
+                end
+            end
+            potion.recipeKeys = keys
+            potion.alternateRecipeSpecKeys = nil
+            folded = folded + 1
+        end
+    end
+    return folded
+end
+
 --- One-time: rebuild recipe keys from MS.Key fingerprints; merge uid-bound duplicates;
---- relink potions + character watches.
+--- relink potions + character watches. Retired: MigrateFingerprints no longer calls this.
 function RS.MigrateRecipeFingerprintsV2()
     local acct = StockPiler3.Account
     if type(acct) ~= "table" then
@@ -3204,7 +3264,7 @@ function RS.MigrateRecipeFingerprintsV2()
                     end
                 end
                 potion.recipeKeys = nextKeys
-                potion.alternateRecipeSpecKeys = nextKeys
+                potion.alternateRecipeSpecKeys = nil
             end
         end
     end

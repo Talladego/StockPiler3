@@ -424,6 +424,20 @@ local function RecordHarvestProduct(seedUid, plantUid, qty)
     end
     row.samples = (tonumber(row.samples) or 0) + 1
     row.qtySum = (tonumber(row.qtySum) or 0) + (tonumber(qty) or 1)
+    local plantReq = 0
+    if type(plantData) == "table" then
+        plantReq = tonumber(plantData.craftingSkillRequirement) or tonumber(plantData.skillReq) or 0
+    end
+    if plantReq <= 0 and StockPiler3.Items and StockPiler3.Items.GetByUid then
+        local learned = StockPiler3.Items.GetByUid(plantUid)
+        if type(learned) == "table" then
+            plantReq = tonumber(learned.skillReq) or tonumber(learned.skillLevel)
+                or tonumber(learned.craftingSkillRequirement) or 0
+        end
+    end
+    if plantReq > 0 then
+        row.skillReq = plantReq
+    end
     -- Stamp plant EFFECT from seed (harvest + refine share this path).
     local stampedFx = StampPlantEffectFromSeedLink(seedUid, plantUid, plantData)
     if stampedFx > 0 then
@@ -2169,94 +2183,9 @@ end
 -- Only EFFECT transfers seed→plant (never cult SPECIAL_CHANCE).
 ----------------------------------------------------------------
 
+-- Retired. The latch stays on old saves so validation still accepts it.
 function SM.MigratePlantEffectsFromSeeds()
-    local acct = StockPiler3.Account
-    if type(acct) ~= "table" then
-        return 0
-    end
-    if acct.plantEffectFromSeedMigrateV2 == true then
-        return 0
-    end
-    -- plantUid -> { seedUid, samples }
-    local best = {}
-    local grows = GrowsTable()
-    if type(grows) == "table" then
-        for seedKey, bucket in pairs(grows) do
-            if type(bucket) == "table" and type(bucket.products) == "table" then
-                local seedUid = tonumber(seedKey) or tonumber(bucket.seedUid) or 0
-                if seedUid > 0 and not SM.IsSeedPacketUid(seedUid) then
-                    for plantKey, prod in pairs(bucket.products) do
-                        if type(prod) == "table" then
-                            local plantUid = tonumber(plantKey) or tonumber(prod.uid) or 0
-                            local samples = tonumber(prod.samples) or 0
-                            if plantUid > 0 and samples > 0
-                                and not PlantLooksLikeByproduct(plantUid, BagSample(plantUid))
-                            then
-                                local cur = best[plantUid]
-                                if type(cur) ~= "table" or samples > (tonumber(cur.samples) or 0) then
-                                    best[plantUid] = { seedUid = seedUid, samples = samples }
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-    local refines = RefinesTable()
-    if type(refines) == "table" then
-        for plantKey, entry in pairs(refines) do
-            if type(entry) == "table" then
-                local plantUid = tonumber(plantKey) or tonumber(entry.plantUid) or 0
-                local seedUid = tonumber(entry.seedUid) or 0
-                if plantUid > 0 and seedUid > 0 and not SM.IsSeedPacketUid(seedUid)
-                    and not PlantLooksLikeByproduct(plantUid, BagSample(plantUid))
-                then
-                    local samples = 0
-                    if type(entry.seedOut) == "table" then
-                        local so = entry.seedOut[tostring(seedUid)]
-                        samples = type(so) == "table" and (tonumber(so.samples) or 0) or 0
-                    end
-                    local cur = best[plantUid]
-                    if type(cur) ~= "table" or samples > (tonumber(cur.samples) or 0) then
-                        -- Prefer grow-link when samples equal or higher; only fill missing.
-                        if type(cur) ~= "table" then
-                            best[plantUid] = { seedUid = seedUid, samples = samples }
-                        elseif samples > (tonumber(cur.samples) or 0) then
-                            best[plantUid] = { seedUid = seedUid, samples = samples }
-                        end
-                    end
-                end
-            end
-        end
-    end
-
-    local changed = 0
-    local Items = StockPiler3.Items
-    for plantUid, info in pairs(best) do
-        if type(info) == "table" then
-            local seedUid = tonumber(info.seedUid) or 0
-            local effectId = seedUid > 0 and SM.ResolveSeedEffectId(seedUid) or 0
-            if effectId > 0 and Items and Items.StampPlantEffectFromSeed then
-                local row = Items.GetByUid and Items.GetByUid(plantUid) or nil
-                local existing = type(row) == "table" and tonumber(row.effectId) or 0
-                if existing <= 0 and type(row) == "table" and type(row.bonuses) == "table" then
-                    existing = tonumber(row.bonuses[6]) or 0
-                end
-                if existing <= 0 then
-                    if Items.StampPlantEffectFromSeed(plantUid, effectId, BagSample(plantUid), seedUid) then
-                        changed = changed + 1
-                    end
-                end
-            end
-        end
-    end
-
-    acct.plantEffectFromSeedMigrateV2 = true
-    if changed > 0 and StockPiler3.Knowledge and StockPiler3.Knowledge.Touch then
-        StockPiler3.Knowledge.Touch("plant-effect-seed")
-    end
-    return changed
+    return 0
 end
 
 ----------------------------------------------------------------
@@ -2570,7 +2499,23 @@ local function HealFamilyRungSeeds(families)
                 local seedUid = tonumber(rung.seedUid) or 0
                 if plantUid > 0 and seedUid <= 0 and SM.ResolveSeedUidForPlant then
                     seedUid = tonumber(SM.ResolveSeedUidForPlant(plantUid, nil)) or 0
+                    local rungReq = tonumber(rung.skillReq) or 0
+                    local seedReq = 0
                     if seedUid > 0 then
+                        local sample = BagSample(seedUid)
+                        if type(sample) == "table" then
+                            seedReq = tonumber(sample.craftingSkillRequirement)
+                                or tonumber(sample.skillReq) or 0
+                        end
+                        if seedReq <= 0 and StockPiler3.Items and StockPiler3.Items.GetByUid then
+                            local learned = StockPiler3.Items.GetByUid(seedUid)
+                            if type(learned) == "table" then
+                                seedReq = tonumber(learned.skillReq) or tonumber(learned.skillLevel)
+                                    or tonumber(learned.craftingSkillRequirement) or 0
+                            end
+                        end
+                    end
+                    if seedUid > 0 and rungReq > 0 and seedReq == rungReq then
                         rung.seedUid = seedUid
                     end
                 end
