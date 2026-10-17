@@ -1426,8 +1426,11 @@ local function IsGrowableSpecUncached(spec)
     return false
 end
 
---- Memo per uid for the bag snapshot and knowledge generation. BrewAvailableForSpec
---- asks this for every seedless slot; butcher fingerprints otherwise scan Account.items.
+--- Memo per uid and role for the bag snapshot and knowledge generation.
+--- The answer depends on role (and the stabilizer/goldweed name check), so one
+--- uid can be growable as a main and not as a stabilizer in the same snapshot.
+--- BrewAvailableForSpec asks this for every seedless slot; butcher fingerprints
+--- otherwise scan Account.items.
 function SM.IsGrowableSpec(spec)
     if type(spec) ~= "table" then
         return false
@@ -1438,12 +1441,14 @@ function SM.IsGrowableSpec(spec)
         _growableCacheGen = gen
     end
     local uid = tonumber(spec.uid) or tonumber(spec.uniqueID) or tonumber(spec.boundUid) or 0
-    if uid > 0 and _growableCache[uid] ~= nil then
-        return _growableCache[uid] == true
+    local role = tostring(spec.role or "")
+    local cacheKey = tostring(uid) .. ":" .. role
+    if uid > 0 and _growableCache[cacheKey] ~= nil then
+        return _growableCache[cacheKey] == true
     end
     local growable = IsGrowableSpecUncached(spec) == true
     if uid > 0 then
-        _growableCache[uid] = growable
+        _growableCache[cacheKey] = growable
     end
     return growable
 end
@@ -2024,11 +2029,14 @@ function SM.TryCompletePendingHarvest(force)
                 end
             end
         end
+        -- A plot armed after this loot landed already has it in `before`.
+        -- Raising that baseline up to the post-loot count keeps the same
+        -- stack from being subtracted again. Adding `delta` did that twice.
         local others = SM.PendingHarvestMap()
-        for uid, delta in pairs(credited) do
+        for uid in pairs(credited) do
             for key, other in pairs(others) do
                 if key ~= plotKey and type(other) == "table" and type(other.before) == "table" then
-                    other.before[uid] = (tonumber(other.before[uid]) or 0) + delta
+                    other.before[uid] = math.max(tonumber(other.before[uid]) or 0, after[uid])
                 end
             end
         end

@@ -3285,6 +3285,13 @@ function SkillUp.ListApoBagMaterials(role, opts)
                     return
                 end
             end
+        elseif role == "stabilizer" and isResin ~= true and not ignoreReserve then
+            -- Butchered and vendor stabilizers compete with resin. A short
+            -- watch still owns its share; resin stays unreserved (no seed).
+            brewable = count - (tonumber(SkillUp.WatchDemandReserve(uid)) or 0)
+            if brewable < 1 then
+                return
+            end
         end
         local req = tonumber(spec.skillLevel) or SeedSkillReq(item)
         local stab = SpecStability(spec)
@@ -4331,8 +4338,36 @@ end
 --- The checkbox is one switch for every skill that can still level.
 --- Learning Apothecary while Cultivating skill-up is already on (or the
 --- reverse) turns the new skill on without another click.
+--- Only a confirmed 0 -> >0 learn counts. A skill the player left off, and
+--- the first sample after login, stay as they were.
+local _adoptCharKey = nil
+local _adoptPrevCult = nil
+local _adoptPrevApo = nil
+
 function SkillUp.AdoptReadySkills()
     if type(CharRow(false)) ~= "table" then
+        return
+    end
+    local CapsMod = Caps()
+    -- Before the first trade-skill pulse a missing persist reads 0. That is
+    -- not a learn, and adopting here would turn a saved-off skill back on.
+    if not CapsMod or CapsMod._skillsReady ~= true then
+        return
+    end
+    local Watch = StockPiler3.Watch
+    local charKey = Watch and Watch.GetCharacterKey and Watch.GetCharacterKey() or ""
+    if charKey ~= _adoptCharKey then
+        _adoptCharKey = charKey
+        _adoptPrevCult = nil
+        _adoptPrevApo = nil
+    end
+    local cult = tonumber(SkillUp.GetCultSkill()) or 0
+    local apo = tonumber(SkillUp.GetApoSkill()) or 0
+    local prevCult = _adoptPrevCult
+    local prevApo = _adoptPrevApo
+    _adoptPrevCult = cult
+    _adoptPrevApo = apo
+    if prevCult == nil or prevApo == nil then
         return
     end
     local cultOn = SkillUp.IsCultToggleOn() == true
@@ -4340,10 +4375,10 @@ function SkillUp.AdoptReadySkills()
     if cultOn ~= true and apoOn ~= true then
         return
     end
-    if SkillUp.IsCultVisible() == true and cultOn ~= true then
+    if prevCult <= 0 and cult > 0 and SkillUp.IsCultVisible() == true and cultOn ~= true then
         SkillUp.SetCultEnabled(true)
     end
-    if SkillUp.IsApoVisible() == true and apoOn ~= true then
+    if prevApo <= 0 and apo > 0 and SkillUp.IsApoVisible() == true and apoOn ~= true then
         SkillUp.SetApoEnabled(true)
     end
 end

@@ -2,7 +2,7 @@
 
 Lean Cultivation + Apothecary stock automation for Return of Reckoning.
 
-**Version 0.3.423** - Level up skills stays on screen, and SkillUp no longer holds resin for the seed buffer.
+**Version 0.3.424** - Same-seed harvests keep their own loot, the first AutoBrew after reload stays off screen, and skill-up brews leave watched stabilizers.
 
 Parallel-safe with StockPiler and StockPiler2 (distinct folder, saved vars, macros, slash).
 
@@ -142,6 +142,7 @@ No migration from StockPiler / StockPiler2.
 
 | Ver | Notes |
 | :--- | :--- |
+| 0.3.424 | A later same-seed harvest keeps loot already in the bags. One engine show after an Apothecary open stays parked, and a player press still opens the window. Skill-up brews leave butchered stabilizers a short watch needs. A skill left off stays off until that skill is learned |
 | 0.3.423 | Level up skills stays visible and turns on a skill learned later. SkillUp can brew plants or butchered mains and does not reserve resin for the seed buffer. Bag pauses stay quiet. Harvest loot stays on its plot. Long tooltips no longer leave rows behind (#70, #74, #76, #77, #79) |
 | 0.3.422 | One pending harvest per plot. A plant is stored only when the harvest accepts it. A finished brew cannot re-arm or keep a SkillUp origin. The first AutoBrew after reload stays off screen (#41 item 10) |
 | 0.3.421 | One recipe key list. Account additives are dropped. Old fingerprint migrates no longer run. Harvest rows store the plant skill requirement (#41) |

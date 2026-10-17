@@ -29,17 +29,23 @@ local function InstallClearTooltipHook()
     if RecipeTooltip._origClearTooltip or not Tooltips or type(Tooltips.ClearTooltip) ~= "function" then
         return
     end
+    local stockRows = tonumber(Tooltips.NUM_ROWS)
+    if not stockRows or stockRows < 1 then
+        stockRows = STOCK_TOOLTIP_ROWS
+    end
+    STOCK_TOOLTIP_ROWS = stockRows
     RecipeTooltip._origClearTooltip = Tooltips.ClearTooltip
-    Tooltips.ClearTooltip = function()
+    Tooltips.ClearTooltip = function(...)
         local raised = tonumber(RecipeTooltip._raisedRows) or 0
-        if raised > STOCK_TOOLTIP_ROWS then
+        if raised > stockRows then
             Tooltips.NUM_ROWS = raised
         end
-        RecipeTooltip._origClearTooltip()
-        if raised > STOCK_TOOLTIP_ROWS then
-            Tooltips.NUM_ROWS = STOCK_TOOLTIP_ROWS
+        local r = { RecipeTooltip._origClearTooltip(...) }
+        if raised > stockRows then
+            Tooltips.NUM_ROWS = stockRows
             RecipeTooltip._raisedRows = nil
         end
+        return unpack(r)
     end
 end
 
